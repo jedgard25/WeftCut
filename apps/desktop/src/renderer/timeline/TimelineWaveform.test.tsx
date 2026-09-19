@@ -5,6 +5,7 @@ import {
   computeLanes,
   mergeStereo,
   TimelineWaveform,
+  WaveformDrawData,
   WAVEFORM_REFETCH_DEBOUNCE_MS,
 } from "./TimelineWaveform";
 import { tileEngine } from "./tileEngine/TileEngine";
@@ -128,6 +129,30 @@ describe("mergeStereo", () => {
     expect(Array.from(merged.min)).toEqual([-0.5, -0.625]);
     expect(Array.from(merged.max)).toEqual([0.625, 0.25]);
     expect(Array.from(merged.rms)).toEqual([0.25, 0.375]);
+  });
+});
+
+describe("WaveformDrawData", () => {
+  it("has no enumerable own properties, so React's dev prop diff never walks the Float32Arrays", () => {
+    const win: WaveformWindow = {
+      peaksPerSecond: 1000,
+      startPeak: 0,
+      min: new Float32Array([-0.5, -0.7]),
+      max: new Float32Array([0.5, 0.7]),
+      rms: new Float32Array([0.2, 0.3]),
+    };
+    const data = new WaveformDrawData(2, win, null, 100, 2000);
+
+    // The whole point: `for...in` / Object.keys see nothing, so React's
+    // addObjectDiffToProperties cannot enumerate a typed array's indices.
+    expect(Object.keys(data)).toEqual([]);
+    expect(Object.getOwnPropertyNames(data)).toEqual([]);
+    // Values still reachable through the getters for the draw path.
+    expect(data.channels).toBe(2);
+    expect(data.win0).toBe(win);
+    expect(data.win1).toBeNull();
+    expect(data.winLoUs).toBe(100);
+    expect(data.winHiUs).toBe(2000);
   });
 });
 

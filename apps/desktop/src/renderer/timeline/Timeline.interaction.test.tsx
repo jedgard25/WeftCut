@@ -553,8 +553,8 @@ describe("Timeline seek/selection coupling", () => {
   // Visual order is the reverse of the data array, so [bottom, mid, top]
   // renders top → bottom as rowTop, rowMid, rowBottom.
 
-  const rowTop: TrackSummary = { ...track, id: "row-top", label: "Top", layers: [] };
-  const rowMid: TrackSummary = { ...track, id: "row-mid", label: "Mid", layers: [] };
+  const rowTop: TrackSummary = { ...track, id: "row-top", label: "Top", layers: [{ ...layer, id: "top-clip", t_start_us: 3_000_000, t_end_us: 4_000_000 }] };
+  const rowMid: TrackSummary = { ...track, id: "row-mid", label: "Mid", layers: [{ ...layer, id: "mid-clip", t_start_us: 3_000_000, t_end_us: 4_000_000 }] };
   const draggedLayer: LayerSummary = { ...layer, id: "dragged", label: "Dragged" };
   const rowBottom: TrackSummary = {
     ...track,
@@ -586,7 +586,9 @@ describe("Timeline seek/selection coupling", () => {
   // actually renders in: immediately above the topmost lane. Without it the
   // strip's unlaid-out (0, 0) rect would tie with rowTop's and steal its band —
   // which is a fixture artifact, not app behaviour, and would send a lane-to-lane
-  // drag to the spawn target.
+  // drag to the spawn target. The bottom strip gets the same treatment below
+  // the last lane, for the same reason: an unstubbed (0, 0) rect sorts into the
+  // lane bands and steals the top of rowTop.
   function stubLaneLayout(container: HTMLElement) {
     stubRect(
       container.querySelector('[data-testid="timeline-drop-strip"]')!,
@@ -605,6 +607,10 @@ describe("Timeline seek/selection coupling", () => {
         if (!band) return;
         stubRect(el, band[0], band[1]);
       });
+    const bottomStrip = container.querySelector(
+      '[data-testid="timeline-drop-strip"][data-position="bottom"]',
+    );
+    if (bottomStrip) stubRect(bottomStrip, 240, 254);
   }
 
   it("keeps a drag on the lane the DOM reports it is over", () => {
@@ -1738,7 +1744,7 @@ describe("Timeline seek/selection coupling", () => {
       id: "track-2",
       label: "S2",
       role: "b-roll",
-      layers: [],
+      layers: [{ ...layer, id: "b-roll-clip" }],
     };
     const payload = mediaDragPayload(sourceMedia);
     useMediaDragStore.getState().begin(payload);
@@ -1914,7 +1920,8 @@ describe("Timeline seek/selection coupling", () => {
     const seams = [
       ...container.querySelectorAll('[data-testid="timeline-drop-strip-seam"]'),
     ];
-    expect(seams).toHaveLength(2);
+    // Header top strip, body top strip, body bottom strip.
+    expect(seams).toHaveLength(3);
     for (const seam of seams) {
       expect(seam.className).toContain("h-px");
       expect((seam as HTMLElement).style.top).toBe(
@@ -1958,7 +1965,8 @@ describe("Timeline seek/selection coupling", () => {
     const seams = container.querySelectorAll(
       '[data-testid="timeline-drop-strip-seam"]',
     );
-    expect(seams.length).toBe(2);
+    // Header top strip, body top strip, body bottom strip — even with no lanes.
+    expect(seams.length).toBe(3);
     for (const seam of seams) {
       expect((seam as HTMLElement).style.top).toBe("0px");
     }
@@ -2007,12 +2015,12 @@ describe("Timeline seek/selection coupling", () => {
     });
   });
 
-  it("leaves a lane drop landing on that lane, with no lane spawned", async () => {
-    const emptyTrack: TrackSummary = { ...track, layers: [] };
+  it("leaves a lane drop landing on that lane when its interval is free", async () => {
+    const freeTrack: TrackSummary = { ...track };
     const payload = mediaDragPayload(sourceMedia);
     useMediaDragStore.getState().begin(payload);
     const { container } = renderTimeline({
-      tracks: [emptyTrack],
+      tracks: [freeTrack],
       media: [sourceMedia],
     });
     const lane = container.querySelector(
@@ -2042,7 +2050,7 @@ describe("Timeline seek/selection coupling", () => {
 
     await waitFor(() => {
       expect(ipcMocks.addMediaLayer).toHaveBeenCalledWith(
-        emptyTrack.id,
+        freeTrack.id,
         sourceMedia.id,
         3_000_000,
       );
@@ -2061,9 +2069,18 @@ describe("Timeline seek/selection coupling", () => {
   /// in visual order, so lane i owns `[14 + 56i, 70 + 56i)`.
   const stubRaiseLayout = (container: HTMLElement): HTMLElement => {
     const strip = stripOf(container); // band [0, 14)
-    container
-      .querySelectorAll('[data-testid="track-lane"]')
-      .forEach((el, i) => stubRect(el, 14 + i * 56, 70 + i * 56));
+    const lanes = container.querySelectorAll('[data-testid="track-lane"]');
+    lanes.forEach((el, i) => stubRect(el, 14 + i * 56, 70 + i * 56));
+    // The bottom strip, below the last lane: unstubbed its (0, 0) rect sorts
+    // into the top band and steals it (same fixture artifact `stubLaneLayout`
+    // guards for the top strip).
+    const bottomStrip = container.querySelector(
+      '[data-testid="timeline-drop-strip"][data-position="bottom"]',
+    );
+    if (bottomStrip) {
+      const end = 14 + lanes.length * 56;
+      stubRect(bottomStrip, end, end + 14);
+    }
     return strip;
   };
 
@@ -2116,7 +2133,7 @@ describe("Timeline seek/selection coupling", () => {
       expect(ipcMocks.moveLayersToNewTrack).toHaveBeenCalledWith([layer.id], {
         layerId: layer.id,
         tStartUs: 0,
-      });
+      }, "top");
     });
     // The one create-and-move operation, never decomposed into add-then-move.
     expect(ipcMocks.moveLayer).not.toHaveBeenCalled();
@@ -2154,7 +2171,7 @@ describe("Timeline seek/selection coupling", () => {
       expect(ipcMocks.moveLayersToNewTrack).toHaveBeenCalledWith([layer.id], {
         layerId: layer.id,
         tStartUs: 33_333,
-      });
+      }, "top");
     });
   });
 
@@ -2219,6 +2236,7 @@ describe("Timeline seek/selection coupling", () => {
         // holds its phase to it, which is the mutation's contract, not a second
         // number the drag has to send.
         { layerId: layer.id, tStartUs: 0 },
+        "top",
       );
     });
   });
@@ -2388,6 +2406,18 @@ describe("Timeline row alignment", () => {
   const testids = (parent: Element): (string | undefined)[] =>
     Array.from(parent.children).map((el) => (el as HTMLElement).dataset.testid);
 
+  it("centers occupied rows and collapses an empty legacy B-roll row", () => {
+    const oldBRoll: TrackSummary = { ...track, id: "old-b-roll", role: "b-roll", layers: [] };
+    const lower: TrackSummary = { ...track, id: "lower", layers: [{ ...layer, id: "lower-clip" }] };
+    const upper: TrackSummary = { ...track, id: "upper", layers: [{ ...layer, id: "upper-clip" }] };
+    const { container } = renderTimeline({ tracks: [lower, oldBRoll, track, upper] });
+    expect(Array.from(container.querySelectorAll<HTMLElement>('[data-testid="track-lane"]')).map((el) => el.dataset.trackId))
+      .toEqual(["upper", track.id, "lower"]);
+    expect(container.querySelector('[data-testid="track-header"][data-track-id="old-b-roll"]')).toBeNull();
+    expect(q(container, "timeline-centered-headers").classList.contains("justify-center")).toBe(true);
+    expect(q(container, "timeline-canvas").classList.contains("justify-center")).toBe(true);
+  });
+
   /// One keyed param, so expanding the track adds exactly one sub-lane row to
   /// both columns — the row the arithmetic hit-tests used to lose.
   const keyedTrack: TrackSummary = {
@@ -2429,7 +2459,7 @@ describe("Timeline row alignment", () => {
       .toEqual([
         "timeline-ruler-corner",
         "timeline-marker-lane-header",
-        "timeline-drop-strip-header",
+        "timeline-centered-headers",
       ]);
     expect(testids(q(container, "timeline-ruler").parentElement!).slice(0, 3))
       .toEqual([
@@ -2482,7 +2512,7 @@ describe("Timeline row alignment", () => {
     // The drop strip is now the first row under the ruler, still aligned.
     expect(
       testids(q(container, "timeline-ruler-corner").parentElement!).slice(0, 2),
-    ).toEqual(["timeline-ruler-corner", "timeline-drop-strip-header"]);
+    ).toEqual(["timeline-ruler-corner", "timeline-centered-headers"]);
     expect(
       testids(q(container, "timeline-ruler").parentElement!).slice(0, 2),
     ).toEqual(["timeline-ruler", "timeline-canvas"]);
@@ -2521,10 +2551,10 @@ describe("Timeline track seams", () => {
       id: "overlay-1",
       role: null,
       transient: true,
-      layers: [],
+      layers: [{ ...layer, id: "overlay-clip" }],
     };
-    const bRoll: TrackSummary = { ...track, id: "b-roll", role: "b-roll", layers: [] };
-    const aRoll: TrackSummary = { ...track, id: "a-roll", role: "a-roll", layers: [] };
+    const bRoll: TrackSummary = { ...track, id: "b-roll", role: "b-roll", layers: [{ ...layer, id: "b-clip" }] };
+    const aRoll: TrackSummary = { ...track, id: "a-roll", role: "a-roll", layers: [{ ...layer, id: "a-clip" }] };
     const { container } = renderTimeline({ tracks: [aRoll, bRoll, overlay] });
 
     const lanes = [
@@ -4075,7 +4105,7 @@ describe("Timeline playhead projection", () => {
     expect(playhead.style.left).toBe(`${2 * PX_PER_SEC}px`);
   });
 
-  it("draws nothing at a moment its placement does not reach", () => {
+  it("draws within the Group's own timeline past its trimmed placement", () => {
     const { container } = renderGroupTimeline(vi.fn());
     const playhead = container.querySelector<HTMLElement>(
       '[data-testid="timeline-playhead"]',
@@ -4084,8 +4114,11 @@ describe("Timeline playhead projection", () => {
     act(() => setPlayheadTimeUs(13_000_000));
     expect(playhead.style.display).toBe("block");
 
-    // Past the Group clip's end: the Group is off screen, so it has no position
-    // and a line would have to invent one.
+    act(() => setPlayheadTimeUs(16_500_000));
+    expect(playhead.style.display).toBe("block");
+    expect(playhead.style.left).toBe(`${4.5 * PX_PER_SEC}px`);
+
+    // The line disappears only beyond the Group's own duration.
     act(() => setPlayheadTimeUs(17_000_000));
     expect(playhead.style.display).toBe("none");
   });
@@ -4099,7 +4132,8 @@ describe("Timeline playhead projection", () => {
     fireEvent.pointerDown(ruler, { button: 0, clientX: PX_PER_SEC });
     fireEvent.pointerUp(window, { clientX: PX_PER_SEC });
 
-    expect(onSeek).toHaveBeenCalledWith(13_000_000);
+    expect(playheadTimeUs()).toBe(13_000_000);
+    expect(onSeek).not.toHaveBeenCalled();
   });
 });
 
@@ -4174,7 +4208,7 @@ describe("a gesture names the Panel it happened in", () => {
     });
     dropOnStrip(stripOf(container), payload);
 
-    await waitFor(() => expect(ipcMocks.addTrack).toHaveBeenCalledWith(GROUP));
+    await waitFor(() => expect(ipcMocks.addTrack).toHaveBeenCalledWith(GROUP, "top"));
     // A drop is a local act: taking the keyboard would take the inspector and
     // the picture with it, which is the opposite of what dropping into a
     // background timeline is for.

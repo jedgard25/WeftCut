@@ -28,8 +28,8 @@ import { invoke } from "@/bridge/ipc";
 import type { CompositionPatchPartial, MarkerAnchorArg, Rgba } from "./index";
 
 /// `add_track` in `compositionId`. Tracks are kind-agnostic.
-export async function addTrackIn(compositionId: string | null): Promise<string> {
-  return invoke<string>("add_track", { compositionId });
+export async function addTrackIn(compositionId: string | null, position?: "top" | "bottom" | null): Promise<string> {
+  return invoke<string>("add_track", { compositionId, position: position ?? null });
 }
 
 /// `add_marker` at `tUs` on `compositionId`'s timeline; the label is

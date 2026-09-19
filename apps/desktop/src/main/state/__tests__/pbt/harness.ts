@@ -31,9 +31,9 @@ export interface WireComposition {
 export interface WireProject { compositions: Record<string, WireComposition>; root_id: string }
 export function wireRoot(w: WireProject): WireComposition { return w.compositions[w.root_id] }
 
-/** Fresh blank project + actor with seeded ids (#1 A-roll, #2 B-roll, #3 project,
- *  #4 root composition). Clock is constant so timestamps never perturb canonical
- *  comparison. */
+/** Fresh blank project + actor with seeded ids (#1 A-roll, #2 discarded slot,
+ *  #3 project, #4 root composition). Clock is constant so timestamps never
+ *  perturb canonical comparison. */
 export function freshActor() {
   const idGen = seededGen()
   const initial = blankProject(idGen, 'replay')
@@ -41,7 +41,16 @@ export function freshActor() {
 }
 
 export function aRollId(actor: ReturnType<typeof createActor>): string { return root(actor.snapshot()).tracks[0].id }
-export function bRollId(actor: ReturnType<typeof createActor>): string { return root(actor.snapshot()).tracks[1].id }
+/** A real second lane, spawned on demand: the fresh skeleton holds only the
+ *  single A-roll track, so the first call mints one id via `add_track` and
+ *  later calls reuse it. */
+export function bRollId(actor: ReturnType<typeof createActor>): string {
+  const tracks = root(actor.snapshot()).tracks
+  if (tracks.length > 1) return tracks[1].id
+  const r = actor.dispatch('add_track', { label: null })
+  if (!r.ok) throw new Error(`bRollId spawn failed: ${JSON.stringify(r.error)}`)
+  return r.value as string
+}
 
 export function wireSnapshot(actor: ReturnType<typeof createActor>): WireProject {
   return serializeProject(actor.snapshot()) as WireProject

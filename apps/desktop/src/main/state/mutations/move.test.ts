@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Layer, type LayerParams } from '../model'
-import { applyAddLayer, colorParams } from './add'
+import { applyAddLayer, applyAddTrack, colorParams } from './add'
 import { applyMoveLayer, applyMoveLayersToNewTrack } from './move'
 import { isCommandFailure } from '../errors'
 import { applyLinksCreate } from './links'
@@ -45,9 +45,10 @@ describe('applyMoveLayer', () => {
   it('moves across tracks', () => {
     const g = seededGen(); const p = blankProject(g, 't')
     const a = applyAddLayer(p, g, root(p).tracks[0].id, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 0, 1_000_000)
-    applyMoveLayer(p, a, root(p).tracks[1].id, 0, false)
+    const laneB = applyAddTrack(p, g, null)
+    applyMoveLayer(p, a, laneB, 0, false)
     expect(root(p).tracks[0].layers).toHaveLength(0)
-    expect(root(p).tracks[1].layers[0].id).toBe(a)
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].id).toBe(a)
   })
   it('rejects a missing layer and a locked source track', () => {
     const g = seededGen(); const p = blankProject(g, 't')
@@ -62,20 +63,22 @@ describe('move link lock checks (not corpus-gated)', () => {
   it('rejects a coupled move when a link sibling is layer-locked', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 100_000)]
-    root(p).tracks[1].layers = [color('b', 0, 100_000)]
+    const laneB1 = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB1)!.layers = [color('b', 0, 100_000)]
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
-    root(p).tracks[1].layers[0].locked = true // sibling b locked
+    root(p).tracks.find((t) => t.id === laneB1)!.layers[0].locked = true // sibling b locked
     try { applyMoveLayer(p, 'a', root(p).tracks[0].id, 500_000, false); throw new Error('expected throw') }
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('LinkLockedMember') }
   })
   it('escape_link bypasses the sibling lock check and moves only the target', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 100_000)]
-    root(p).tracks[1].layers = [color('b', 0, 100_000)]
+    const laneB2 = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB2)!.layers = [color('b', 0, 100_000)]
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
-    root(p).tracks[1].layers[0].locked = true
+    root(p).tracks.find((t) => t.id === laneB2)!.layers[0].locked = true
     expect(() => applyMoveLayer(p, 'a', root(p).tracks[0].id, 500_000, true)).not.toThrow()
-    expect(root(p).tracks[1].layers[0].t_start_us).toBe(0) // sibling unmoved
+    expect(root(p).tracks.find((t) => t.id === laneB2)!.layers[0].t_start_us).toBe(0) // sibling unmoved
   })
 
   // ── The zero boundary: a move stops, it does not deform ────────────────────
@@ -91,14 +94,15 @@ describe('move link lock checks (not corpus-gated)', () => {
   it('stops a link at 0 as a set — earliest member on 0, spacing kept, nobody shortened', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 1_000_000, 2_000_000)] // target, 1 s duration
-    root(p).tracks[1].layers = [color('b', 500_000, 600_000)]     // earliest member, 100 ms
+    const laneB3 = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB3)!.layers = [color('b', 500_000, 600_000)]     // earliest member, 100 ms
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
 
     // Asks for -1 000 000; the set can only travel -500 000 before `b` hits zero.
     applyMoveLayer(p, 'a', root(p).tracks[0].id, 0, false)
 
     const a = root(p).tracks[0].layers[0]
-    const b = root(p).tracks[1].layers[0]
+    const b = root(p).tracks.find((t) => t.id === laneB3)!.layers[0]
     expect(b.t_start_us).toBe(0)                    // earliest member lands exactly on 0
     expect(a.t_start_us).toBe(500_000)              // ...and keeps its 500 ms lead
     expect(b.t_end_us - b.t_start_us).toBe(100_000) // NEGATIVE CONTROL: the pre-fix code
@@ -117,12 +121,13 @@ describe('move link lock checks (not corpus-gated)', () => {
       fade_in_us: 0, fade_out_us: 0, mute: false, role: 'dialogue',
     }
     root(p).tracks[0].layers = [color('v', 1_000_000, 2_000_000)]
-    root(p).tracks[1].layers = [au]
+    const laneB4 = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB4)!.layers = [au]
     applyLinksCreate(p, seededGen(), ['v', 'au'], null, false)
 
     applyMoveLayer(p, 'v', root(p).tracks[0].id, -3_000_000, false)
 
-    expect(root(p).tracks[1].layers[0].t_start_us).toBe(0)
+    expect(root(p).tracks.find((t) => t.id === laneB4)!.layers[0].t_start_us).toBe(0)
     expect(root(p).tracks[0].layers[0].t_start_us).toBeGreaterThanOrEqual(0)
   })
 
@@ -132,13 +137,13 @@ describe('move link lock checks (not corpus-gated)', () => {
       color('a', 0, 100_000),
       color('b', 200_000, 300_000),
     ]
-    root(p).tracks[1].layers = []
+    const laneB5 = applyAddTrack(p, seededGen(100), null)
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
 
-    applyMoveLayer(p, 'a', root(p).tracks[1].id, 500_000, false)
+    applyMoveLayer(p, 'a', laneB5, 500_000, false)
 
-    expect(root(p).tracks[1].layers.map((l) => l.id)).toEqual(['a'])
-    expect(root(p).tracks[1].layers[0].t_start_us).toBe(500_000)
+    expect(root(p).tracks.find((t) => t.id === laneB5)!.layers.map((l) => l.id)).toEqual(['a'])
+    expect(root(p).tracks.find((t) => t.id === laneB5)!.layers[0].t_start_us).toBe(500_000)
     expect(root(p).tracks[0].layers.map((l) => l.id)).toEqual(['b'])
     expect(root(p).tracks[0].layers[0].t_start_us).toBe(700_000)
   })
@@ -148,11 +153,12 @@ describe('move link lock checks (not corpus-gated)', () => {
 // scope argument, and the destination lane has to be in that same composition.
 describe('applyMoveLayer inside a Group', () => {
   it('moves within the Group with no scope argument; the root is untouched', () => {
-    const { p, groupId, innerId } = groupedProject()
+    const { p, idGen, groupId, innerId } = groupedProject()
     const rootBefore = structuredClone(root(p))
-    applyMoveLayer(p, innerId, group(p, groupId).tracks[1].id, 2_000_000, false)
+    const laneG = applyAddTrack(p, idGen, null, undefined, groupId)
+    applyMoveLayer(p, innerId, laneG, 2_000_000, false)
     expect(group(p, groupId).tracks[0].layers).toEqual([])
-    expect(group(p, groupId).tracks[1].layers[0]).toMatchObject({ id: innerId, t_start_us: 2_000_000, t_end_us: 3_000_000 })
+    expect(group(p, groupId).tracks.find((t) => t.id === laneG)!.layers[0]).toMatchObject({ id: innerId, t_start_us: 2_000_000, t_end_us: 3_000_000 })
     expect(group(p, groupId).duration_us).toBe(3_000_000)
     expect(root(p)).toEqual(rootBefore)
   })
@@ -161,7 +167,7 @@ describe('applyMoveLayer inside a Group', () => {
     const before = structuredClone(p)
     try { applyMoveLayer(p, innerId, root(p).tracks[1].id, 0, false); throw new Error('x') }
     catch (e) { expect(isCommandFailure(e) && e.err).toEqual({ error: 'CrossCompositionMove', layer: innerId, from: groupId, to: p.root_id }) }
-    try { applyMoveLayer(p, refLayerId, group(p, groupId).tracks[1].id, 0, false); throw new Error('x') }
+    try { applyMoveLayer(p, refLayerId, group(p, groupId).tracks[0].id, 0, false); throw new Error('x') }
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('CrossCompositionMove') }
     expect(p).toEqual(before)
   })
@@ -175,6 +181,25 @@ describe('applyMoveLayer inside a Group', () => {
     expect(group(p, groupId).tracks.at(-1)!.layers.map((l) => l.id)).toEqual([innerId])
     expect(root(p).tracks).toHaveLength(rootTracks)
   })
+  it("position 'bottom' inserts the lane at the head of the track vector", () => {
+    const g = seededGen(); const p = blankProject(g, 't')
+    const aRollId = root(p).tracks[0].id
+    const a = applyAddLayer(p, g, aRollId, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 0, 1_000_000)
+    const t = applyMoveLayersToNewTrack(p, g, [a], null, 'bottom')
+    // Bottom of the z-stack: index 0, rendering below the A roll on screen.
+    expect(root(p).tracks[0].id).toBe(t)
+    expect(root(p).tracks[0].layers.map((l) => l.id)).toEqual([a])
+    expect(root(p).tracks[1].id).toBe(aRollId)
+    expect(root(p).tracks[1].layers).toHaveLength(0)
+  })
+  it("position 'top' appends the lane at the tail, the default", () => {
+    const g = seededGen(); const p = blankProject(g, 't')
+    const aRollId = root(p).tracks[0].id
+    const a = applyAddLayer(p, g, aRollId, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 0, 1_000_000)
+    const t = applyMoveLayersToNewTrack(p, g, [a])
+    expect(root(p).tracks.at(-1)!.id).toBe(t)
+    expect(root(p).tracks[0].id).toBe(aRollId)
+  })
 })
 
 /// `anchor` is the whole of the difference between the raise's two entry points:
@@ -187,7 +212,7 @@ describe('applyMoveLayersToNewTrack: the landing', () => {
   function twoLanes() {
     const g = seededGen(); const p = blankProject(g, 't')
     const a = applyAddLayer(p, g, root(p).tracks[0].id, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 1_000_000, 2_000_000)
-    const b = applyAddLayer(p, g, root(p).tracks[1].id, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 3_000_000, 4_000_000)
+    const b = applyAddLayer(p, g, applyAddTrack(p, g, null), colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 3_000_000, 4_000_000)
     return { p, g, a, b }
   }
   const spans = (p: ReturnType<typeof twoLanes>['p'], trackId: string) =>
@@ -210,8 +235,8 @@ describe('applyMoveLayersToNewTrack: the landing', () => {
     const lane = applyMoveLayersToNewTrack(p, g, [a, b], { layerId: a, tStartUs: 2_000_000 })
     // A moved +1 s; B is still 2 s behind it, and both are on the one new lane.
     expect(spans(p, lane)).toEqual([[a, 2_000_000, 3_000_000], [b, 4_000_000, 5_000_000]])
-    // Both source lanes emptied. They are the RESERVED skeleton, which the prune
-    // leaves standing (`transient && !locked`), so what the raise proves here is
+    // Both source lanes emptied. The reserved A-roll stays standing while the
+    // spawned transient source is pruned, so what the raise proves here is
     // that it emptied them — not that it removed them.
     expect(root(p).tracks.at(-1)!.id).toBe(lane)
     expect(root(p).tracks.slice(0, -1).flatMap((t) => t.layers)).toEqual([])

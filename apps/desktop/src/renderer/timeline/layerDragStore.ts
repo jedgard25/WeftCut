@@ -437,12 +437,13 @@ export const useForeignDropStripValidity = (
 /// (`useForeignDropStripAnchorUs`), and draws its own ghost there.
 export const useLayerDragForStrip = (
   compositionId: string | null,
+  spawnTrackId: string = SPAWN_TRACK_ID,
 ): DragState | null =>
   useLayerDragStore((s) =>
     s.drag !== null &&
     s.drag.kind === "move" &&
     s.drag.compositionId === compositionId &&
-    s.drag.overTrackId === SPAWN_TRACK_ID
+    s.drag.overTrackId === spawnTrackId
       ? s.drag
       : null,
   );

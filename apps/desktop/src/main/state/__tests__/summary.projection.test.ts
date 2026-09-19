@@ -4,29 +4,27 @@
 // Project + HistoryStatus + fileExists into the renderer's ProjectSummary view.
 import { describe, it, expect } from 'vitest'
 import { buildProjectSummary, type ProjectSummary } from '../summary'
-import { freshActor, aRollId, bRollId } from './pbt/harness'
+import { freshActor, aRollId } from './pbt/harness'
 import { mediaItemTemplate } from '../mutations/media'
 
 /// The root entry — what a one-composition project's whole timeline is.
 const root = (s: ProjectSummary) => s.compositions[s.root_id]!
 
 describe('ProjectSummary projection', () => {
-  it('projects an empty project with the two reserved tracks and zero layers', () => {
+  it('projects an empty project with the single reserved track and zero layers', () => {
     const a = freshActor()
     const s = buildProjectSummary(a.snapshot(), a.historyStatus(), () => false)
     const r = root(s)
 
     // Top-level counts
-    expect(s.track_count).toBe(2)
+    expect(s.track_count).toBe(1)
     expect(s.layer_count).toBe(0)
     expect(r.duration_us).toBe(0)
 
-    // Two reserved tracks: A-roll first, B-roll second
-    expect(r.tracks).toHaveLength(2)
+    // One reserved track: A-roll
+    expect(r.tracks).toHaveLength(1)
     expect(r.tracks[0].role).toBe('a-roll')
-    expect(r.tracks[1].role).toBe('b-roll')
     expect(r.tracks[0].layers).toHaveLength(0)
-    expect(r.tracks[1].layers).toHaveLength(0)
 
     // Composition defaults
     expect(r.width).toBe(1920)
@@ -64,10 +62,11 @@ describe('ProjectSummary projection', () => {
     expect(layer.params.kind).toBe('Color')
   })
 
-  it('reflects layers on both A-roll and B-roll tracks independently', () => {
+  it('reflects layers on the A-roll and a spawned second lane independently', () => {
     const a = freshActor()
     a.dispatch('add_layer', { track: aRollId(a), kind: 'color', t_start_us: 0, t_end_us: 3_000_000 })
-    a.dispatch('add_layer', { track: bRollId(a), kind: 'color', t_start_us: 1_000_000, t_end_us: 4_000_000 })
+    const secondLane = (a.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    a.dispatch('add_layer', { track: secondLane, kind: 'color', t_start_us: 1_000_000, t_end_us: 4_000_000 })
     const s = buildProjectSummary(a.snapshot(), a.historyStatus(), () => false)
 
     expect(s.layer_count).toBe(2)
@@ -75,14 +74,14 @@ describe('ProjectSummary projection', () => {
     expect(root(s).duration_us).toBe(4_000_000)
 
     const aRoll = root(s).tracks.find((t) => t.role === 'a-roll')!
-    const bRoll = root(s).tracks.find((t) => t.role === 'b-roll')!
+    const other = root(s).tracks.find((t) => t.id === secondLane)!
 
     expect(aRoll.layers).toHaveLength(1)
     expect(aRoll.layers[0].t_end_us).toBe(3_000_000)
 
-    expect(bRoll.layers).toHaveLength(1)
-    expect(bRoll.layers[0].t_start_us).toBe(1_000_000)
-    expect(bRoll.layers[0].t_end_us).toBe(4_000_000)
+    expect(other.layers).toHaveLength(1)
+    expect(other.layers[0].t_start_us).toBe(1_000_000)
+    expect(other.layers[0].t_end_us).toBe(4_000_000)
   })
 
   it('flags a media item as unavailable when fileExists returns false for its path', () => {

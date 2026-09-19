@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LayerBlock, type PendingLayerPlacement } from "./LayerBlock";
+import { cameraPxPerSec } from "./camera";
 import {
   shiftMembersOf,
   useLayerDragForTrack,
@@ -9,6 +10,7 @@ import {
 } from "./layerDragStore";
 import { shiftOnGrids } from "../grid";
 import {
+  DEFAULT_PX_PER_SEC,
   computeLayerSlices,
   layerSliceRect,
   type LayerSlice,
@@ -42,7 +44,7 @@ import {
 } from "./mediaDrag";
 import { previewTrackId } from "./placement";
 
-export function TrackLane({
+export const TrackLane = memo(function TrackLane({
   track,
   registerLaneEl,
   pxPerSec,
@@ -84,7 +86,8 @@ export function TrackLane({
   /// what the drag hit-test measures (`trackIdAtClientY`). Called with null on
   /// unmount.
   registerLaneEl: (trackId: string, el: HTMLElement | null) => void;
-  pxPerSec: number;
+  /// Scale override for isolated tests; the live app reads the camera.
+  pxPerSec?: number;
   height: number;
   /// True when this track's keyframe sub-lanes are expanded — collapsed
   /// in-clip diamonds are hidden (the sub-lanes render them instead).
@@ -162,6 +165,12 @@ export function TrackLane({
   compositionId: string | null;
 }) {
   const { t } = useTranslation();
+  // The camera scale for this lane's own render (gap/drop previews). The lane
+  // does not re-render on zoom — its blocks keep their own geometry in step —
+  // so event-time handlers read the camera directly instead of closing over a
+  // scale that would go stale.
+  const fallbackPxPerSec = pxPerSec ?? DEFAULT_PX_PER_SEC;
+  const pps = cameraPxPerSec(compositionId, fallbackPxPerSec);
   // Null unless this lane is one the gesture concerns — it holds a subject, or
   // the pointer is over it. Every other lane sits out the pointermove entirely
   // (`layerDragStore.ts`).
@@ -305,12 +314,13 @@ export function TrackLane({
       e.preventDefault();
       if (activeMediaDrag === null) return;
       const rect = e.currentTarget.getBoundingClientRect();
+      const livePxPerSec = cameraPxPerSec(compositionId, fallbackPxPerSec);
       const plan = planMediaDrop({
         compositionId,
         track,
         media: activeMediaDrag,
         pointerXPx: e.clientX - rect.left,
-        pxPerSec,
+        pxPerSec: livePxPerSec,
         fpsNum,
         fpsDen,
         snap: { ...mediaDropSnap, currentTimeUs: playheadClockUs(compositionId) },
@@ -318,10 +328,10 @@ export function TrackLane({
       e.dataTransfer.dropEffect = plan.validity === "valid" ? "copy" : "none";
       const slot = mediaDropGhostSlot(height, plan);
       const ghostLeft =
-        rect.left + (plan.tStartUs / 1_000_000) * pxPerSec;
+        rect.left + (plan.tStartUs / 1_000_000) * livePxPerSec;
       const ghostWidth = Math.max(
         4,
-        ((plan.tEndUs - plan.tStartUs) / 1_000_000) * pxPerSec,
+        ((plan.tEndUs - plan.tStartUs) / 1_000_000) * livePxPerSec,
       );
       // The floating media card collapses into a compact point inside the
       // ghost while the ghost itself expands from that same point.
@@ -340,11 +350,11 @@ export function TrackLane({
       activeMediaDrag,
       claimDropTarget,
       compositionId,
+      fallbackPxPerSec,
       fpsDen,
       fpsNum,
       height,
       mediaDropSnap,
-      pxPerSec,
       track,
     ],
   );
@@ -384,7 +394,7 @@ export function TrackLane({
             track,
             media: payload,
             pointerXPx: e.clientX - rect.left,
-            pxPerSec,
+            pxPerSec: cameraPxPerSec(compositionId, fallbackPxPerSec),
             fpsNum,
             fpsDen,
             snap: { ...mediaDropSnap, currentTimeUs: playheadClockUs(compositionId) },
@@ -404,11 +414,11 @@ export function TrackLane({
     [
       compositionId,
       endMediaDrag,
+      fallbackPxPerSec,
       fpsDen,
       fpsNum,
       mediaDropSnap,
       onMediaDrop,
-      pxPerSec,
       track,
     ],
   );
@@ -519,9 +529,9 @@ export function TrackLane({
           data-end-us={selectedGap.e}
           className="absolute z-[1] rounded bg-ring/15 outline outline-2 -outline-offset-2 outline-ring"
           style={{
-            left: (selectedGap.s / 1_000_000) * pxPerSec,
+            left: (selectedGap.s / 1_000_000) * pps,
             top: gapBand.top,
-            width: Math.max(2, ((selectedGap.e - selectedGap.s) / 1_000_000) * pxPerSec),
+            width: Math.max(2, ((selectedGap.e - selectedGap.s) / 1_000_000) * pps),
             height: gapBand.height,
           }}
           title={t("timeline.gap_title", {
@@ -544,13 +554,13 @@ export function TrackLane({
                 : "border-blue-200 bg-blue-500/45"
           }`}
           style={{
-            left: (visibleDropPreview.plan.tStartUs / 1_000_000) * pxPerSec,
+            left: (visibleDropPreview.plan.tStartUs / 1_000_000) * pps,
             top: ghostSlot.top,
             width: Math.max(
               4,
               ((visibleDropPreview.plan.tEndUs - visibleDropPreview.plan.tStartUs) /
                 1_000_000) *
-                pxPerSec,
+                pps,
             ),
             height: ghostSlot.height,
             "--media-drop-ghost-origin-x": `${Math.min(
@@ -560,7 +570,7 @@ export function TrackLane({
                 (((visibleDropPreview.plan.tEndUs -
                   visibleDropPreview.plan.tStartUs) /
                   1_000_000) *
-                  pxPerSec) /
+                  pps) /
                   2,
               ),
             )}px`,
@@ -603,7 +613,7 @@ export function TrackLane({
             trackKind={track.kind}
             trackLocked={track.locked}
             isTrackExpanded={isExpanded}
-            pxPerSec={pxPerSec}
+            compositionId={compositionId}
             laneHeight={height}
             slice={slices.get(layer.id) ?? "full"}
             isPrimary={selectedLayerId === layer.id}
@@ -635,7 +645,7 @@ export function TrackLane({
               trackKind={track.kind}
               trackLocked={track.locked}
               isTrackExpanded={isExpanded}
-              pxPerSec={pxPerSec}
+              compositionId={compositionId}
               laneHeight={height}
               slice={slices.get(preview.sliceLayer.id) ?? "full"}
               isPrimary={false}
@@ -667,7 +677,7 @@ export function TrackLane({
             <TransitionChip
               key={chip.transition.id}
               chip={chip}
-              pxPerSec={pxPerSec}
+              compositionId={compositionId}
               laneHeight={height}
               slice={slices.get(chip.toLayer.id) ?? "full"}
               isSelected={selectedTransitionId === chip.transition.id}
@@ -691,7 +701,7 @@ export function TrackLane({
       />
     </div>
   );
-}
+});
 
 /// The ghost occupies the band the dropped layer's chip will get. Translating
 /// the drop plan's overlap vocabulary into a `LayerSlice` is the only part of

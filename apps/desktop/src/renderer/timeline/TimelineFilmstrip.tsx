@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDprVersion } from "./hooks/useDprVersion";
 import { useSegmentVisibility } from "./hooks/useSegmentVisibility";
+import { DEFAULT_PX_PER_SEC } from "./geometry";
+import { useCameraPxPerSec } from "./camera";
 import { tileEngine } from "./tileEngine/TileEngine";
 import {
   FILMSTRIP_MAX_LOD,
@@ -21,8 +23,8 @@ const RENDER_TILE_PX = 2048;
 
 /// Param-churn (pxPerSec / trim / height) re-request delay: coalesces a burst
 /// of zoom-wheel or trim-drag frames into one request pass instead of one per
-/// intermediate value. Mount, mediaId changes, and engine `subscribe`
-/// notifications bypass this and request immediately.
+/// intermediate value. Mount and mediaId changes request immediately;
+/// engine notifications batch into one short frame window.
 export const FILMSTRIP_FETCH_DEBOUNCE_MS = 140;
 
 /// How far to EITHER side of the target LOD the painter's pass falls back to
@@ -138,7 +140,7 @@ function tileRangeForPxWindow(
 /// tiles inside a VISIBLE segment's fetch window (see
 /// `visibleSegmentWindows`), (re)issues `engine.request` for any key that's
 /// missing or errored. Mount, a genuine mediaId change, engine `subscribe`
-/// notifications, and segment-visibility changes run immediately; geometry
+/// notifications batch briefly; segment-visibility changes run immediately; geometry
 /// churn on the same media debounces — same run/apply seam shape as
 /// TimelineWaveform's `useWindowData`. Returns a version counter bumped by
 /// the subscribe callback and by each completed pass, so the (separate,
@@ -186,7 +188,9 @@ function useFilmstripRequests({
       // Overlapping neighbour windows revisit indices; dedupe so each tile is
       // considered once per pass.
       const seen = new Set<number>();
-      for (const w of visibleSegmentWindows(segments, isSegmentVisible, totalWidthPx)) {
+      const windows = visibleSegmentWindows(segments, isSegmentVisible, totalWidthPx);
+      if (windows.length === 0) return;
+      for (const w of windows) {
         const { first, last } = tileRangeForPxWindow(
           w, srcInUs, srcOutUs, totalWidthPx, spacing, thumbWidthUs, mediaDurationUs,
         );
@@ -201,16 +205,24 @@ function useFilmstripRequests({
       setVersion((v) => v + 1);
     };
 
-    const unsub = tileEngine.subscribe(mediaId, run);
+    // A row of tiles often completes in a burst. Each completion used to run
+    // the full request pass and reset every visible canvas in a separate React
+    // update. Coalesce those notifications; mount and visibility remain eager.
+    let notifyTimer: ReturnType<typeof setTimeout> | null = null;
+    const onTileChange = () => {
+      if (notifyTimer !== null) return;
+      notifyTimer = setTimeout(() => { notifyTimer = null; run(); }, 16);
+    };
+    const unsub = tileEngine.subscribe(mediaId, onTileChange);
 
-    // A segment scrolling into view is as urgent as a subscribe notify: its
-    // pixels are blank until its tiles are fetched, so it must not wait out
-    // the param-churn debounce.
+    // A segment scrolling into view has blank pixels until its tiles are
+    // fetched, so it runs now rather than waiting for either debounce.
     if (isNewMedia || visibilityChanged) {
       run();
       return () => {
         cancelled = true;
         unsub();
+        if (notifyTimer !== null) clearTimeout(notifyTimer);
       };
     }
 
@@ -218,6 +230,7 @@ function useFilmstripRequests({
     return () => {
       cancelled = true;
       unsub();
+      if (notifyTimer !== null) clearTimeout(notifyTimer);
       clearTimeout(timer);
     };
   }, [
@@ -291,9 +304,12 @@ function computeFilmstripDataState(
 
 export function TimelineFilmstrip({
   mediaId,
+  compositionId,
+  tStartUs,
+  tEndUs,
   srcInUs,
   srcOutUs,
-  layerWidthPx,
+  layerWidthPx = 0,
   layerHeightPx,
   pxPerSec,
   colorHint,
@@ -303,11 +319,19 @@ export function TimelineFilmstrip({
   mediaDurationUs,
 }: {
   mediaId: string;
+  /// The Panel's composition — the camera key. Absent in isolated tests, which
+  /// hand a fixed `layerWidthPx`/`pxPerSec`.
+  compositionId?: string | null | undefined;
+  /// Live clip edges. When present the strip derives its own width from the
+  /// camera, so it re-maps on zoom without its parent block re-rendering.
+  tStartUs?: number | undefined;
+  tEndUs?: number | undefined;
   srcInUs: number;
   srcOutUs: number;
-  layerWidthPx: number;
+  /// Fallback width for isolated tests; the live app passes live edges.
+  layerWidthPx?: number | undefined;
   layerHeightPx: number;
-  pxPerSec: number;
+  pxPerSec?: number | undefined;
   colorHint: string;
   enabled: boolean;
   /// Natural media dimensions, when known — used only to hold the thumbnail's
@@ -319,12 +343,21 @@ export function TimelineFilmstrip({
   /// known. Undefined leaves the range uncapped.
   mediaDurationUs?: number | undefined;
 }) {
-  const totalWidthPx = Math.max(1, Math.ceil(layerWidthPx));
+  const pps = useCameraPxPerSec(
+    compositionId ?? null,
+    pxPerSec ?? DEFAULT_PX_PER_SEC,
+  );
+  const liveWidthPx =
+    tStartUs !== undefined && tEndUs !== undefined
+      ? Math.max(((tEndUs - tStartUs) / 1_000_000) * pps, 4)
+      : layerWidthPx;
+  const totalWidthPx = Math.max(1, Math.ceil(liveWidthPx));
   const laneHeightPx = Math.max(1, Math.ceil(layerHeightPx));
   const thumbWidthPx = filmstripThumbWidthPx(laneHeightPx, mediaWidth, mediaHeight);
-  const targetLod = chooseFilmstripLod(thumbWidthPx, pxPerSec);
-  const thumbWidthUs = thumbWidthUsFor(thumbWidthPx, pxPerSec);
+  const targetLod = chooseFilmstripLod(thumbWidthPx, pps);
+  const thumbWidthUs = thumbWidthUsFor(thumbWidthPx, pps);
   const dprVersion = useDprVersion();
+  const stripRef = useRef<HTMLDivElement | null>(null);
 
   const tiles = useMemo<SegmentGeom[]>(() => {
     const n = Math.max(1, Math.ceil(totalWidthPx / RENDER_TILE_PX));
@@ -333,6 +366,61 @@ export function TimelineFilmstrip({
       widthPx: Math.min(RENDER_TILE_PX, totalWidthPx - i * RENDER_TILE_PX),
     }));
   }, [totalWidthPx]);
+
+  // A long source at high zoom can have thousands of canvas segments. An
+  // IntersectionObserver prevents offscreen PAINTS, but mounting every canvas
+  // still allocates DOM/backing stores and can exhaust the renderer. Mount only
+  // the viewport's segments plus one segment of overscan on either side.
+  const virtualize = enabled && tiles.length > 64 && typeof IntersectionObserver !== "undefined";
+  const [mountedRange, setMountedRange] = useState<{ first: number; last: number } | undefined>(undefined);
+  useEffect(() => {
+    if (!virtualize) return;
+    const el = stripRef.current;
+    if (!el) return;
+    let frame = 0;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      // A hidden/not-yet-laid-out strip has no usable geometry. Mounting its
+      // whole tile array here would recreate the memory spike we avoid.
+      if (rect.width <= 0) {
+        setMountedRange((prev) => prev?.first === 1 && prev.last === 0 ? prev : { first: 1, last: 0 });
+        return;
+      }
+      let left = 0;
+      let right = window.innerWidth;
+      for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+        const overflow = window.getComputedStyle(parent).overflowX;
+        if (overflow !== "auto" && overflow !== "scroll" && overflow !== "hidden") continue;
+        const clip = parent.getBoundingClientRect();
+        left = Math.max(left, clip.left);
+        right = Math.min(right, clip.right);
+      }
+      const first = Math.max(0, Math.floor((left - rect.left) / RENDER_TILE_PX) - 1);
+      const last = Math.min(tiles.length - 1, Math.floor((right - rect.left) / RENDER_TILE_PX) + 1);
+      setMountedRange((prev) => prev?.first === first && prev.last === last ? prev : { first, last });
+    };
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; measure(); });
+    };
+    measure();
+    document.addEventListener("scroll", schedule, true);
+    window.addEventListener("resize", schedule);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    resizeObserver?.observe(el);
+    return () => {
+      document.removeEventListener("scroll", schedule, true);
+      window.removeEventListener("resize", schedule);
+      resizeObserver?.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [virtualize, tiles.length, totalWidthPx]);
+  const mountedTiles = useMemo(() => !virtualize
+    ? tiles
+    : mountedRange === undefined || mountedRange.last < mountedRange.first
+      ? []
+      : tiles.slice(mountedRange.first, mountedRange.last + 1),
+  [tiles, virtualize, mountedRange]);
 
   // ---- Per-segment visibility ---------------------------------------------
   // Shared strip-visibility hook (also used by TimelineWaveform): the
@@ -348,7 +436,7 @@ export function TimelineFilmstrip({
     thumbWidthUs,
     mediaDurationUs,
     enabled,
-    segments: tiles,
+    segments: mountedTiles,
     totalWidthPx,
     isSegmentVisible,
     visibilityVersion,
@@ -368,7 +456,7 @@ export function TimelineFilmstrip({
         mediaDurationUs,
         totalWidthPx,
         laneHeightPx,
-        visibleSegmentWindows(tiles, isSegmentVisible, totalWidthPx),
+        visibleSegmentWindows(mountedTiles, isSegmentVisible, totalWidthPx),
       ),
     );
     // dprVersion doesn't affect which tiles are consulted, only the backing
@@ -386,26 +474,27 @@ export function TimelineFilmstrip({
     totalWidthPx,
     laneHeightPx,
     dprVersion,
-    tiles,
+    mountedTiles,
     isSegmentVisible,
     visibilityVersion,
   ]);
 
   return (
     <div
+      ref={stripRef}
       data-testid="timeline-filmstrip"
       data-state={enabled ? dataState : "disabled"}
-      className="flex h-full w-full overflow-hidden"
+      className="relative h-full w-full overflow-hidden"
       style={{
         backgroundColor: colorHint,
         backgroundImage:
-          layerWidthPx >= 32
+          liveWidthPx >= 32
             ? "repeating-linear-gradient(90deg, rgba(255,255,255,0.07) 0 1px, transparent 1px 12px)"
             : undefined,
       }}
     >
       {enabled &&
-        tiles.map((tile) => (
+        mountedTiles.map((tile) => (
           <FilmstripTileCanvas
             key={tile.startPx}
             mediaId={mediaId}
@@ -476,8 +565,10 @@ function FilmstripTileCanvas({
     const canvas = ref.current;
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(segmentWidthPx * dpr));
-    canvas.height = Math.max(1, Math.round(laneHeightPx * dpr));
+    const backingWidth = Math.max(1, Math.round(segmentWidthPx * dpr));
+    const backingHeight = Math.max(1, Math.round(laneHeightPx * dpr));
+    if (canvas.width !== backingWidth) canvas.width = backingWidth;
+    if (canvas.height !== backingHeight) canvas.height = backingHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -485,7 +576,13 @@ function FilmstripTileCanvas({
 
     for (const lod of paintLodOrder(targetLod)) {
       const spacing = spacingUs(lod);
-      const { first, last } = visibleTileRange(srcInUs, srcOutUs, spacing, thumbWidthUs, mediaDurationUs);
+      // Paint only tiles that can touch this canvas. A long Group can have
+      // thousands of source-time tiles; iterating all of them for every
+      // visible segment made entering the Group stall the renderer.
+      const { first, last } = tileRangeForPxWindow(
+        { loPx: segmentStartPx, hiPx: segmentStartPx + segmentWidthPx },
+        srcInUs, srcOutUs, totalWidthPx, spacing, thumbWidthUs, mediaDurationUs,
+      );
       for (let i = first; i <= last; i++) {
         const entry = tileEngine.get<FilmstripTileValue>(filmstripTileKey(mediaId, lod, i));
         if (entry?.state !== "ready") continue;
@@ -519,6 +616,8 @@ function FilmstripTileCanvas({
       ref={ref}
       data-testid="timeline-filmstrip-tile"
       style={{
+        position: "absolute",
+        left: `${segmentStartPx}px`,
         width: `${segmentWidthPx}px`,
         height: `${laneHeightPx}px`,
         contentVisibility: "auto",

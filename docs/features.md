@@ -840,11 +840,11 @@ Locks read leniently: only a layer or lane that would actually move blocks
 (`RippleLockedLayer` / `TrackLocked`), so locking a logo at the head does not
 disable the ripple for the rest of the film.
 
-**Links.** A split leaves every piece of a linked clip in one link, so
-deleting a middle piece always leaves link members before the hole and after
-it — that is the ripple's headline case and it is allowed: the pieces before
-the cut end at it, and bringing the pieces after it up to them is the point.
-The refusal (`RippleLinkStraddles`) is for a member that *reaches across* the
+**Links.** A split cuts a link into a left pair and a right pair — never one
+growing link — so deleting a middle piece leaves whole pairs before the hole
+and after it: the pieces before the cut end at it, and bringing the pieces
+after it up to them is the point, and the ripple allows it. The refusal
+(`RippleLinkStraddles`) is for a member that *reaches across* the
 cut — starts before the hole and ends after its start — while another member
 would move: a J-cut whose audio would drift off its picture. Because a plain
 click on a linked clip selects the whole link, picking one piece of a split

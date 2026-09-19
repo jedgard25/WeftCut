@@ -160,11 +160,14 @@ describe('resolveEntityLabels', () => {
   // track vector, which is the same number the renderer counts.
   it('names a track by its label, else its role, else its position', () => {
     const p = fresh()
-    const [t0, t1] = root(p).tracks
+    const [t0] = root(p).tracks
+    // BRoll stays a valid role for old projects — the fresh skeleton just no
+    // longer mints one, so the b-roll rung is exercised on a carried-over lane.
+    const t1 = { ...t0, id: 'T-broll', role: 'BRoll' as const, label: null }
     expect(labels(withRoot(p, { tracks: [{ ...t0, label: 'A-Roll' }, t1] }), [{ kind: 'Track', id: t0.id }])).toEqual([{ text: 'A-Roll' }])
     expect(labels(p, [{ kind: 'Track', id: t0.id }])).toEqual([{ label_key: 'tracks.roles.a-roll' }])
-    expect(labels(p, [{ kind: 'Track', id: t1.id }])).toEqual([{ label_key: 'tracks.roles.b-roll' }])
-    const extra = { ...t1, id: 'T-extra', role: null, label: null }
+    expect(labels(withRoot(p, { tracks: [t0, t1] }), [{ kind: 'Track', id: t1.id }])).toEqual([{ label_key: 'tracks.roles.b-roll' }])
+    const extra = { ...t0, id: 'T-extra', role: null, label: null }
     expect(labels(withRoot(p, { tracks: [t0, t1, extra] }), [{ kind: 'Track', id: 'T-extra' }]))
       .toEqual([{ label_key: 'tracks.positional', label_args: { n: 3 } }])
   })
@@ -173,7 +176,8 @@ describe('resolveEntityLabels', () => {
   // strictly worse than the kind rung the same track would get from `null`.
   it('treats a blank track label as absent, exactly as the layer chain does', () => {
     const p = fresh()
-    const [t0, t1] = root(p).tracks
+    const [t0] = root(p).tracks
+    const t1 = { ...t0, id: 'T-broll', role: 'BRoll' as const, label: null }
     for (const blank of ['', '   ']) {
       expect(labels(withRoot(p, { tracks: [{ ...t0, label: blank }, t1] }), [{ kind: 'Track', id: t0.id }]))
         .toEqual([{ label_key: 'tracks.roles.a-roll' }])

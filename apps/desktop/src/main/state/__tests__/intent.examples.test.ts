@@ -3,7 +3,7 @@
 // cannot articulate on their own.
 import { describe, it, expect } from 'vitest'
 import type { DispatchResult } from '../actor'
-import { freshActor, wireSnapshot, aRollId, bRollId, wireRoot } from './pbt/harness'
+import { freshActor, wireSnapshot, aRollId, wireRoot } from './pbt/harness'
 
 /** Narrow a DispatchResult to its value, failing fast if the dispatch failed.
  *  Keeps test bodies free of repetitive narrowing boilerplate. */
@@ -42,11 +42,12 @@ describe('timeline mutation intent', () => {
     expect(wireRoot(snap).duration_us).toBe(2_500_000)
     expect(wireRoot(snap).duration_pinned).toBe(false)
     // Adding a shorter layer does NOT shrink duration (high-water mark).
-    // It goes on B-roll: a same-track [0,1s] add on A-roll would overlap the
+    // It goes on a spawned second lane: a same-track [0,1s] add on A-roll would overlap the
     // existing [0,2.5s] layer and be rejected by the linear-NLE rule, leaving
-    // the duration unchanged for the WRONG reason (vacuous). On B-roll the
+    // the duration unchanged for the WRONG reason (vacuous). On a second lane the
     // short layer is genuinely present, so the 2.5s high-water mark is exercised.
-    const shortAdd = a.dispatch('add_layer', { track: bRollId(a), kind: 'color', t_start_us: 0, t_end_us: 1_000_000 })
+    const secondLane = (a.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    const shortAdd = a.dispatch('add_layer', { track: secondLane, kind: 'color', t_start_us: 0, t_end_us: 1_000_000 })
     expect(shortAdd.ok).toBe(true)
     expect(wireRoot(wireSnapshot(a)).duration_us).toBe(2_500_000)
   })
@@ -122,7 +123,7 @@ describe('timeline mutation intent', () => {
   it('link trim shifts all aligned members by the same delta (coupled alignment)', () => {
     const a = freshActor()
     const trackA = aRollId(a)
-    const trackB = bRollId(a)
+    const trackB = (a.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
     const l1Id = okValue(a.dispatch('add_layer', { track: trackA, kind: 'color', t_start_us: 0, t_end_us: 8_000_000 })) as string
     const l2Id = okValue(a.dispatch('add_layer', { track: trackB, kind: 'text', t_start_us: 0, t_end_us: 8_000_000 })) as string
     a.dispatch('links_create', { layers: [l1Id, l2Id], label: 'sync' })

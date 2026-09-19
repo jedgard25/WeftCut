@@ -18,6 +18,7 @@ import {
   playheadClockUs,
   playheadClockUsIn,
   playheadLocalUs,
+  localPlayheadIn,
   previewClockUs,
   previewLocalUs,
   seekLocalUs,
@@ -209,6 +210,18 @@ describe("writing the moment", () => {
     openComposition(G1, "late");
     seekLocalUs(G1, 4_500_000);
     expect(playheadTimeUs()).toBe(16_500_000);
+  });
+
+  it("keeps a shortened Group's full timeline scrubbable past the root end", () => {
+    const shortened = project();
+    shortened.compositions[ROOT_ID]!.duration_us = 1 * S;
+    useProjectStore.getState().apply(shortened);
+    openComposition(G1, "late");
+
+    seekLocalUs(G1, 4_500_000);
+    expect(playheadTimeUs()).toBe(16_500_000);
+    expect(localPlayheadIn(G1, anchorFrameOf(G1))).toBe(4_500_000);
+    expect(localPlayheadIn(ROOT_ID, anchorFrameOf(ROOT_ID))).toBeNull();
   });
 
   it("sends the same local position elsewhere once the anchor moves", () => {

@@ -165,7 +165,7 @@ describe('production adapter routing — paste_layer (rich)', () => {
       track.layers.some((layer) => layer.id === (second.ok ? second.value : null)),
     )!.id
     expect(secondTarget).toBe(firstTarget)
-    expect(root(a.snapshot()).tracks).toHaveLength(3)
+    expect(root(a.snapshot()).tracks).toHaveLength(2)
 
     const conflicting = a.command('paste_layer', { layerId: sourceId, tStartUs: 6_000_000 })
     expect(conflicting.ok).toBe(true)
@@ -173,7 +173,7 @@ describe('production adapter routing — paste_layer (rich)', () => {
       track.layers.some((layer) => layer.id === (conflicting.ok ? conflicting.value : null)),
     )!.id
     expect(conflictingTarget).not.toBe(firstTarget)
-    expect(root(a.snapshot()).tracks).toHaveLength(4)
+    expect(root(a.snapshot()).tracks).toHaveLength(3)
   })
 
   it('rejects a missing copied layer before creating a track', () => {
@@ -185,7 +185,7 @@ describe('production adapter routing — paste_layer (rich)', () => {
     expect(r.ok).toBe(false)
     if (r.ok) return
     expect(r.error.error).toBe('LayerNotFound')
-    expect(root(a.snapshot()).tracks).toHaveLength(2)
+    expect(root(a.snapshot()).tracks).toHaveLength(1)
   })
 })
 

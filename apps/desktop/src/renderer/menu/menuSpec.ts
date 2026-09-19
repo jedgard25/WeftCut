@@ -72,6 +72,10 @@ export const EDIT_MENU: MenuSection = {
     // the relationship a user needs to see — reach for the tool to cut where
     // you point, reach for this to cut where you are.
     "splitAtPlayhead",
+    // Trim to the playhead and close what the cut vacated: the collapse half
+    // of the cut family, beside the split it follows.
+    "collapseLeftToPlayhead",
+    "collapseRightToPlayhead",
     "---",
     // The two deletes, as a pair and in Premiere's order: Clear, then Ripple
     // Delete. The menu carried NEITHER before this pair — Delete was a key and a

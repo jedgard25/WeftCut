@@ -103,7 +103,7 @@ export function KeyframeLaneHeaders({
         return (
           <div
             key={d.paramKey}
-            className="border-b border-border-soft px-1.5 text-[10px] text-muted-foreground/80"
+            className="timeline-header-fade border-b border-border-soft px-1.5 text-[10px] text-muted-foreground/80"
             style={{ height: expanded ? KF_SUBLANE_EXPANDED_H : KF_SUBLANE_H }}
           >
             <div className="flex items-center justify-between gap-1" style={{ height: KF_SUBLANE_H }}>

@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { LayerSummary, TrackSummary } from "../ipc";
 import {
   evaluateTimelinePlacements,
+  isSpawnTrackId,
   placementRefuses,
   previewTrackId,
+  SPAWN_BOTTOM_TRACK_ID,
   SPAWN_TRACK_ID,
   type TimelinePlacement,
 } from "./placement";
@@ -147,6 +149,44 @@ describe("evaluateTimelinePlacements", () => {
       conflictingLayerIds: [],
       sharesLane: false,
     });
+  });
+
+  // The bottom strip's twin: same answer, so the side only decides where the
+  // actor inserts the lane, never whether the drop is allowed.
+  it("answers spawn for the bottom spawn target too", () => {
+    const result = evaluateTimelinePlacements({
+      tracks: [track("track-1", [layer("busy", 0, 10_000_000)])],
+      placements: [
+        placement("incoming", SPAWN_BOTTOM_TRACK_ID, 1_000_000, 3_000_000),
+      ],
+      replacedLayerIds: new Set(),
+    });
+
+    expect(result).toEqual({
+      validity: "spawn",
+      conflictingLayerIds: [],
+      sharesLane: false,
+    });
+  });
+
+  it("refuses a self-overlapping set on the bottom lane like on the top one", () => {
+    const result = evaluateTimelinePlacements({
+      tracks: [],
+      placements: [
+        placement("a", SPAWN_BOTTOM_TRACK_ID, 1_000_000, 3_000_000),
+        placement("b", SPAWN_BOTTOM_TRACK_ID, 2_000_000, 4_000_000),
+      ],
+      replacedLayerIds: new Set(),
+    });
+
+    expect(result.validity).toBe("collision");
+    expect(result.conflictingLayerIds).toEqual(["a", "b"]);
+  });
+
+  it("names both spawn targets as lanes that do not exist yet", () => {
+    expect(isSpawnTrackId(SPAWN_TRACK_ID)).toBe(true);
+    expect(isSpawnTrackId(SPAWN_BOTTOM_TRACK_ID)).toBe(true);
+    expect(isSpawnTrackId("track-1")).toBe(false);
   });
 
   it("refuses a spawn whose own projections would overlap on the one new lane", () => {

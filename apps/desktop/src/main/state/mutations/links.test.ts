@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Layer, type LayerParams, type Project } from '../model'
+import { applyAddTrack } from './add'
 import { indexLinks, linkSiblingsExcluding, checkLinkLock, layerIdSet, locateLink } from './links'
 import { isCommandFailure } from '../errors'
 import { group, groupedProject, root } from '../__tests__/fixtures/project'
@@ -43,9 +44,11 @@ describe('link read-side helpers', () => {
   })
   it('checkLinkLock throws TrackLocked when a touched member sits on a locked track', () => {
     const p = withTwo()
-    // move 'b' to B-roll and lock that track
+    // move 'b' to a spawned lane and lock that track
+    const laneB = applyAddTrack(p, seededGen(100), null)
     root(p).tracks[0].layers = [color('a', 0, 100)]
-    root(p).tracks[1].layers = [color('b', 200, 300)]; root(p).tracks[1].locked = true
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 200, 300)]
+    root(p).tracks.find((t) => t.id === laneB)!.locked = true
     try { checkLinkLock(root(p), 'a', ['a', 'b']); throw new Error('expected throw') }
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('TrackLocked') }
   })

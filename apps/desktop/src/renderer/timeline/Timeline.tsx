@@ -468,7 +468,9 @@ export function Timeline({
   const tailSnapStrengthPx = useTailSnapStrengthPx();
 
   const orderedTracks = useMemo(() => {
-    const all = visualOrderedTracks(tracks);
+    // Older projects can still carry empty reserved B-roll lanes. Keep their
+    // document state intact, but collapse every empty row in the timeline.
+    const all = visualOrderedTracks(tracks).filter(({ track }) => track.layers.length > 0);
     if (displayMode === "AllTracks") return all;
     // A/B Roll filter: keep role-stamped tracks. Inline-reveal lets one
     // additional hidden track survive the filter at its natural
@@ -849,16 +851,26 @@ export function Timeline({
     },
     [],
   );
-  // The drop strip's row, measured by the same hit-test. Held apart from the
-  // registry above because that registry maps TRACK ids to lanes and the strip is
+  // The drop strips' rows, measured by the same hit-test. Held apart from the
+  // registry above because that registry maps TRACK ids to lanes and a strip is
   // not a track — no consumer of it should have to know about a row that is not
   // one (see `useLayerDrag`'s `dropStripEl`).
   const dropStripElRef = useRef<HTMLDivElement | null>(null);
+  const dropStripBottomElRef = useRef<HTMLDivElement | null>(null);
 
   const { heightDrag, beginHeightDrag } = useHeightDrag({
     trackHeightsRef,
     setTrackHeights,
   });
+  // `beginHeightDrag(id)` returns a fresh closure each call; cache one per row
+  // so `TrackLane`'s memo can bail on a zoom re-render.
+  const heightDragStartByTrack = useMemo(() => {
+    const map = new Map<string, (e: React.PointerEvent) => void>();
+    for (const { track } of orderedTracks) {
+      map.set(track.id, beginHeightDrag(track.id));
+    }
+    return map;
+  }, [orderedTracks, beginHeightDrag]);
 
   // A spawned lane carries no role, so the A/B Roll filter above would hide the clip
   // that just landed on it. Route it through the existing inline-reveal (R.7)
@@ -907,6 +919,7 @@ export function Timeline({
       orderedTracks,
       laneEls: laneElsRef,
       dropStripEl: dropStripElRef,
+      dropStripBottomEl: dropStripBottomElRef,
       pxPerSec,
       fpsNum,
       fpsDen,
@@ -924,10 +937,11 @@ export function Timeline({
   // the preview follows focus — the picture along with it (ADR 0053 decision 4).
   const onMediaDrop = useCallback(
     async (
-      // null = the drop strip: no lane exists yet, so one is created first.
+      // null = a drop strip: no lane exists yet, so one is created first.
       track: TrackSummary | null,
       payload: MediaDragPayload,
       plan: MediaDropPlan,
+      spawnPosition: "top" | "bottom" = "top",
     ) => {
       // No kind gate: tracks are kind-agnostic, so any media kind drops on any
       // track and nothing is auto-routed elsewhere. Overlap is the main-process
@@ -941,7 +955,7 @@ export function Timeline({
       if (payload.source === "composition") {
         try {
           const trackId =
-            track !== null ? track.id : await addTrackIn(compositionId);
+            track !== null ? track.id : await addTrackIn(compositionId, spawnPosition);
           await addGroupLayerIn({
             compositionId,
             sourceCompositionId: payload.compositionId,
@@ -983,7 +997,7 @@ export function Timeline({
         // a lane that no longer belongs to it. A fresh import empties nothing, so
         // the first undo removes the layer and the second removes the lane —
         // each step reversing exactly what it did.
-        const trackId = track !== null ? track.id : await addTrackIn(compositionId);
+        const trackId = track !== null ? track.id : await addTrackIn(compositionId, spawnPosition);
         await addMediaLayer(trackId, payload.mediaId, plan.rawStartUs);
         if (track === null) revealSpawnedTrack(trackId);
         await onMutated();
@@ -1038,10 +1052,11 @@ export function Timeline({
       const track = tracks.find((candidate) =>
         candidate.layers.some((l) => l.id === layerId),
       );
-      if (canvas && track && !track.locked && pxPerSec > 0) {
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      if (canvas && track && !track.locked && nowPxPerSec > 0) {
         const rect = canvas.getBoundingClientRect();
-        const xUs = ((e.clientX - rect.left) / pxPerSec) * 1_000_000;
-        const toleranceUs = (CUT_CLICK_TOLERANCE_PX / pxPerSec) * 1_000_000;
+        const xUs = ((e.clientX - rect.left) / nowPxPerSec) * 1_000_000;
+        const toleranceUs = (CUT_CLICK_TOLERANCE_PX / nowPxPerSec) * 1_000_000;
         cut = findCutNear(
           track.layers,
           xUs,
@@ -1059,7 +1074,7 @@ export function Timeline({
         cut,
       });
     },
-    [tracks, pxPerSec, fpsNum, fpsDen, selectedLayerIds, selectFromClick],
+    [tracks, fpsNum, fpsDen, selectedLayerIds, selectFromClick],
   );
 
   // Create a transition at a cut (context-menu action). Default duration is
@@ -1130,6 +1145,12 @@ export function Timeline({
       }
     },
     [onMutated],
+  );
+  // Void-returning adapter for the lane's `onChipResize` prop — stable so
+  // `TrackLane`'s memo can bail on a zoom re-render.
+  const onChipResizeVoid = useCallback(
+    (args: TransitionResizeArgs) => void onChipResize(args),
+    [onChipResize],
   );
 
   const onChipMenuDelete = useCallback(
@@ -1353,18 +1374,22 @@ export function Timeline({
     (e: React.MouseEvent, trackId: string) => {
       const canvas = canvasRef.current;
       const track = tracks.find((candidate) => candidate.id === trackId);
-      if (canvas === null || track === undefined || track.locked || pxPerSec <= 0) {
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      if (canvas === null || track === undefined || track.locked || nowPxPerSec <= 0) {
         return;
       }
       const rect = canvas.getBoundingClientRect();
-      const gap = gapAt(track.layers, ((e.clientX - rect.left) / pxPerSec) * 1_000_000);
+      const gap = gapAt(
+        track.layers,
+        ((e.clientX - rect.left) / nowPxPerSec) * 1_000_000,
+      );
       if (gap === null) return;
       e.preventDefault();
       setGapSelection(track.id, gap.s, gap.e);
       clearKeyframeSelection();
       setGapMenu({ x: e.clientX, y: e.clientY });
     },
-    [pxPerSec, tracks],
+    [tracks],
   );
 
   const onSeparateAudio = useCallback(
@@ -1415,7 +1440,8 @@ export function Timeline({
       const rawUs = Math.max(0, Math.round((x / pxPerSec) * 1_000_000));
       const localUs = snapFrameRound(rawUs, fpsNum, fpsDen);
       const rootUs = rootUsOf(compositionId, localUs);
-      if (rootUs === null) {
+      const rootId = useProjectStore.getState().summary?.root_id;
+      if (rootUs === null || (rootId !== undefined && compositionId !== rootId)) {
         seekLocalUs(compositionId, localUs);
         return;
       }
@@ -1429,7 +1455,10 @@ export function Timeline({
       if (!canvasRef.current) return null;
       const rect = canvasRef.current.getBoundingClientRect();
       const x = clientX - rect.left;
-      const rawUs = Math.max(0, Math.round((x / pxPerSec) * 1_000_000));
+      // Event-time scale, so this callback's identity does not change on zoom
+      // (which would re-render every lane and clip through the memo).
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      const rawUs = Math.max(0, Math.round((x / nowPxPerSec) * 1_000_000));
       const frameUs = snapFrameRound(rawUs, fpsNum, fpsDen);
       const atUs = snapTimeToTimelineBoundary({
         timeUs: frameUs,
@@ -1447,7 +1476,7 @@ export function Timeline({
         currentTimeUs: playheadClockUs(compositionId),
         fpsNum,
         fpsDen,
-        pxPerSec,
+        pxPerSec: pxPerSecForScrollRef.current,
         enabled: tailSnapEnabled,
         strengthPx: tailSnapStrengthPx,
         isValidSnap: (boundaryUs) =>
@@ -1461,7 +1490,6 @@ export function Timeline({
       fpsDen,
       linkByLayerId,
       links,
-      pxPerSec,
       tailSnapEnabled,
       tailSnapStrengthPx,
       visibleSnapTracks,
@@ -1808,8 +1836,10 @@ export function Timeline({
           playhead and the header column's divider run the panel's full height
           as a result, which is what they do in every other NLE. */}
       <div className="flex min-h-full min-w-max">
-        {/* sticky header column */}
-        <div className="sticky left-0 z-10 flex-none border-r border-border bg-card" style={{ width: HEADER_COL_PX }}>
+        {/* sticky header column. `timeline-headers` owns the hover-reveal
+            (styles/editor.css): idle the gutter is transparent and its cells
+            are faded out, so the single lane reads full-width. */}
+        <div className="timeline-headers sticky left-0 z-10 flex flex-none flex-col border-r border-border bg-card" style={{ width: HEADER_COL_PX }}>
           <div
             data-testid="timeline-ruler-corner"
             className="sticky top-0 z-[1] h-5 border-b border-border-soft bg-card"
@@ -1826,6 +1856,7 @@ export function Timeline({
               The header names the row; it is not a spacer like the drop
               strip's, but it is exactly as tall. */}
           <MarkerLaneHeader />
+          <div className="flex flex-1 flex-col justify-center" data-testid="timeline-centered-headers">
           <DropStripHeader />
           <DropStripSeam intoLanePx={dropSeamIntoLanePx} />
           {orderedTracks.map(({ track }) => (
@@ -1852,6 +1883,10 @@ export function Timeline({
               )}
             </Fragment>
           ))}
+          {/* Bottom strip's header cell — the two columns paint the same rows
+              in the same order (see the note above the marker lane). */}
+          <DropStripHeader />
+          </div>
         </div>
         {/* scrolling body. The marquee anchors HERE and not on the root: the
             root spans the sticky header column, so a box could start from the
@@ -1859,7 +1894,7 @@ export function Timeline({
             HEADER_COL_PX coordinate test. Timeline provides the anchor context,
             so it cannot consume its own provider — hence `beginMarquee`. */}
         <div
-          className="relative grow"
+          className="relative flex grow flex-col"
           onPointerDown={(e) => beginMarquee(marqueeAnchor, "clip", e)}
         >
           <TimelineRuler
@@ -1885,11 +1920,12 @@ export function Timeline({
           <div
             ref={canvasRef}
             data-testid="timeline-canvas"
-            className="relative min-w-full"
+            className="relative flex min-w-full flex-1 flex-col justify-center"
             style={{ width: widthPx }}
           >
             <DropStrip
               elRef={dropStripElRef}
+              position="top"
               compositionId={compositionId}
               pxPerSec={pxPerSec}
               fpsNum={fpsNum}
@@ -1900,14 +1936,19 @@ export function Timeline({
               onMediaDrop={onMediaDrop}
             />
             <DropStripSeam intoLanePx={dropSeamIntoLanePx} />
-            {orderedTracks.length === 0 && <EmptyHint mode={displayMode} />}
+            {orderedTracks.length === 0 && (
+              <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2">
+                <EmptyHint mode={displayMode} />
+              </div>
+            )}
             {/*
               Data model: `tracks[0]` is the bottom of the z-stack, `tracks[last]`
               is the top (see `docs/data-model.md`). `visualOrderedTracks`
               reverses that, so the tail of the array is the TOP row here — it
               splits role-stamped lanes from role-less ones, it does NOT bucket
-              by kind. The role-less section is the one at the top, which is
-              where the strip above spawns into.
+              by kind. Spawned lanes accrete on both sides of the A roll, which
+              is what centres it; the strips above and below spawn into the
+              top and the bottom of the stack respectively.
             */}
             {orderedTracks.map(({ track }) => (
               <Fragment key={track.id}>
@@ -1915,7 +1956,6 @@ export function Timeline({
                 track={track}
                 compositionId={compositionId}
                 registerLaneEl={registerLaneEl}
-                pxPerSec={pxPerSec}
                 height={trackHeights[track.id] ?? DEFAULT_TRACK_HEIGHT}
                 isExpanded={expandedTracks.has(track.id)}
                 selectedLayerId={primaryLayerId}
@@ -1936,18 +1976,18 @@ export function Timeline({
                 onBladeSplit={splitFromClientX}
                 onBladePreview={updateBladePreview}
                 onSelectFromClick={selectFromClick}
-                onDragStart={(state) => setDrag(state)}
+                onDragStart={setDrag}
                 onContextMenu={onContextMenu}
                 onChipContextMenu={onChipContextMenu}
                 onGapContextMenu={onGapContextMenu}
-                onChipResize={(args) => void onChipResize(args)}
+                onChipResize={onChipResizeVoid}
                 onCommitLabel={onCommitLabel}
                 onCommitLinkLabel={onCommitLinkLabel}
                 onCommitGroupLabel={onCommitGroupLabel}
                 onMediaDrop={onMediaDrop}
                 isRevealed={track.id === (revealedTrackId ?? null)}
                 isResizing={heightDrag !== null}
-                onHeightDragStart={beginHeightDrag(track.id)}
+                onHeightDragStart={heightDragStartByTrack.get(track.id)!}
                 fpsNum={fpsNum}
                 fpsDen={fpsDen}
                 mediaDropSnap={mediaDropSnap}
@@ -1962,6 +2002,23 @@ export function Timeline({
               )}
               </Fragment>
             ))}
+            {/* The bottom strip: same spawn protocol as the top one, inserting
+                the lane at the bottom of the z-stack (below everything on
+                screen) rather than the top. Seam first, mirroring the top
+                order (strip, seam, lane) around the lane it bounds. */}
+            <DropStripSeam intoLanePx={dropSeamIntoLanePx} />
+            <DropStrip
+              elRef={dropStripBottomElRef}
+              position="bottom"
+              compositionId={compositionId}
+              pxPerSec={pxPerSec}
+              fpsNum={fpsNum}
+              fpsDen={fpsDen}
+              mediaDropSnap={mediaDropSnap}
+              pendingPlacements={pendingPlacements}
+              pendingLayerById={pendingLayerById}
+              onMediaDrop={onMediaDrop}
+            />
             {bladePreview && (
               <BladeCutPreview
                 x={(bladePreview.atUs / 1_000_000) * pxPerSec}
@@ -2231,8 +2288,7 @@ function BladeCutPreview({
 
 function EmptyHint({ mode }: { mode?: "AbRoll" | "AllTracks" }) {
   const { t } = useTranslation();
-  // Rendered when the user is in A/B Roll but no track carries a role
-  // stamp; the user switches to All Tracks manually.
+  // Rendered when the current display mode has no occupied track.
   //
   // The hint names the KEY, not the Quick Actions button: the strip is a Panel
   // the user can close or drag away, whereas the binding is always live. Read
@@ -2244,7 +2300,7 @@ function EmptyHint({ mode }: { mode?: "AbRoll" | "AllTracks" }) {
       ? t("timeline.empty_ab_roll", {
           key: accelerator,
           defaultValue:
-            "No A/B-roll content here. Drop a clip on A roll or B roll, or press {{key}} to switch to All Tracks.",
+            "No A/B-roll clips visible. Press {{key}} to show all tracks.",
         })
       : t("timeline.empty_placeholder");
   return <div className="p-6 text-center text-xs text-muted-foreground">{message}</div>;

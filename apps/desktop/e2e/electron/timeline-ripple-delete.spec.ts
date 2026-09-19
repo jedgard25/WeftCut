@@ -306,7 +306,9 @@ test.describe('ripple delete', () => {
       // and they also prove the harder half: the post-move collision scan must
       // keep honouring the overlap a transition authorizes on a lane the
       // deletion had nothing to do with.
-      const bRoll = trackWithRole(await wire(page), 'b-roll')
+      // Single-lane skeleton: the overlays sit on a spawned lane (no DOM
+      // interaction with them below, so no display change needed).
+      const bRoll = await invokeCmd<string>(page, 'add_track', {})
       const fromLayerId = await invokeCmd<string>(page, 'add_color_layer', {
         trackId: bRoll,
         color: { r: 255, g: 0, b: 0, a: 255 },
@@ -507,7 +509,7 @@ test.describe('ripple delete', () => {
       // from the words it renders (`lib/layerName.ts`'s Text rung) — which is
       // why the content is a word worth reading in a sentence.
       const blockerId = await invokeCmd<string>(page, 'add_text_layer', {
-        trackId: trackWithRole(await wire(page), 'b-roll'),
+        trackId: await invokeCmd<string>(page, 'add_track', {}),
         content: 'Blocker',
         tStartUs: 2_500_000,
         durationUs: 1_000_000,

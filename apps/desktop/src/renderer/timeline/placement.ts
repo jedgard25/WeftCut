@@ -17,6 +17,16 @@ export type PlacementValidity = "valid" | "collision" | "locked" | "spawn";
 /// surface has to special-case it.
 export const SPAWN_TRACK_ID = "__weftcut-spawn-track__";
 
+/// The bottom strip's twin: a lane spawned BELOW the bottom-most lane (the
+/// underlay direction) rather than above the topmost one. Same validity, same
+/// protocol — the side only decides where the actor inserts the lane.
+export const SPAWN_BOTTOM_TRACK_ID = "__weftcut-spawn-track-bottom__";
+
+/// Either not-yet-a-lane target.
+export function isSpawnTrackId(trackId: string): boolean {
+  return trackId === SPAWN_TRACK_ID || trackId === SPAWN_BOTTOM_TRACK_ID;
+}
+
 /// Which row a live drag's preview chip belongs in, given its resolved
 /// destination and the lane the clip is still on.
 ///
@@ -86,7 +96,7 @@ function rangesOverlap(
  * move ghosts: visual/visual and audio/audio overlap is invalid, visual/audio
  * overlap is a legal shared lane, and touching half-open ranges are legal.
  *
- * A placement on `SPAWN_TRACK_ID` answers `"spawn"`: the lane it names has no
+ * A placement on a spawn target answers `"spawn"`: the lane it names has no
  * committed content to overlap, so a fresh lane is empty by construction.
  */
 export function evaluateTimelinePlacements({
@@ -112,7 +122,7 @@ export function evaluateTimelinePlacements({
   };
 
   for (const placement of placements) {
-    if (placement.trackId === SPAWN_TRACK_ID) {
+    if (isSpawnTrackId(placement.trackId)) {
       // A locked SUBJECT still refuses — that is a property of the clip being
       // placed, not of the destination, and the destination has no content.
       if (placement.locked) locked = true;

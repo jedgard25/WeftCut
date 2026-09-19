@@ -299,20 +299,28 @@ export function defaultCompositionSettings(): CompositionSettings {
   return { width: 1920, height: 1080, fps: { num: 30, den: 1 }, sample_rate: 48000, channels: 2,
     color_space: 'Bt709', background: { r: 0, g: 0, b: 0, a: 255 } }
 }
-/** Settings + the reserved A/B skeleton (ADR 0042), empty timeline. Mints the
- *  two track ids (A roll, then B roll); the caller mints `id` itself so it can
+/** Settings + the reserved skeleton (ADR 0042), empty timeline. Mints the
+ *  single A-roll track id; the caller mints `id` itself so it can
  *  choose where the composition id falls in the det-id order (see blankProject).
  *  Pre-compose builds here; blankProject inlines the same skeleton because its
- *  det-id order puts project_id between the two track ids and the root id.
+ *  det-id order puts project_id after the track id and the root id.
+ *
+ *  One lane, not A/B: the timeline's philosophy is a single centered native
+ *  track — extras spawn above or below it as needed and vanish when emptied.
+ *  `BRoll` stays a valid role for older projects that still carry one.
  *
  *  `ordinal` is passed in rather than read off a project, because a composition
  *  is built before it joins one — the caller takes it from
  *  `Project.next_group_ordinal` and advances that counter. */
 export function newComposition(id: Uuid, idGen: IdGen, label: string | null, ordinal: number, settings: CompositionSettings): Composition {
   const aRoll = newTrack(idGen(), 'ARoll')
-  const bRoll = newTrack(idGen(), 'BRoll')
+  // Deliberately DISCARDED — preserves the pre-single-skeleton det-id order
+  // (B-roll's old slot), so every downstream mint keeps the number it always
+  // had and fixtures/goldens read unchanged. Production ids are uuidv7, where
+  // a skipped call is invisible; det-id tests are the audience.
+  idGen()
   return { id, label, ordinal, ...settings, duration_us: 0, duration_pinned: false,
-    tracks: [aRoll, bRoll], markers: [], transitions: [], links: [] }
+    tracks: [aRoll], markers: [], transitions: [], links: [] }
 }
 /** `compositions[root_id]` — validate guarantees it resolves (RootMissing). */
 export function rootComposition(p: Project): Composition {
@@ -330,18 +338,19 @@ export function defaultSettings(): ProjectSettings {
     prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, shot_review: null, pause_review: null }
 }
 
-/** Mirror of Rust `Project::new_blank`. Id order: A-roll, B-roll, project_id,
- *  root composition id — the root's id comes LAST so `…0001/0002/0003` keep
- *  their meaning in every det-id test. */
+/** Mirror of Rust `Project::new_blank`. Id order: A-roll, (B-roll's
+ *  discarded slot), project_id, root composition id — four calls as before,
+ *  so `…0001…0004` keep their meaning in every det-id test. */
 export function blankProject(idGen: IdGen, name: string): Project {
   const aRoll = newTrack(idGen(), 'ARoll')
-  const bRoll = newTrack(idGen(), 'BRoll')
+  // See newComposition: one discarded call preserves the historical sequence.
+  idGen()
   const projectId = idGen()
   const rootId = idGen()
   // `ordinal: 0` is the root's reserved value — `groupOrdinals` skips the root,
   // and Groups count up from 1, so nothing the user sees can ever collide with it.
   const root: Composition = { id: rootId, label: null, ordinal: 0, ...defaultCompositionSettings(), duration_us: 0,
-    duration_pinned: false, tracks: [aRoll, bRoll], markers: [], transitions: [], links: [] }
+    duration_pinned: false, tracks: [aRoll], markers: [], transitions: [], links: [] }
   // LANDMINE: real RFC3339 timestamps, NOT the '<TS>' sentinel. canonicalize()
   // normalizes these away for differential comparison, so a sentinel would pass
   // the gates — but this JSON still round-trips through Rust `DateTime<Utc>`

@@ -246,10 +246,10 @@ hardware / software lane, which is a decode path.
 _Avoid_: lane as a synonym for track in data-model or command prose
 
 **Reserved skeleton**:
-The role-stamped tracks a blank project ships with — A roll, B roll, and the
-audio-role tracks derived from them. Non-removable, never swept by cleanup, and
+The role-stamped track a blank project ships with — the single A roll. Non-removable, never swept by cleanup, and
 the reason "no tracks exist" is never a case the UI handles. Carrying a `role`
-is exactly what makes a track part of it.
+is exactly what makes a track part of it. (Older projects may still carry a
+B roll; `BRoll` stays a valid role.)
 _Avoid_: default tracks, system tracks, fixed tracks
 
 **Track display**:

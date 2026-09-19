@@ -159,7 +159,10 @@ async function precomposeAPair(page: Page) {
   await page.keyboard.press(`${MOD}+G`);
   await expect.poll(async () => groupIdsOf(await wire(page)).length).toBe(1);
   const s1 = await wire(page);
-  return { groupId: groupIdsOf(s1)[0]!, bRoll: trackWithRole(rootOf(s1), "b-roll") };
+  // Single-lane skeleton: drops land on a spawned lane, drawn via the All
+  // Tracks display (A/B Roll shows the A roll alone).
+  await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+  return { groupId: groupIdsOf(s1)[0]!, bRoll: await invokeCmd<string>(page, "add_track", {}) };
 }
 
 test.describe("Groups in the media pool", () => {
@@ -283,7 +286,7 @@ test.describe("Groups in the media pool", () => {
 
       const s0 = await wire(page);
       const inner = s0.compositions[groupId]!;
-      const innerB = trackWithRole(inner, "b-roll");
+      const innerB = inner.tracks[0].id;
       const layersBefore = layersOf(inner).length;
 
       const dropX = await laneDropX(page, innerB);

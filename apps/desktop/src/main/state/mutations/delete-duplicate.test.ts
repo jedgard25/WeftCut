@@ -58,10 +58,11 @@ describe('applyPasteLayers', () => {
   const BLACK = { r: 0, g: 0, b: 0, a: 255 }
   function three() {
     const g = seededGen(); const p = blankProject(g, 't')
+    const laneB = applyAddTrack(p, g, null)
     const a = applyAddLayer(p, g, root(p).tracks[0].id, colorParams(BLACK, 1, 1), 0, 1_000_000)
     const b = applyAddLayer(p, g, root(p).tracks[0].id, colorParams(BLACK, 1, 1), 1_000_000, 2_000_000)
-    const c = applyAddLayer(p, g, root(p).tracks[1].id, colorParams(BLACK, 1, 1), 500_000, 1_500_000)
-    return { g, p, a, b, c }
+    const c = applyAddLayer(p, g, laneB, colorParams(BLACK, 1, 1), 500_000, 1_500_000)
+    return { g, p, a, b, c, laneB }
   }
   const layersOf = (p: Project): Layer[] => root(p).tracks.flatMap((t) => t.layers)
   const find = (p: Project, id: string): Layer => layersOf(p).find((l) => l.id === id)!
@@ -126,9 +127,9 @@ describe('applyPasteLayers', () => {
     try { applyPasteLayers(p, g, [a, c], 5_000_000, null); throw new Error('x') }
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('TrackLocked') }
     expect(p).toEqual(before)
-    // `g` has minted exactly the seven ids `three()` did (two tracks, project,
-    // root composition, three layers): its next id is a fresh stream's eighth.
-    for (let i = 0; i < 7; i++) fresh()
+    // `g` has minted exactly the eight ids `three()` did (blank 4 + one spawned
+    // lane + three layers): its next id is a fresh stream's ninth.
+    for (let i = 0; i < 8; i++) fresh()
     expect(g()).toBe(fresh())
   })
 
@@ -159,7 +160,8 @@ describe('applyPasteLayers', () => {
       id: 'au', label: null, t_start_us: slipped, t_end_us: sample(gridIndex(slipped, AUDIO_GRID) + 96_000), enabled: true, locked: false, metadata: {}, effects: [],
       params: { kind: 'Audio', media: 'm', src_in_us: 0, src_out_us: 2_000_000, gain_db: { mode: 'Static', value: 0 }, pan: { mode: 'Static', value: 0 }, fade_in_us: 0, fade_out_us: 0, mute: false, role: 'dialogue' },
     }
-    root(p).tracks[1].layers = [au]
+    const laneB = applyAddTrack(p, g, null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [au]
     const slipBefore = gridIndex(au.t_start_us - find(p, v).t_start_us, AUDIO_GRID)
     expect(slipBefore).not.toBe(0)
 
@@ -215,7 +217,8 @@ describe('delete / duplicate / paste inside a Group', () => {
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('CrossCompositionMove') }
     expect(p).toEqual(before)
     // …and pastes inside the Group when the lane is the Group's.
-    const id = applyPasteLayer(p, idGen, innerId, group(p, groupId).tracks[1].id, 2_000_000)
-    expect(group(p, groupId).tracks[1].layers.map((l) => l.id)).toEqual([id])
+    const laneG = applyAddTrack(p, idGen, null, undefined, groupId)
+    const id = applyPasteLayer(p, idGen, innerId, laneG, 2_000_000)
+    expect(group(p, groupId).tracks.find((t) => t.id === laneG)!.layers.map((l) => l.id)).toEqual([id])
   })
 })

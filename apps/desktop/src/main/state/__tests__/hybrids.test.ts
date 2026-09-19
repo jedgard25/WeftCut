@@ -3,7 +3,7 @@ import { createActor, type ActorHandle } from '../actor'
 import { seededGen } from '../ids'
 import { blankProject, type MediaItem } from '../model'
 import { audioParams, mediaItemTemplate, videoClipParams } from '../mutations/media'
-import { applyAddLayer } from '../mutations/add'
+import { applyAddLayer, applyAddTrack } from '../mutations/add'
 import { markerHibernating } from '../summary'
 import {
   runHybrid, markShotCuts, cutsToTimeline, pauseCores,
@@ -396,7 +396,7 @@ describe('runHybrid: synthesize_speech (MCP hybrid)', () => {
   })
 
   it('ensureAudioTrack returns the last existing track when target_track_id is omitted', async () => {
-    // Fresh project has 2 reserved (non-removable) A/B-roll tracks, so
+    // Fresh project has 1 reserved (non-removable) A-roll track, so
     // ensureAudioTrack (hybrids.ts) returns the LAST existing track — it does NOT
     // create a track here. The zero-track add_track('Voiceover') branch is
     // unreachable through the validated actor (reserved tracks can't be removed),
@@ -1055,11 +1055,11 @@ function withPauses(deps: HybridDeps, ranges: Array<[number, number]>) {
   return { detectPauses }
 }
 
-/** Fresh project with an Audio layer on the B-roll track — the only kind that
+/** Fresh project with an Audio layer on a spawned second lane — the only kind that
  *  is its OWN pause subject, and the one a shot operation refuses. */
 function withAudioLayer(durationUs = 6_000_000) {
   const actor = freshActor()
-  const track = root(actor.snapshot()).tracks[1].id
+  const track = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
   const AID = '00000000-0000-0000-0000-0000000000dd'
   actor.dispatch('add_media', { id: AID, kind: 'Audio', duration_us: durationUs })
   const add = actor.dispatch('add_layer', { track, kind: 'audio', media: AID, src_in_us: 0, src_out_us: durationUs, t_start_us: 0, t_end_us: durationUs })
@@ -1071,7 +1071,7 @@ function withAudioLayer(durationUs = 6_000_000) {
  *  the only shape in which a source time and a timeline time can be told apart. */
 function withOffsetAudioLayer(opts: { srcInUs: number; srcOutUs: number; tStartUs: number }) {
   const actor = freshActor()
-  const track = root(actor.snapshot()).tracks[1].id
+  const track = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
   const AID = '00000000-0000-0000-0000-0000000000dd'
   actor.dispatch('add_media', { id: AID, kind: 'Audio', duration_us: 10_000_000 })
   const add = actor.dispatch('add_layer', { track, kind: 'audio', media: AID,
@@ -1094,8 +1094,9 @@ function withAudioLayerInGroup(durationUs = 6_000_000) {
   const AID = '00000000-0000-0000-0000-0000000000dd'
   p.media_pool[AID] = mediaItemTemplate(AID, 'Audio', durationUs)
   let layerId = ''
-  const { p: withComp, groupId } = withGroup(p, idGen, (g, view) => {
-    layerId = applyAddLayer(view, idGen, g.tracks[1].id, audioParams(AID, 0, durationUs), 0, durationUs)
+  const { p: withComp, groupId } = withGroup(p, idGen, (_g, view) => {
+    const secondLane = applyAddTrack(view, idGen, null)
+    layerId = applyAddLayer(view, idGen, secondLane, audioParams(AID, 0, durationUs), 0, durationUs)
   })
   const actor = createActor({ initial: withComp, idGen, clock: () => '<TS>' })
   return { actor, groupId, layerId }
@@ -1131,7 +1132,8 @@ describe('resolvePauseSubject', () => {
     if (!sameMedia.ok) return
     const MUSIC = '00000000-0000-0000-0000-0000000000ee'
     actor.dispatch('add_media', { id: MUSIC, kind: 'Audio', duration_us: 6_000_000 })
-    const other = actor.dispatch('add_layer', { track: root(actor.snapshot()).tracks[1].id, kind: 'audio',
+    const secondLane = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    const other = actor.dispatch('add_layer', { track: secondLane, kind: 'audio',
       media: MUSIC, src_in_us: 0, src_out_us: 6_000_000, t_start_us: 0, t_end_us: 6_000_000 })
     expect(other.ok).toBe(true)
     if (!other.ok) return
@@ -1146,9 +1148,10 @@ describe('resolvePauseSubject', () => {
   it('two Audio members and neither shares the media — ambiguous, so no subject', () => {
     const { actor, track, layerId } = withVideoLayer(6_000_000)
     const ids: string[] = []
+    const secondLane = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
     for (const [i, id] of ['00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000e2'].entries()) {
       actor.dispatch('add_media', { id, kind: 'Audio', duration_us: 6_000_000 })
-      const add = actor.dispatch('add_layer', { track: i === 0 ? track : root(actor.snapshot()).tracks[1].id,
+      const add = actor.dispatch('add_layer', { track: i === 0 ? track : secondLane,
         kind: 'audio', media: id, src_in_us: 0, src_out_us: 6_000_000, t_start_us: 0, t_end_us: 6_000_000 })
       expect(add.ok).toBe(true)
       if (add.ok) ids.push(add.value as string)

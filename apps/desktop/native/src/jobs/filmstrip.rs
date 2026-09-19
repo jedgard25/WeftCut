@@ -33,6 +33,15 @@ pub fn spacing_us(lod: u32) -> i64 {
     FILMSTRIP_BASE_SPACING_US << lod
 }
 
+fn tile_seek_us(lod: u32, index: u32, duration_us: Option<i64>) -> i64 {
+    let requested = spacing_us(lod).saturating_mul(index as i64);
+    // Zero in older metadata means unknown duration. Clamping it made every
+    // grid index decode the first frame.
+    duration_us
+        .filter(|d| *d > 0)
+        .map_or(requested, |d| requested.min((d - TAIL_SLACK_US).max(0)))
+}
+
 pub fn validate_lod(lod: u32) -> Result<()> {
     anyhow::ensure!(
         lod <= FILMSTRIP_MAX_LOD,
@@ -71,10 +80,7 @@ pub async fn extract_tile(
             .with_context(|| format!("create filmstrip cache dir {}", parent.display()))?;
     }
 
-    let mut t_us = spacing_us(lod).saturating_mul(index as i64);
-    if let Some(d) = duration_us {
-        t_us = t_us.min((d - TAIL_SLACK_US).max(0));
-    }
+    let t_us = tile_seek_us(lod, index, duration_us);
     let t_seconds = (t_us as f64) / 1_000_000.0;
 
     let tmp = temp_path(&dest);
@@ -272,6 +278,13 @@ mod tests {
     fn rejects_lod_out_of_range() {
         assert!(validate_lod(13).is_err());
         assert!(validate_lod(12).is_ok());
+    }
+
+    #[test]
+    fn zero_duration_does_not_collapse_grid_to_first_frame() {
+        assert_eq!(tile_seek_us(2, 3, Some(0)), 3_000_000);
+        assert_eq!(tile_seek_us(2, 3, None), 3_000_000);
+        assert_eq!(tile_seek_us(2, 3, Some(2_000_000)), 1_900_000);
     }
 
     #[tokio::test]

@@ -41,7 +41,8 @@ function withTransition() {
   const logged: ActorLogEntry[] = []
   const actor = createActor({ initial, idGen, clock: () => '<TS>', emitLog: (e) => logged.push(e) })
   const aRoll = root(initial).tracks[0].id
-  const bRoll = root(initial).tracks[1].id
+  // Single-lane skeleton: the cross-track rows need a second lane, spawned.
+  const bRoll = val(actor.dispatch('add_track', { label: null }))
   const a1 = val(actor.dispatch('add_layer', { track: aRoll, kind: 'color', t_start_us: 0, t_end_us: 2_000_000 }))
   const a2 = val(actor.dispatch('add_layer', { track: aRoll, kind: 'color', t_start_us: 2_000_000, t_end_us: 4_000_000 }))
   const tid = val(actor.dispatch('add_transition', { from: a1, to: a2, duration_us: 1_000_000, placement: 'extend' }))

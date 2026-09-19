@@ -476,6 +476,14 @@ export function parseRestackPosition(v: unknown): 'above' | 'below' {
   return v
 }
 
+/** Spawn-side variant: absent/null → null (the arm defaults to 'top'), else
+ *  the closed pair — a typo rejects at the boundary. */
+export function parseTrackPositionOpt(v: unknown, field: string): 'top' | 'bottom' | null {
+  if (v === undefined || v === null) return null
+  if (v === 'top' || v === 'bottom') return v
+  throw new McpArgError(`${field} must be 'top' | 'bottom', got ${String(v)}`, field)
+}
+
 /** apply_cut_list's keep ranges — wire-shape only (array, integer spans, an
  *  optional label). Bounds, overlaps and grid live with the layer in the
  *  actor (`cutList.ts`), which names them against the span they miss. */
@@ -936,11 +944,11 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
   // ── table-exec: tracks ───────────────────────────────────────────────────
   { name: 'add_track', exec: 'table',
     description: "Add a track and return its id. Tracks are kind-agnostic — any layer kind goes on any track. A track disappears when its last layer leaves it (deleted or moved away), so place a layer rather than reserving a track; a track created empty survives until it has been filled and emptied.",
-    inputSchema: { type: 'object', properties: { label: { type: ['string', 'null'], description: 'Optional name. Omit it and the track is displayed by its position in the stack, which renumbers as tracks come and go.' }, composition_id: COMPOSITION_ID_SCHEMA }, required: [] },
-    parseArgs: (a) => ({ op: 'add_track', args: { label: parseStrOpt(a.label, 'label'), composition_id: parseCompositionIdOpt(a.composition_id) } }),
+    inputSchema: { type: 'object', properties: { label: { type: ['string', 'null'], description: 'Optional name. Omit it and the track is displayed by its position in the stack, which renumbers as tracks come and go.' }, position: { type: ['string', 'null'], enum: ['top', 'bottom'], description: "Where in the z-stack: 'top' (default) or 'bottom'." }, composition_id: COMPOSITION_ID_SCHEMA }, required: [] },
+    parseArgs: (a) => ({ op: 'add_track', args: { label: parseStrOpt(a.label, 'label'), position: parseTrackPositionOpt(a.position, 'position'), composition_id: parseCompositionIdOpt(a.composition_id) } }),
     shapeResult: (v) => toolText(v as string) },
   { name: 'delete_track', exec: 'table',
-    description: "Remove a track. Rejects if the track has layers unless force=true. Default A roll / B roll tracks cannot be removed.",
+    description: "Remove a track. Rejects if the track has layers unless force=true. Reserved (role-stamped) tracks cannot be removed.",
     inputSchema: { type: 'object', properties: { track_id: { type: 'string' }, force: { type: ['boolean', 'null'] } }, required: ['track_id'] },
     parseArgs: (a) => ({ op: 'delete_track', args: { track: parseUuid(a.track_id, 'track_id'), force: parseBoolOpt(a.force, 'force', false) } }) },
   { name: 'rename_track', exec: 'table',
@@ -1108,7 +1116,7 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
     parseArgs: (a) => ({ op: 'links_create', args: { layers: asArray(a.layer_ids, 'layer_ids').map((s) => parseUuid(s, 'layer_ids')), label: parseStrOpt(a.label, 'label'), reassign: parseBoolOpt(a.reassign, 'reassign', false) } }),
     shapeResult: (v) => toolText(v as string) },
   { name: 'delete_link', exec: 'table',
-    description: "Dissolve (delete) a link. The member layers themselves are not deleted.",
+    description: "Dissolve (delete) a link. Members are not deleted; orphaned Audio snaps to the sample lattice, so a frame-cut link always dissolves.",
     inputSchema: { type: 'object', properties: { link_id: { type: 'string' } }, required: ['link_id'] },
     parseArgs: (a) => ({ op: 'links_dissolve', args: { link: parseUuid(a.link_id, 'link_id') } }) },
   { name: 'update_link', exec: 'dedicated',
@@ -1475,7 +1483,7 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
       composition_id: parseCompositionIdOpt(a.composition_id),
     }) },
   { name: 'split_layer', exec: 'dedicated',
-    description: "Split a layer into two halves at the given timeline microsecond. Returns {left, right} layer ids. `at_t_us` must be strictly between the layer's t_start_us and t_end_us. For media-bearing layers (VideoClip, Audio) the source offsets are adjusted at speed=1 — variable speed support is deferred.",
+    description: "Split a layer into two halves at the given timeline microsecond. Returns {left, right} layer ids. `at_t_us` must be strictly between the layer's t_start_us and t_end_us. For media-bearing layers (VideoClip, Audio) the source offsets are adjusted at speed=1 — variable speed support is deferred. A cut link becomes a left pair plus a right pair.",
     inputSchema: { type: 'object', properties: { at_t_us: { type: 'integer' }, escape_link: { type: ['boolean', 'null'] }, layer_id: { type: 'string' } }, required: ['at_t_us', 'layer_id'] },
     parseDedicated: (a) => ({ layer: parseUuid(a.layer_id, 'layer_id'),
       at_t_us: parseNum(a.at_t_us, 'at_t_us'), escape_link: a.escape_link }) },
@@ -1625,9 +1633,9 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
     description: "End your work session and release its history lock. Keeps the current view and activity records. Does not cancel running tasks, disconnect MCP, or prohibit later calls. Only the owning connection may end a session.",
     inputSchema: { type: 'object', properties: {} }, parseDedicated: (_a) => ({}) },
   { name: 'begin_agent_session', exec: 'dedicated',
-    description: "Begin a work session and show the lightweight agent view. Creates one Pre-agent checkpoint. Repeating on the same connection returns the existing session without changing the view; another connection cannot replace it. Finish with end_agent_session. The user may switch views without ending the session.",
-    inputSchema: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'] },
-    parseDedicated: (a) => ({ reason: parseStr(a.reason, 'reason') }) },
+    description: "Begin a work session and show the lightweight agent view. Creates one Pre-agent checkpoint. Repeating on the same connection returns the existing session without changing the view; another connection cannot replace it unless steal=true reclaims the orphan (retry once after a reconnect). Finish with end_agent_session. The user may switch views without ending the session.",
+    inputSchema: { type: 'object', properties: { reason: { type: 'string' }, steal: { type: 'boolean', description: 'Reclaim an orphaned session from a gone connection.' } }, required: ['reason'] },
+    parseDedicated: (a) => ({ reason: parseStr(a.reason, 'reason'), steal: parseBoolOpt(a.steal, 'steal', false) }) },
   // ── hybrid defs (TS-owned) — executed by runHybrid (routeMcpTool → 'hybrid'),
   //    NOT actor.mcpCall arms. They live here (not the Rust catalog like the
   //    other hybrids) because their input computes in Rust — the shot report,

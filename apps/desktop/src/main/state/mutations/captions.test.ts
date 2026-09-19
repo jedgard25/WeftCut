@@ -105,14 +105,14 @@ describe('cueToTextParams (mirror subtitles/layout.rs)', () => {
 const CLEAN: CueStyle = { size_px: 54, outline_px: 3, shadow_px: 2 } // explicit ⇒ no f32 multiply
 
 describe('applyAddCaptionTrack', () => {
-  // blankProject consumes #1 A-roll, #2 B-roll, #3 project (no actor/History here).
+  // blankProject consumes #1 A-roll, #2 discarded, #3 project, #4 root (no actor/History here).
   function blank() { const gen = seededGen(); return { p: blankProject(gen, 'c'), gen } }
-  it('one cue → a Caption track appended after B-roll with one Text layer, returns the primary id', () => {
+  it('one cue → a Caption track appended after A-roll with one Text layer, returns the primary id', () => {
     const { p, gen } = blank()
     const tid = applyAddCaptionTrack(p, gen, [{ start_us: 0, end_us: 1_000_000, text: 'a', style: CLEAN }], 1920, 1080, 'Captions')
     expect(tid).toBe('00000000-0000-0000-0000-000000000005') // track id #5 (Track::new first), layer #6
-    expect(root(p).tracks.map((t) => t.id).slice(2)).toEqual([tid]) // appended after [A, B]
-    const ct = root(p).tracks[2]
+    expect(root(p).tracks.map((t) => t.id).slice(1)).toEqual([tid]) // appended after [A]
+    const ct = root(p).tracks[1]
     expect([ct.role, ct.label, ct.removable, ct.transient]).toEqual(['Caption', 'Captions', true, false])
     expect(ct.layers).toHaveLength(1)
     expect(ct.layers[0].params.kind).toBe('Text')
@@ -183,8 +183,8 @@ describe('applyAddCaptionTrack', () => {
   it('empty cues → one empty Caption track (raw-contract safety net)', () => {
     const { p, gen } = blank()
     const tid = applyAddCaptionTrack(p, gen, [], 1920, 1080, 'X')
-    expect(root(p).tracks[2].id).toBe(tid)
-    expect([root(p).tracks[2].role, root(p).tracks[2].layers.length]).toEqual(['Caption', 0])
+    expect(root(p).tracks[1].id).toBe(tid)
+    expect([root(p).tracks[1].role, root(p).tracks[1].layers.length]).toEqual(['Caption', 0])
   })
 })
 

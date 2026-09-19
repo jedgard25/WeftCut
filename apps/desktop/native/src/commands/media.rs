@@ -305,7 +305,10 @@ pub async fn get_filmstrip_tile(
     let (src, src_tag) = filmstrip_decode_source(&args.item)?;
     filmstrip::validate_lod(args.lod).map_err(|e| format!("{e:#}"))?;
     let duration_us = args.item.metadata.duration_us;
-    let hash = args.item.file_hash_blake3.clone();
+    // v1 tiles made with unknown/zero duration could cache frame zero under
+    // every grid index. Keep the old files LRU-managed, but never serve them
+    // after the seek fix in jobs::filmstrip.
+    let hash = format!("v2-{}", args.item.file_hash_blake3);
     let path = filmstrip::extract_tile(
         &backend.cache,
         &src,

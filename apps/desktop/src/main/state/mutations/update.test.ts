@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Layer, type LayerParams, type Project } from '../model'
+import { applyAddTrack } from './add'
 import { applySetLayersEnabled, applyUpdateLayer } from './update'
 import { locateLayer } from './helpers'
 import { isCommandFailure } from '../errors'
@@ -48,7 +49,8 @@ describe('applySetLayersEnabled', () => {
   function two(): Project {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
-    root(p).tracks[1].layers = [color('b', 0, 1_000_000)]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 1_000_000)]
     return p
   }
   const enabledOf = (p: Project) => root(p).tracks.flatMap((t) => t.layers).map((l) => [l.id, l.enabled])

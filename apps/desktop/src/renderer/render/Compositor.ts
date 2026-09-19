@@ -641,6 +641,15 @@ export class Compositor {
     this.decodePriorityPlanCache = null;
     const prevProjectId = this.projectSummary?.project_id ?? null;
     this.projectSummary = summary;
+    // The process-wide motif raster cache is keyed by props-derived cacheKeys
+    // that only exist within one project. On a project switch (or close) those
+    // keys are unreferenced, so drop and `.close()` their bitmaps — otherwise
+    // they survive for the renderer's lifetime and can reach the byte cap with
+    // dead frames. NOT cleared on an ordinary edit: `setProject` fires on every
+    // summary change, and the project id is what distinguishes "same film".
+    if ((summary?.project_id ?? null) !== prevProjectId) {
+      sharedMotifFrameCache.clear();
+    }
     const composition = compositionOrRoot(summary, openId) ?? EMPTY_COMPOSITION;
     const sameNode =
       composition.id === this.root.composition.id &&
@@ -997,6 +1006,7 @@ export class Compositor {
     this.prebakeUnsub = null;
     this.manualPrebakeLayers.clear();
     sharedBakedKeyIndex.clear();
+    sharedMotifFrameCache.clear();
     this.bakeStatusByCacheKey.clear();
     this.lastBakeStatusSig = "";
     setLayerBakeStatuses({});

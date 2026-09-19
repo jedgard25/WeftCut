@@ -20,14 +20,15 @@ function color(actor: Actor, track: Uuid, t0: number, t1: number): Uuid {
   return r.value as Uuid
 }
 
-/** Root with a Group named "Intro" holding V (its A roll) and W (its B roll) at
- *  0–3 s, its clip at 2–5 s on the root's A roll, and both root rolls otherwise
+/** Root with a Group named "Intro" holding V (its A roll) and W (its second lane) at
+ *  0–3 s, its clip at 2–5 s on the root's A roll, and both root lanes otherwise
  *  free. */
 function grouped() {
   const idGen = seededGen()
   const initial = blankProject(idGen, 'move')
   const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-  const [aRoll, bRoll] = root(initial).tracks.map((t) => t.id)
+  const aRoll = root(initial).tracks[0].id
+  const bRoll = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
   const v = color(actor, aRoll, 2 * S, 5 * S)
   const w = color(actor, bRoll, 2 * S, 5 * S)
   const made = actor.dispatch('groups_create', { layers: [v, w], label: 'Intro' })

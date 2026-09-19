@@ -138,9 +138,11 @@ async function openTimeline(
     .toBe(files.length);
 
   const s = await snapshot(page);
-  // The blank skeleton: `tracks[0]` is A roll, `tracks[1]` is B roll, both
-  // role-stamped and therefore both RENDERED under the default A/B Roll filter.
-  expect(s.tracks.map((t) => t.role)).toEqual(["a-roll", "b-roll"]);
+  // The blank skeleton is one role-stamped A roll; the cases' second lane is
+  // spawned here and drawn via the All Tracks display.
+  expect(s.tracks.map((t) => t.role)).toEqual(["a-roll"]);
+  await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+  await invokeCmd(page, "add_track", {});
 
   const panel = dockPanel(page, "timeline");
   await expect(panel).toBeVisible();
@@ -155,7 +157,7 @@ async function openTimeline(
     )
     .toBe("timeline");
 
-  return { mediaIds: s.media.map((m) => m.id), trackIds: s.tracks.map((t) => t.id), panel };
+  return { mediaIds: s.media.map((m) => m.id), trackIds: (await snapshot(page)).tracks.map((t) => t.id), panel };
 }
 
 const place = (page: Page, trackId: string, mediaId: string, tStartUs: number) =>

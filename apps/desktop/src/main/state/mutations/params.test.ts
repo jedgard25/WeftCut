@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Animated, type BlendMode, type Layer, type LayerParams, type MotifParams, type Project, type Rgba, type TextParams } from '../model'
-import { applyAddLayer, colorParams, textParamsDefault } from './add'
+import { applyAddLayer, applyAddTrack, colorParams, textParamsDefault } from './add'
 import { videoClipParams, audioParams } from './media'
 import { isCommandFailure } from '../errors'
 import { applyUpdateLayerParams, applyUpdateLayerParamTrack, readLayerTrack, resolveAnimatedF64, resolveAnimatedRgba, type LayerParamsPatch } from './params'
@@ -27,7 +27,7 @@ function layerOf(p: Project, id: string): Layer {
 describe('applyUpdateLayerParams (field merge)', () => {
   it('Text patch sets content/opacity/x (animated fields → Static)', () => {
     const g = seededGen(); const p = blankProject(g, 'p')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('hi', root(p)), 0, 1_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('hi', root(p)), 0, 1_000_000)
     applyUpdateLayerParams(p, id, { kind: 'Text', content: 'world', opacity: 0.5, x: 10 }, new MotifCatalog())
     const t = layerOf(p, id).params as Extract<Layer['params'], { kind: 'Text' }>
     expect([t.content, t.opacity, t.transform.position.x]).toEqual(['world', { mode: 'Static', value: 0.5 }, { mode: 'Static', value: 10 }])
@@ -85,7 +85,7 @@ describe('applyUpdateLayerParams (field merge)', () => {
 describe('Text box patch', () => {
   function textLayer(): { p: Project; id: string } {
     const g = seededGen(); const p = blankProject(g, 'box')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('hi', root(p)), 0, 1_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('hi', root(p)), 0, 1_000_000)
     return { p, id }
   }
   const boxOf = (p: Project, id: string) => {
@@ -219,7 +219,7 @@ describe('applyUpdateLayerParamTrack', () => {
   ] })
   function textLayer(): { p: Project; id: string } {
     const g = seededGen(); const p = blankProject(g, 'kf')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('t', root(p)), 0, 2_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('t', root(p)), 0, 2_000_000)
     return { p, id }
   }
   it('writes a keyframed track to opacity', () => {
@@ -246,7 +246,7 @@ describe('applyUpdateLayerParamTrack', () => {
   })
   it('locked track → TrackLocked (checked before normalize)', () => {
     const { p, id } = textLayer()
-    root(p).tracks[1].locked = true
+    root(p).tracks.find((t) => t.layers.some((l) => l.id === id))!.locked = true
     expectCmd(() => applyUpdateLayerParamTrack(p, id, 'opacity', { mode: 'Keyframed', extrapolate: { before: 'Hold', after: 'Hold' }, value: [] }), 'TrackLocked')
   })
 })
@@ -270,7 +270,7 @@ describe('applyUpdateLayerParamTrack — a colour track', () => {
   function layerOfKind(kind: 'Text' | 'Color'): { p: Project; id: string } {
     const g = seededGen(); const p = blankProject(g, 'kf')
     const params = kind === 'Text' ? textParamsDefault('t', root(p)) : colorParams(RED, 16, 9)
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, params, 0, 2_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), params, 0, 2_000_000)
     return { p, id }
   }
 
@@ -587,7 +587,7 @@ describe('authored precision at the write seam', () => {
 
   it('rounds the text box to whole pixels and refuses one that rounds away', () => {
     const g = seededGen(); const p = blankProject(g, 'q')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('t', root(p)), 0, 1_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('t', root(p)), 0, 1_000_000)
     applyUpdateLayerParams(p, id, { kind: 'Text', box_w: 640.4 }, new MotifCatalog())
     expect((layerOf(p, id).params as TextParams).box_w).toBe(640)
     // Passes a raw `> 0` test, then records as the zero box that test exists to
@@ -619,7 +619,7 @@ describe('authored precision at the write seam', () => {
 
   it('refuses a non-positive font size', () => {
     const g = seededGen(); const p = blankProject(g, 'q')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('t', root(p)), 0, 1_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('t', root(p)), 0, 1_000_000)
     expectCmd(() => applyUpdateLayerParams(p, id, { kind: 'Text', font_size_px: 0 }, new MotifCatalog()), 'InvalidArgument')
   })
 
@@ -636,7 +636,7 @@ describe('authored precision at the write seam', () => {
 
   it('quantizes every keyframe of a track write, not just the first', () => {
     const g = seededGen(); const p = blankProject(g, 'q')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('t', root(p)), 0, 2_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('t', root(p)), 0, 2_000_000)
     applyUpdateLayerParamTrack(p, id, 'x', { mode: 'Keyframed', extrapolate: { before: 'Hold', after: 'Hold' }, value: [
       { id: '00000000-0000-0000-0000-0000000000f1', t_us: 0, value: 10.373737, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } },
       { id: '00000000-0000-0000-0000-0000000000f2', t_us: 1_000_000, value: 20.982, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } },
@@ -647,7 +647,7 @@ describe('authored precision at the write seam', () => {
 
   it('refuses an out-of-range keyframe BEFORE the lazy effect-slot insert', () => {
     const g = seededGen(); const p = blankProject(g, 'q')
-    const id = applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('t', root(p)), 0, 2_000_000)
+    const id = applyAddLayer(p, g, applyAddTrack(p, g, null), textParamsDefault('t', root(p)), 0, 2_000_000)
     layerOf(p, id).effects.push({ id: '00000000-0000-0000-0000-0000000000e1', kind: 'blur', enabled: true, params: {} })
     expectCmd(() => applyUpdateLayerParamTrack(p, id, 'opacity', { mode: 'Static', value: 3 }), 'InvalidArgument')
     // Ordering, made observable: the insert writes to the project, so quantizing

@@ -266,7 +266,7 @@ export function MarkerLaneHeader() {
   return (
     <div
       data-testid="timeline-marker-lane-header"
-      className="flex items-center border-b border-border-soft bg-card px-1.5"
+      className="timeline-header-fade flex items-center border-b border-border-soft bg-card px-1.5"
       style={{ height: MARKER_LANE_HEIGHT_PX }}
       // The header column is not a timeline surface: a press here must not reach
       // the root's marquee or seek paths (same guard `TrackHeader` carries).

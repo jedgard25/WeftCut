@@ -64,8 +64,55 @@ export function quitIfLastUserWindowClosed(): void {
 // OS browser — right for the trusted app shell. Windows hosting UNTRUSTED content
 // (the Motif capture host) MUST pass `false`: a malicious Motif could otherwise
 // pop the user's browser to an arbitrary https URL via `window.open`.
+/// One-line process-tree memory + CPU snapshot, for a crash/exit diagnostic.
+/// `app.getAppMetrics()` covers renderer/GPU/utility processes; `workingSetSize`
+/// is in KB. Never throws — a diagnostic must not become the failure.
+function memorySnapshot(): string {
+  try {
+    return app
+      .getAppMetrics()
+      .map((m) => {
+        const rssMb = Math.round((m.memory?.workingSetSize ?? 0) / 1024)
+        const cpu = (m.cpu?.percentCPUUsage ?? 0).toFixed(0)
+        return `${m.type}#${m.pid} rss=${rssMb}MB cpu=${cpu}%`
+      })
+      .join(' | ')
+  } catch {
+    return '<metrics unavailable>'
+  }
+}
+
+/// Log renderer/GPU death with the reason Electron gives (`oom`, `crashed`,
+/// `killed`, `integrity-failure`) plus a memory snapshot at the moment of
+/// death. Without this a black window is indistinguishable between a renderer
+/// OOM, a GPU-process crash, and a native kill.
+export function logProcessGone(kind: string, details: unknown): void {
+  const d = details as {
+    reason?: string
+    exitCode?: number
+    type?: string
+    serviceName?: string
+  }
+  console.error(
+    `[main] ${kind}: reason=${d?.reason ?? '?'} exitCode=${d?.exitCode ?? '?'}` +
+      (d?.type ? ` type=${d.type}` : '') +
+      (d?.serviceName ? ` service=${d.serviceName}` : '') +
+      ` || ${memorySnapshot()}`,
+  )
+}
+
 export function hardenWindow(win: BrowserWindow, opts?: { allowExternalOpen?: boolean }): void {
   const allowExternalOpen = opts?.allowExternalOpen ?? true
+  // Crash / hang telemetry. Registered on every window (the editor and the
+  // Performance Monitor alike) so a black window reports WHY it died instead of
+  // leaving only Electron's "render frame was disposed" send errors behind.
+  win.webContents.on('render-process-gone', (_e, details) => {
+    logProcessGone('render-process-gone', details)
+  })
+  win.webContents.on('unresponsive', () => {
+    console.error(`[main] renderer unresponsive || ${memorySnapshot()}`)
+  })
+  win.webContents.on('responsive', () => console.log('[main] renderer responsive again'))
   // WeftCut has no interface-scale setting. Chromium nevertheless enables its
   // built-in Ctrl/Cmd +/-/0 page zoom, which can accidentally shrink the whole
   // application. Consume only those keyboard accelerators; renderer-owned

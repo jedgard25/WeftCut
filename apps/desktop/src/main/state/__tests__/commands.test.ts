@@ -28,6 +28,8 @@ describe('PRODUCTION_OPS', () => {
       // so these are the only way a marker gains or loses its tie.
       'attach_marker', 'detach_marker',
       'add_media_layer', 'add_motif', 'add_text_layer', 'add_track', 'add_transition',
+      // The collapse-to-playhead gesture's commit (keep + close, one entry).
+      'apply_cut_list',
       // Groups (ADR 0052): pre-compose / ungroup / rename, and the orphan delete.
       'compositions_delete',
       'delete_layers',
@@ -83,13 +85,19 @@ describe('parseMechanical move_layers_to_new_track', () => {
       }),
     ).toEqual({
       op: 'move_layers_to_new_track',
-      args: { layers: ['layer-1', 'layer-2'], anchor_layer_id: 'layer-1', t_start_us: 33_333 },
+      args: { layers: ['layer-1', 'layer-2'], anchor_layer_id: 'layer-1', t_start_us: 33_333, position: null },
     })
   })
   it('sends both halves null for the raise that names no time', () => {
     expect(parseMechanical('move_layers_to_new_track', { layerIds: ['layer-1'] })).toEqual({
       op: 'move_layers_to_new_track',
-      args: { layers: ['layer-1'], anchor_layer_id: null, t_start_us: null },
+      args: { layers: ['layer-1'], anchor_layer_id: null, t_start_us: null, position: null },
+    })
+  })
+  it('carries an explicit spawn side', () => {
+    expect(parseMechanical('move_layers_to_new_track', { layerIds: ['layer-1'], position: 'bottom' })).toEqual({
+      op: 'move_layers_to_new_track',
+      args: { layers: ['layer-1'], anchor_layer_id: null, t_start_us: null, position: 'bottom' },
     })
   })
 })

@@ -91,12 +91,13 @@ async function rectOf(l: Locator): Promise<Rect> {
 }
 
 /// Create the project, put the fixture in the pool, and maximize the Timeline
-/// Panel. Returns the pool id and the blank skeleton's two track ids in DATA
-/// order.
+/// Panel. Returns the pool id and two track ids in DATA order (the A roll and
+/// one spawned lane above it).
 ///
 /// Import WITHOUT placing, because every case here needs several clips on lanes
 /// it chooses: `importAndPlaceMedia` mints a fresh lane per clip, and a fresh
-/// lane carries no role, which the default A/B Roll filter then hides.
+/// lane carries no role, which the default A/B Roll filter then hides — hence
+/// the All Tracks display below, which draws the spawned lane the cases sweep.
 ///
 /// Maximizing is not cosmetic and it happens while the timeline is still empty
 /// on purpose. Three of the four cases need a lane band, a 72 px sub-lane row
@@ -127,12 +128,14 @@ async function openTimeline(
     .toBe(1);
 
   const s = await snapshot(page);
-  // The blank skeleton: `tracks[0]` is A roll, `tracks[1]` is B roll, both
-  // role-stamped and therefore both RENDERED under the default A/B Roll filter.
-  // `visualOrderedTracks` reverses the data order, so `tracks[1]` draws ABOVE
-  // `tracks[0]` — which is what lets a case put its expanded track over the lane
-  // it sweeps without touching the display mode.
-  expect(s.tracks.map((t) => t.role)).toEqual(["a-roll", "b-roll"]);
+  // The blank skeleton is one role-stamped A roll; the second lane the cases
+  // sweep is spawned here and drawn via the All Tracks display.
+  // `visualOrderedTracks` reverses the data order, so the spawned lane draws
+  // ABOVE the A roll — which is what lets a case put its expanded track over
+  // the lane it sweeps.
+  expect(s.tracks.map((t) => t.role)).toEqual(["a-roll"]);
+  await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+  await invokeCmd(page, "add_track", {});
 
   const panel = dockPanel(page, "timeline");
   await expect(panel).toBeVisible();
@@ -152,7 +155,7 @@ async function openTimeline(
     )
     .toBe("timeline");
 
-  return { mediaId: s.media[0]!.id, trackIds: s.tracks.map((t) => t.id), panel };
+  return { mediaId: s.media[0]!.id, trackIds: (await snapshot(page)).tracks.map((t) => t.id), panel };
 }
 
 /// Place the pooled image on `trackId` at `tStartUs`. A still gets a 3 s span,

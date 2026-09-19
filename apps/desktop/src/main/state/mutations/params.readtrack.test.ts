@@ -35,7 +35,7 @@ describe('readLayerTrack across compositions', () => {
   it('finds a Text layer inside a Group', () => {
     const { p, idGen, groupId } = groupedProject()
     const g = group(p, groupId)
-    const id = applyAddLayer(p, idGen, g.tracks[1].id, textParamsDefault('hi', g), 0, 1_000_000)
+    const id = applyAddLayer(p, idGen, g.tracks[0].id, textParamsDefault('hi', g), 0, 1_000_000)
     expect(readLayerTrack(p, id, 'opacity')).toEqual({ tStartUs: 0, track: { mode: 'Static', value: 1 } })
   })
 })

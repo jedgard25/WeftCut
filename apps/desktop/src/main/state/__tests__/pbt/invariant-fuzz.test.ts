@@ -23,9 +23,9 @@ type ActorT = ReturnType<typeof freshActor>
 
 /** Recorded base timeline so transition ops have plausible targets from op #1:
  *  three visual cuts on A-roll (two with REAL tail-handle limits, two free-
- *  duration) and one audio cut on B-roll (the rejection path with realistic
- *  geometry). Undo can unwind these — that's churn, not a problem; the
- *  undo-unwind baseline is captured BEFORE this runs. */
+ *  duration) and one audio cut on a spawned second lane (the rejection path
+ *  with realistic geometry). Undo can unwind these — that's churn, not a
+ *  problem; the undo-unwind baseline is captured BEFORE this runs. */
 function seedTimeline(actor: ActorT) {
   const a = aRollId(actor), b = bRollId(actor)
   actor.dispatch('add_layer', { track: a, kind: 'video', media: VIDEO_MEDIA, src_in_us: 0, src_out_us: 500_000, t_start_us: 0, t_end_us: 500_000 })

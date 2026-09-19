@@ -19,6 +19,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MCP_TOOL_DEFS } from '../mcp-commands'
 import { MOTIF_TOOL_DEFS, MOTIF_RESOURCE_DEFS } from '../../mcp/motifToolDefs'
+import { MCP_RESOURCE_TEMPLATES } from '../../mcp/server'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..')
 const SKILL_SOURCES = [
@@ -40,6 +41,16 @@ const resourceUris = new Set([
   ...rust.resources.map((r) => r.uri),
   ...MOTIF_RESOURCE_DEFS.map((r) => r.uri),
 ])
+// Parameterized URIs live on `resources/templates/list`, not `resources/list`:
+// accept a backticked URI that names a template exactly
+// (`project://layers/{id}`) or one of its concrete readings with the query
+// stripped (`media://{id}/transcript` for `media://{id}/transcript{?...}`).
+const resourceTemplateUris = new Set([
+  ...MCP_RESOURCE_TEMPLATES.map((t) => t.uriTemplate),
+  ...MCP_RESOURCE_TEMPLATES.map((t) => t.uriTemplate.split('{?')[0]!),
+])
+const isAdvertisedResource = (t: string): boolean =>
+  resourceUris.has(t) || resourceTemplateUris.has(t)
 const promptNames = new Set(rust.prompts.map((p) => p.name))
 
 // Backticked snake_case tokens in the skill sources that are NOT tool names:
@@ -50,6 +61,8 @@ const KNOWN_NON_TOOLS = new Set([
   // SKILL.md — tool params
   'from', 'pad_us', 't_start_us', 'segments', 'word_timing',
   'segment', 'sentence', 'transcript', 't_end_us',
+  // SKILL.md — protocol / engine identifiers (not tools)
+  'initialize', 'backend',
   // motif-authoring.md — manifest fields
   'id', 'version', 'name', 'size', 'default_duration_s', 'max_duration_s',
   'max_duration_prop', 'content_duration_s', 'settle_rafs', 'fonts',
@@ -92,7 +105,7 @@ describe('shipped skill sources ↔ MCP catalog (anti-drift gate)', () => {
     const offenders = byFile.flatMap(({ file, tokens }) =>
       tokens
         .filter((t) => URI.test(t))
-        .filter((t) => !resourceUris.has(t))
+        .filter((t) => !isAdvertisedResource(t))
         .map((t) => `${file}: \`${t}\``),
     )
     expect(offenders).toEqual([])

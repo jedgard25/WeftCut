@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen, type IdGen } from '../ids'
 import { blankProject, type Project, type MediaItem } from '../model'
-import { applyAddLayer } from './add'
+import { applyAddLayer, applyAddTrack } from './add'
 import { isCommandFailure } from '../errors'
 import { videoClipParams, audioParams, imageOverlayParams, applySeparateAudio, mediaItemTemplate, applySetMediaDerivatives, applySetMediaWorkspacePaths, referencingLayers } from './media'
 import { group, groupedProject, root } from '../__tests__/fixtures/project'
@@ -39,10 +39,10 @@ describe('mediaItemTemplate', () => {
 })
 
 describe('applySeparateAudio', () => {
-  /** A-roll holds one Audio layer (id #4 — #1-3 blank). */
+  /** A-roll holds one Audio layer (id #5 — blank takes #1-4). */
   function withAudio(): { p: Project; gen: IdGen; a1: string } {
     const gen = seededGen()
-    const p = blankProject(gen, 's') // #1 A #2 B #3 project #4 root
+    const p = blankProject(gen, 's') // #1 A-roll, #2 discarded, #3 project, #4 root
     const a1 = applyAddLayer(p, gen, root(p).tracks[0].id, audioParams('00000000-0000-0000-0000-0000000000aa', 0, 3_000_000), 0, 3_000_000) // #5
     return { p, gen, a1 }
   }
@@ -51,7 +51,7 @@ describe('applySeparateAudio', () => {
     expect(root(p).tracks[0].layers.map((l) => l.id)).toEqual([a1]) // A roll holds it
     const newTrack = applySeparateAudio(p, gen, a1) // #6
     expect(newTrack).toBe('00000000-0000-0000-0000-000000000006')
-    // new track inserted at the source index (0) → [newAudio, A, B]
+    // new track inserted at the source index (0) → [newAudio, A]
     expect(root(p).tracks[0].id).toBe(newTrack)
     expect(root(p).tracks[0].layers.map((l) => l.id)).toEqual([a1]) // layer moved here
     expect(root(p).tracks[0].removable).toBe(true)
@@ -75,15 +75,15 @@ describe('applySeparateAudio', () => {
   it('LayerNotFound (no id minted)', () => {
     const { p, gen } = withAudio()
     expectCmd(() => applySeparateAudio(p, gen, 'ghost'), 'LayerNotFound')
-    // gen un-advanced: next add_layer id is #5 (not #6)
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, audioParams('00000000-0000-0000-0000-0000000000aa', 0, 1_000_000), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000006')
+    // gen un-advanced: next lane is #6, next add_layer id is #7
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), audioParams('00000000-0000-0000-0000-0000000000aa', 0, 1_000_000), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007')
   })
   it('WrongLayerKind on a non-audio layer (no id minted)', () => {
     const gen = seededGen()
     const p = blankProject(gen, 's')
     const c1 = applyAddLayer(p, gen, root(p).tracks[0].id, videoClipParams('00000000-0000-0000-0000-0000000000aa', 0, 2_000_000), 0, 2_000_000) // #5 (video, not audio)
     expectCmd(() => applySeparateAudio(p, gen, c1), 'WrongLayerKind')
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, audioParams('00000000-0000-0000-0000-0000000000aa', 0, 1_000_000), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000006') // no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), audioParams('00000000-0000-0000-0000-0000000000aa', 0, 1_000_000), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // no burn
   })
 })
 

@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Layer, type LayerParams, type Marker, type MediaItem, type Project } from '../model'
-import { applyAddLayer, colorParams } from './add'
+import { applyAddLayer, applyAddTrack, colorParams } from './add'
 import { applyTrimLayer, clampSigned } from './trim'
 import { applyDeleteLayer } from './delete'
 import { isCommandFailure } from '../errors'
@@ -238,38 +238,43 @@ describe.each(RATES)('trim bounds on the %s/%s grid', (num, den) => {
   it('clamps a link-aligned OUT over-trim at the tightest member, on grid', () => {
     const p = projectAtRate(num, den)
     root(p).tracks[0].layers = [color('a', at(0), at(90))]
-    root(p).tracks[1].layers = [color('b', at(60), at(90))] // shorter → governs
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', at(60), at(90))] // shorter → governs
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     applyTrimLayer(p, 'a', 'Out', 0, false)
-    for (const l of [root(p).tracks[0].layers[0], root(p).tracks[1].layers[0]]) {
+    const laneBLayers = () => root(p).tracks.find((t) => t.id === laneB)!.layers
+    for (const l of [root(p).tracks[0].layers[0], laneBLayers()[0]]) {
       expect(l.t_end_us).toBe(at(61))
       expectCanonical(l.t_end_us, num, den)
     }
-    expect(root(p).tracks[1].layers[0].t_start_us).toBe(at(60)) // tightest = one frame
+    expect(laneBLayers()[0].t_start_us).toBe(at(60)) // tightest = one frame
   })
 
   it('clamps a link-aligned IN over-trim at the tightest member, on grid', () => {
     const p = projectAtRate(num, den)
     root(p).tracks[0].layers = [color('a', at(30), at(120))]
-    root(p).tracks[1].layers = [color('b', at(30), at(60))] // shorter → governs
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', at(30), at(60))] // shorter → governs
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     applyTrimLayer(p, 'a', 'In', at(500), false)
-    for (const l of [root(p).tracks[0].layers[0], root(p).tracks[1].layers[0]]) {
+    const laneBLayers = () => root(p).tracks.find((t) => t.id === laneB)!.layers
+    for (const l of [root(p).tracks[0].layers[0], laneBLayers()[0]]) {
       expect(l.t_start_us).toBe(at(59))
       expectCanonical(l.t_start_us, num, den)
     }
-    expect(root(p).tracks[1].layers[0].t_end_us).toBe(at(60)) // tightest = one frame
+    expect(laneBLayers()[0].t_end_us).toBe(at(60)) // tightest = one frame
   })
 
   it('clamps a link-aligned OUT growth at the media-capped member, on grid', () => {
     const p = projectAtRate(num, den)
     p.media_pool.m = media('m', OFF_GRID_MEDIA_DUR)
     root(p).tracks[0].layers = [color('a', 0, at(30))]
-    root(p).tracks[1].layers = [video('v', 'm', 0, at(30), 0, at(30))]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [video('v', 'm', 0, at(30), 0, at(30))]
     applyLinksCreate(p, seededGen(), ['a', 'v'], null, false)
     applyTrimLayer(p, 'a', 'Out', 60_000_000, false)
     const lastWhole = timeUsAtFrame(frameIndexFloor(OFF_GRID_MEDIA_DUR, num, den), num, den)
-    for (const l of [root(p).tracks[0].layers[0], root(p).tracks[1].layers[0]]) {
+    for (const l of [root(p).tracks[0].layers[0], root(p).tracks.find((t) => t.id === laneB)!.layers[0]]) {
       expect(l.t_end_us).toBe(lastWhole)
       expectCanonical(l.t_end_us, num, den)
     }
@@ -297,26 +302,30 @@ describe('trim link aligned-set (live)', () => {
   it('coupled OUT trim fans out to a sibling sharing the same out-edge', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
-    root(p).tracks[1].layers = [color('b', 0, 1_000_000)] // same out-edge 1_000_000
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 1_000_000)] // same out-edge 1_000_000
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     applyTrimLayer(p, 'a', 'Out', 600_000, false)
     expect(root(p).tracks[0].layers[0].t_end_us).toBe(600_000)
-    expect(root(p).tracks[1].layers[0].t_end_us).toBe(600_000) // sibling fanned out
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].t_end_us).toBe(600_000) // sibling fanned out
   })
   it('does NOT fan out to a sibling whose edge differs', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
-    root(p).tracks[1].layers = [color('b', 0, 800_000)] // different out-edge
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 800_000)] // different out-edge
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     applyTrimLayer(p, 'a', 'Out', 600_000, false)
-    expect(root(p).tracks[1].layers[0].t_end_us).toBe(800_000) // untouched
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].t_end_us).toBe(800_000) // untouched
   })
   it('rejects a coupled trim when an aligned sibling is locked', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
-    root(p).tracks[1].layers = [color('b', 0, 1_000_000)]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    const laneBRef = root(p).tracks.find((t) => t.id === laneB)!
+    laneBRef.layers = [color('b', 0, 1_000_000)]
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
-    root(p).tracks[1].layers[0].locked = true
+    laneBRef.layers[0].locked = true
     try { applyTrimLayer(p, 'a', 'Out', 600_000, false); throw new Error('expected throw') }
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('LinkLockedMember') }
   })
@@ -334,14 +343,15 @@ describe("applyTrimLayer inside a Group, and the Group layer's source bound", ()
   it("a CompositionRef OUT trim clamps src_out_us at the composition's duration; an IN trim shifts src_in_us", () => {
     const { p, idGen, groupId, refLayerId } = groupedProject()
     // Give the Group more content than the parent's window shows: 3 s.
-    applyAddLayer(p, idGen, group(p, groupId).tracks[1].id, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 1_000_000, 3_000_000)
+    const laneB = applyAddTrack(p, idGen, null, undefined, groupId)
+    applyAddLayer(p, idGen, laneB, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 1_000_000, 3_000_000)
     expect(group(p, groupId).duration_us).toBe(3_000_000)
-    const ref = () => root(p).tracks[2].layers[0].params as Extract<LayerParams, { kind: 'CompositionRef' }>
+    const ref = () => root(p).tracks[1].layers[0].params as Extract<LayerParams, { kind: 'CompositionRef' }>
     applyTrimLayer(p, refLayerId, 'Out', 5_000_000, false) // asks past the source end
-    expect(root(p).tracks[2].layers[0].t_end_us).toBe(3_000_000) // clamped to the composition's duration
+    expect(root(p).tracks[1].layers[0].t_end_us).toBe(3_000_000) // clamped to the composition's duration
     expect(ref().src_out_us).toBe(3_000_000)
     applyTrimLayer(p, refLayerId, 'In', 500_000, false)
-    expect(root(p).tracks[2].layers[0].t_start_us).toBe(500_000)
+    expect(root(p).tracks[1].layers[0].t_start_us).toBe(500_000)
     expect(ref().src_in_us).toBe(500_000)
     expect(() => validate(p)).not.toThrow()
   })
@@ -353,7 +363,7 @@ describe("applyTrimLayer inside a Group, and the Group layer's source bound", ()
     catch (e) { expect(isCommandFailure(e) && e.err.error).toBe('TrimEdgeOutOfRange') }
     expect(root(p)).toEqual(before)
     applyTrimLayer(p, refLayerId, 'Out', 500_000, false) // inward still works
-    expect(root(p).tracks[2].layers[0].t_end_us).toBe(500_000)
+    expect(root(p).tracks[1].layers[0].t_end_us).toBe(500_000)
     expect(() => validate(p)).not.toThrow()
   })
 })

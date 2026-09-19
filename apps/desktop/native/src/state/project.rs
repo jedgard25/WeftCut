@@ -54,7 +54,7 @@ pub struct Project {
 impl Project {
     pub fn new_blank(name: impl Into<String>) -> Self {
         let now = Utc::now();
-        // Mint order mirrors TS `blankProject` (model.ts): A roll, B roll,
+        // Mint order mirrors TS `blankProject` (model.ts): A roll,
         // project_id, root_id — the skeleton before the two ids that name it.
         let tracks = Composition::skeleton_tracks();
         let project_id = new_id();

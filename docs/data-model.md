@@ -540,13 +540,15 @@ scopes: **clip mute** (`AudioParams.mute`, one layer), **role
 mute/solo/gain** (`audio_roles`, a whole category of sound), and **track
 `enabled`** (the eye — an entire track's picture and audio at once).
 
-A fresh project ships with non-removable tracks tagged with A-roll /
-B-roll / audio roles. They give every project a guaranteed drop
+A fresh project ships with one non-removable track tagged A-roll — the single
+centered native lane. It gives every project a guaranteed drop
 target so the UI doesn't have to handle "no tracks exist" as a
-separate case, and they give agents a stable "where do I put this?"
-answer when they don't have other context. Users can rename them;
-they cannot delete them. `delete_track` returns
-`CommandError::TrackNotRemovable` if invoked on one.
+separate case, and it gives agents a stable "where do I put this?"
+answer when they don't have other context. Users can rename it;
+they cannot delete it. `delete_track` returns
+`CommandError::TrackNotRemovable` if invoked on one. Additional lanes spawn
+above or below it as placement needs them and vanish when emptied. Older
+projects may still carry a B-roll lane; `BRoll` stays a valid role.
 
 `label` is `None` on every track a user has not named, and that absence
 means **the name is derived** — one rule for the whole track list, with
@@ -597,7 +599,8 @@ never make a track vanish in another. Cleanup lands in the same history
 entry as the edit that caused it, so one undo restores layer and track
 together.
 
-Role-stamped tracks — A/B roll, their audio pairs, caption tracks —
+Role-stamped tracks — the A roll, caption tracks, and any B-roll / audio-role
+lanes an older project still carries —
 survive emptying unconditionally, because carrying a role is exactly
 what makes a track non-`transient`. The role, not `removable`, is the
 load-bearing discriminant: legacy projects predate `removable` and
@@ -1262,7 +1265,7 @@ the UI uses the same actor via backend commands.
 | `ripple_delete_gap(track_id, s, e)` | closes a selected **gap** (ADR 0069; [features.md §Ripple delete](features.md#ripple-delete)): `[s, e)` must be exactly a gap on `track_id` — free of every layer, `e` where a layer starts, `s` where one ends or `0` — else `GapNotFound { track, s, e }`; nothing is deleted and the closing is `ripple_delete_layers`' with the gap as the one hole (`delete_layers { ripple: true }` to an agent), refusing with the same names. `TrackNotFound` for an unknown lane; `InvalidArgument` for a degenerate span. Recorded as *Closed gap*; one undo |
 | `links_create(layer_ids, label?, reassign?)` → `LinkId` | fewer than two distinct ids → `LinkCreateNeedsTwoLayers`; a layer already in another link → `LayerAlreadyLinked` unless `reassign: true`, which moves it over |
 | `links_dissolve(link_id)` / `links_add_members(link_id, layer_ids, reassign?)` / `links_remove_members(link_id, layer_ids)` / `links_rename(link_id, label?)` | an unknown `link_id` → `LinkNotFound`; removing a non-member → `LayerNotInLink`; `add_members` shares `links_create`'s `LayerAlreadyLinked` / `reassign` rule |
-| `groups_create(layer_ids, label?)` → `{ composition_id, layer_id }` | pre-compose (ADR 0052; [features.md §Groups](features.md#groups)): the set — one or more layers of one composition — moves into a new composition carrying the parent's settings and the reserved A/B skeleton, its former tracks mapped bottom-up onto A roll, B roll, then fresh lanes; a Group layer takes its place at the earliest start on the top-most former lane (the drop strip's fallback on collision). Never partial: a locked member → `GroupLockedMember`, a locked track → `TrackLocked`, before anything moves. Links fully inside move with their ids, a straddling link loses its inside members; transitions between two members move, a straddling one is reconciled away and logged; the markers ANCHORED to a member move with it (their `t_us` re-derived in the child by the same commit), free markers stay |
+| `groups_create(layer_ids, label?)` → `{ composition_id, layer_id }` | pre-compose (ADR 0052; [features.md §Groups](features.md#groups)): the set — one or more layers of one composition — moves into a new composition carrying the parent's settings and the reserved single-A-roll skeleton, its former tracks mapped bottom-up onto the A roll, then fresh lanes; a Group layer takes its place at the earliest start on the top-most former lane (the drop strip's fallback on collision). Never partial: a locked member → `GroupLockedMember`, a locked track → `TrackLocked`, before anything moves. Links fully inside move with their ids, a straddling link loses its inside members; transitions between two members move, a straddling one is reconciled away and logged; the markers ANCHORED to a member move with it (their `t_us` re-derived in the child by the same commit), free markers stay |
 | `add_group_layer(source_composition_id, track_id, t_start_us, composition_id?)` → `LayerId` | place an existing composition as one more Group layer — the media pool's drag, and the reuse half of ADR 0052 (`groups_create` is the half that makes a composition). Windowed `[0, duration_us)` with an identity transform; the track fixes the destination composition and `composition_id` is a cross-check. Refused before any write, so nothing is created and no layer id is burned: the root → `RootComposition`; a source that already reaches the destination, itself included → `CompositionCycle` naming the loop; an empty source → `InvalidArgument` |
 | `groups_add_members(layer_ids, group_layer_id)` | move layers already on a timeline INTO the composition a Group layer shows, keeping the screen position they had. The members and the Group clip must be siblings, and the clip's `params.composition` is the destination; each member lands at `t_start_us − group.t_start_us + group.src_in_us`, so one outside the clip's window arrives outside it and shows as overhang. Delegates to `move_layers_to_composition` for the crossing itself, and keeps only what is its own: `CrossCompositionSet` when the clip is not the members' sibling, `WrongLayerKind` when it is not a `CompositionRef`, and `RootComposition` — which guards a `CompositionRef` pointing at the root, not the root receiving layers |
 | `groups_ungroup(layer_id)` | expand a **plain** Group layer in place — identity transform, static opacity 1, no effects, Normal blend; otherwise `GroupNotPlain { reason: transform \| opacity \| effects \| blend_mode }`. Members intersecting `[src_in_us, src_out_us)` copy in at `t + t_start_us − src_in_us`, trimmed to the window with source in/out and keyframes following; members outside are dropped; the composition's tracks become fresh transient lanes at the ref's track index; links and transitions inside carry over under fresh ids; the composition is removed when its last reference goes |

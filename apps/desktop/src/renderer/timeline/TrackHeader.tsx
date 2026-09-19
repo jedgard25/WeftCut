@@ -116,7 +116,7 @@ export function TrackHeader({ compositionId, track, height, isRevealed, isExpand
     <div
       data-testid="track-header"
       data-track-id={track.id}
-      className="flex items-center gap-1 border-b border-border-soft px-1.5"
+      className="timeline-header-fade flex items-center gap-1 border-b border-border-soft px-1.5"
       style={{ height }}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}

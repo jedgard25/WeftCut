@@ -285,7 +285,7 @@ mod tests {
         let parsed: Project = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(p.schema_version, parsed.schema_version);
         assert_eq!(p.project_id, parsed.project_id);
-        assert_eq!(parsed.root().tracks.len(), 2, "reserved A/B skeleton");
+        assert_eq!(parsed.root().tracks.len(), 1, "reserved single A-roll skeleton");
     }
 
     /// Every JSON number as f64, so `1` (parsed from TS output) equals `1.0`

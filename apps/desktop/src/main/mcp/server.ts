@@ -5,6 +5,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
@@ -166,7 +167,7 @@ export async function handleCallTool(
       let result: unknown = {}
       if (name === 'begin_agent_session') {
         if (typeof args.reason !== 'string') throw new Error('reason must be a string')
-        result = tsHost.agent.begin(args.reason)
+        result = tsHost.agent.begin(args.reason, { steal: args.steal === true })
       } else if (name === 'end_agent_session') tsHost.agent.end('agent')
       else {
         // The lock is taken here rather than through mcpCall because the OWNER
@@ -419,6 +420,29 @@ export interface McpServerOptions {
   log?: Omit<McpLogDeps, 'observe'>
 }
 
+/** Parameterized resources (`resources/templates/list`) — the URIs tool
+ *  descriptions and resource descriptions name but `resources/list` never
+ *  carries: one layer in detail, one composition's tracks / timeline /
+ *  markers, and one media item's compute views. Served by the same readers
+ *  as the concrete URIs (TS `serveProjectResource` for `project://*`, the
+ *  Rust `read_resource` for `media://*`), so a client that lists templates
+ *  first never needs a fallback `read_project` call.
+ *
+ *  Static on purpose: the set of shapes never changes per project — only the
+ *  ids that fill them do. */
+export const MCP_RESOURCE_TEMPLATES = [
+  { uriTemplate: 'project://layers/{id}', name: 'Layer detail', description: 'One layer in full, from whichever composition holds it.', mimeType: 'application/json' },
+  { uriTemplate: 'project://tracks{?composition}', name: 'Tracks of a composition', description: "A composition's tracks + layer envelopes — the root's, or ?composition=<id> for a Group's.", mimeType: 'application/json' },
+  { uriTemplate: 'project://timeline{?composition,t_start_us,t_end_us,offset,limit}', name: 'Compact timeline', description: 'Flat compact layer rows plus the gap list; windowed by t_start_us/t_end_us, paged by offset/limit.', mimeType: 'application/json' },
+  { uriTemplate: 'project://markers{?composition}', name: 'Markers of a composition', description: "A composition's markers — the root's, or ?composition=<id>.", mimeType: 'application/json' },
+  { uriTemplate: 'media://{id}/transcript{?format,segment,detail,t_start_us,t_end_us,backend,language,words}', name: 'Durable transcript', description: 'What transcribe_clip wrote through: normalized engine segments in source-absolute time with covered ranges. 404 until transcribed.', mimeType: 'application/json' },
+  { uriTemplate: 'media://{id}/description', name: 'Scene description', description: 'Cached scene descriptions under the view the app settings name. 404 until describe_clip populates it.', mimeType: 'application/json' },
+  { uriTemplate: 'media://{id}/analysis', name: 'Shot report', description: 'Deterministic shot report ({ shots, cut_scores }), source-absolute, computed on demand.', mimeType: 'application/json' },
+  { uriTemplate: 'media://{id}/waveform', name: 'Audio peaks', description: 'Audio peaks file (binary, base64).', mimeType: 'application/octet-stream' },
+  { uriTemplate: 'media://{id}/thumbnail', name: 'Media thumbnail', description: 'Poster thumbnail for a media item.', mimeType: 'image/jpeg' },
+  { uriTemplate: 'media://{id}/frame/{t_us}', name: 'Source frame', description: 'One source frame at source-absolute t_us (the space analyze_clip keyframe_t_us uses).', mimeType: 'image/jpeg' },
+]
+
 export function buildMcpServer(backend: Backend, opts: McpServerOptions = {}): Server {
   const getTsHost = opts.getTsHost ?? (() => null)
   const getPreferredEngine = opts.getPreferredEngine ?? (() => null)
@@ -472,6 +496,9 @@ export function buildMcpServer(backend: Backend, opts: McpServerOptions = {}): S
   server.setRequestHandler(ReadResourceRequestSchema, track('resources/read', async (req: ReadResourceRequest) =>
     handleReadResource(backend, getTsHost, req.params.uri, getVlm, getPreferredEngine),
   log, clientInfo))
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, track('resources/templates/list', async () => {
+    return { resourceTemplates: MCP_RESOURCE_TEMPLATES } as unknown as ServerResult
+  }, log, clientInfo))
   server.setRequestHandler(ListPromptsRequestSchema, track('prompts/list', async () => {
     return { prompts: JSON.parse(await backend.mcpListPrompts()) } as unknown as ServerResult
   }, log, clientInfo))

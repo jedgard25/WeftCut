@@ -36,6 +36,22 @@ describe('agent work sessions', () => {
     expect(service.snapshot().activities.at(-1)?.session_id).toBeNull()
   })
 
+  it('a reconnected client reclaims an orphaned session with steal=true (never implicitly)', async () => {
+    const { service, actor, run } = setup()
+    const first = await run('one', () => { const s = service.begin('Long transcribe'); service.lock('batch'); return s })
+    expect(actor.historyStatus().lock_reason).toBe('batch')
+    // New connection, old one gone: plain begin stays busy, end stays owner-locked.
+    await expect(run('two', () => service.begin('Retry'))).rejects.toThrow('AgentSessionBusy')
+    await expect(run('two', () => service.end('agent'))).rejects.toThrow('OwnerMismatch')
+    // Explicit takeover closes the orphan (recorded as disconnected, lock out).
+    const second = await run('two', () => service.begin('Retry', { steal: true }))
+    expect(second.id).not.toBe(first.id)
+    expect(service.snapshot().session?.id).toBe(second.id)
+    expect(service.snapshot().sessions.find(s => s.id === first.id)).toMatchObject({ end_reason: 'disconnected' })
+    expect(actor.historyStatus().lock_reason).toBeUndefined()
+    expect(actor.listCheckpoints().length).toBeGreaterThanOrEqual(2)
+  })
+
   it('local end releases its lock, preserves records, and permits later operations', async () => {
     const { service, actor, run, add, send } = setup()
     const session = await run('one', () => { const s = service.begin('Edit'); service.lock(''); return s })

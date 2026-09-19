@@ -3,16 +3,16 @@ import { describe, it, expect } from 'vitest'
 import { seededGen } from './ids'
 import { blankProject } from './model'
 import type { Project } from './model'
-import { applyAddLayer, applyAddMarker, colorParams } from './mutations/add'
+import { applyAddLayer, applyAddMarker, applyAddTrack, colorParams } from './mutations/add'
 import { mediaItemTemplate, videoClipParams } from './mutations/media'
 import { createActor, type ActorHandle, type ActorLogEntry, type DispatchResult } from './actor'
 import { group, groupedProject, root, withGroup } from './__tests__/fixtures/project'
 
 function fresh() {
   const idGen = seededGen()
-  const initial = blankProject(idGen, 'replay') // ids 1,2,3
+  const initial = blankProject(idGen, 'replay') // #1 A-roll, #2 discarded, #3 project, #4 root
   const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-  return { actor, idGen, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+  return { actor, idGen, aRoll: root(initial).tracks[0].id }
 }
 
 describe('actor commit pipeline', () => {
@@ -133,12 +133,11 @@ describe('dispatch: split + links', () => {
     const idGen = seededGen()
     const initial = blankProject(idGen, 'd')
     const track = root(initial).tracks[0].id
-    const bRoll = root(initial).tracks[1].id
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
     const VID = '00000000-0000-0000-0000-0000000000cc'
     actor.dispatch('add_media', { id: VID, kind: 'Video', duration_us: 6_000_000 })
     const add = actor.dispatch('add_layer', { track, kind: 'video', media: VID, src_in_us: 0, src_out_us: 6_000_000, t_start_us: 0, t_end_us: 6_000_000 })
-    return { actor, track, bRoll, layer: (add as { ok: true; value: unknown }).value as string }
+    return { actor, track, layer: (add as { ok: true; value: unknown }).value as string }
   }
   const layersOf = (actor: ActorHandle, track: string) =>
     root(actor.snapshot()).tracks.find((t) => t.id === track)!.layers
@@ -240,9 +239,10 @@ describe('dispatch: split + links', () => {
   })
 
   it('split_layer_multi leaves a bundle member wholly inside a KEPT segment in place, still linked', () => {
-    const { actor, track, bRoll, layer } = splittableClip()
+    const { actor, track, layer } = splittableClip()
     // A manual scene bundle rather than an A/V pair: a lower-third over the
     // middle of the clip, spanning no cut, so the split never touches it.
+    const bRoll = (actor.dispatch('add_track', { label: null }) as { ok: true; value: unknown }).value as string
     const addC = actor.dispatch('add_layer', { track: bRoll, kind: 'color', t_start_us: 2_500_000, t_end_us: 3_500_000 })
     expect(addC.ok).toBe(true)
     const third = (addC as { ok: true; value: unknown }).value as string
@@ -355,12 +355,11 @@ describe('dispatch: split + links', () => {
     const idGen = () => { minted += 1; return inner() }
     const initial = blankProject(idGen, 'd')
     const track = root(initial).tracks[0].id
-    const bRoll = root(initial).tracks[1].id
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
     const VID = '00000000-0000-0000-0000-0000000000cc'
     actor.dispatch('add_media', { id: VID, kind: 'Video', duration_us: 6_000_000 })
     const add = actor.dispatch('add_layer', { track, kind: 'video', media: VID, src_in_us: 0, src_out_us: 6_000_000, t_start_us: 0, t_end_us: 6_000_000 })
-    return { actor, track, bRoll, layer: (add as { ok: true; value: unknown }).value as string, minted: () => minted }
+    return { actor, track, layer: (add as { ok: true; value: unknown }).value as string, minted: () => minted }
   }
 
   it('split_layer_multi with ripple abuts the kept segments and moves the paired audio in lockstep', () => {
@@ -413,10 +412,11 @@ describe('dispatch: split + links', () => {
   })
 
   it('split_layer_multi with ripple names the layer standing in a discarded segment and leaves the clip unsplit', () => {
-    const { actor, track, bRoll, layer, minted } = countedClip()
+    const { actor, track, layer, minted } = countedClip()
     // A lower third that starts half a second into the segment being thrown
     // away: the hole it would sit in has to be clean, so the ripple refuses and
     // says which layer is in the way.
+    const bRoll = (actor.dispatch('add_track', { label: null }) as { ok: true; value: unknown }).value as string
     const addC = actor.dispatch('add_layer', { track: bRoll, kind: 'color', t_start_us: 500_000, t_end_us: 1_500_000 })
     expect(addC.ok).toBe(true)
     const third = (addC as { ok: true; value: unknown }).value as string
@@ -654,7 +654,7 @@ describe('dispatch: rename_track (recorded)', () => {
     // Cleared back to a derived name, the row travels the KEY the header would
     // render — main holds no locale bundle, so it cannot name the lane itself.
     actor.dispatch('rename_track', { track: extra, label: '' })
-    expect(head(actor).entity_labels).toEqual([{ label_key: 'tracks.positional', label_args: { n: 3 } }])
+    expect(head(actor).entity_labels).toEqual([{ label_key: 'tracks.positional', label_args: { n: 2 } }])
     actor.dispatch('rename_track', { track: aRoll, label: 'Interview' })
     actor.dispatch('rename_track', { track: aRoll, label: null })
     expect(head(actor).entity_labels).toEqual([{ label_key: 'tracks.roles.a-roll' }])
@@ -771,7 +771,8 @@ describe('dispatch: transitions', () => {
   })
   it('add_transition with cross-track to-layer fails LayerNotFound (no id burned)', () => {
     const { actor, a1 } = setup()
-    const far = (actor.dispatch('add_layer', { track: root(actor.snapshot()).tracks[1].id, kind: 'color', t_start_us: 9_000_000, t_end_us: 10_000_000 }) as { ok: true; value: string }).value
+    const other = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    const far = (actor.dispatch('add_layer', { track: other, kind: 'color', t_start_us: 9_000_000, t_end_us: 10_000_000 }) as { ok: true; value: string }).value
     const r = actor.dispatch('add_transition', { from: a1, to: far, duration_us: 1_000_000 })
     expect(r.ok).toBe(false)
     expect((r as { ok: false; error: { error: string } }).error.error).toBe('LayerNotFound') // far is on a different track → not found on a1's track
@@ -893,7 +894,8 @@ describe('dispatch: set_composition full', () => {
     const idGen = seededGen(); const initial = blankProject(idGen, 'sc')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
     actor.dispatch('add_layer', { track: root(initial).tracks[0].id, kind: 'color', t_start_us: 0, t_end_us: 2_000_000 })
-    actor.dispatch('add_layer', { track: root(initial).tracks[1].id, kind: 'color', t_start_us: 0, t_end_us: 1_000_000 })
+    const second = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    actor.dispatch('add_layer', { track: second, kind: 'color', t_start_us: 0, t_end_us: 1_000_000 })
     return actor
   }
   // ── The rate lock (spec R2-D1/R2-D2) ─────────────────────────────────────────
@@ -1197,12 +1199,12 @@ describe('dispatch: separate_audio', () => {
     actor.dispatch('add_media', { id: AID, kind: 'Audio', duration_us: 3_000_000 })
     const extra = (actor.dispatch('add_track', {}) as { ok: true; value: string }).value
     const l = (actor.dispatch('add_layer', { track: extra, kind: 'audio', media: AID, src_in_us: 0, src_out_us: 3_000_000, t_start_us: 0, t_end_us: 3_000_000 }) as { ok: true; value: string }).value
-    expect(root(actor.snapshot()).tracks).toHaveLength(3)
+    expect(root(actor.snapshot()).tracks).toHaveLength(2)
 
     const lifted = (actor.dispatch('separate_audio', { layer: l }) as { ok: true; value: string }).value
     const after = root(actor.snapshot()).tracks
     expect(after.map((t) => t.id)).not.toContain(extra) // emptied by the lift
-    expect(after).toHaveLength(3) // the lifted lane took the pruned one's slot
+    expect(after).toHaveLength(2) // the lifted lane took the pruned one's slot
     expect(after.find((t) => t.id === lifted)!.layers.map((x) => x.id)).toEqual([l])
 
     expect(actor.dispatch('undo', {}).ok).toBe(true)
@@ -1230,14 +1232,14 @@ describe('dispatch: params', () => {
   function textActor() {
     const idGen = seededGen(); const initial = blankProject(idGen, 'pp')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-    const id = (actor.dispatch('add_layer', { track: root(initial).tracks[1].id, kind: 'text', t_start_us: 0, t_end_us: 2_000_000 }) as { ok: true; value: string }).value
+    const id = (actor.dispatch('add_layer', { track: root(initial).tracks[0].id, kind: 'text', t_start_us: 0, t_end_us: 2_000_000 }) as { ok: true; value: string }).value
     return { actor, id }
   }
   it('update_layer_params merges fields (recorded; undoable)', () => {
     const { actor, id } = textActor()
     const before = JSON.stringify(actor.snapshot())
     expect(actor.dispatch('update_layer_params', { layer: id, patch: { kind: 'Text', opacity: 0.25, content: 'z' } }).ok).toBe(true)
-    const t = root(actor.snapshot()).tracks[1].layers[0].params as Extract<import('./model').LayerParams, { kind: 'Text' }>
+    const t = root(actor.snapshot()).tracks[0].layers[0].params as Extract<import('./model').LayerParams, { kind: 'Text' }>
     expect([t.opacity, t.content]).toEqual([{ mode: 'Static', value: 0.25 }, 'z'])
     expect(actor.dispatch('undo', {}).ok).toBe(true)
     expect(JSON.stringify(actor.snapshot())).toBe(before)
@@ -1253,7 +1255,7 @@ describe('dispatch: params', () => {
       { id: '00000000-0000-0000-0000-0000000000f1', t_us: 0, value: 0, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } },
       { id: '00000000-0000-0000-0000-0000000000f2', t_us: 1_000_000, value: 1, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } }] }
     expect(actor.dispatch('update_layer_param_track', { layer: id, param_key: 'opacity', track }).ok).toBe(true)
-    expect((root(actor.snapshot()).tracks[1].layers[0].params as { opacity: { mode: string } }).opacity.mode).toBe('Keyframed')
+    expect((root(actor.snapshot()).tracks[0].layers[0].params as { opacity: { mode: string } }).opacity.mode).toBe('Keyframed')
   })
   it('update_layer_param_tracks applies a batch in one commit (one undo reverts all)', () => {
     const { actor, id } = textActor()
@@ -1272,7 +1274,7 @@ describe('dispatch: params', () => {
     { id: '00000000-0000-0000-0000-0000000000f2', t_us: 1_000_000, value: v, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } }] })
   /** A second text layer on the same lane, clear of the first one's span. */
   function secondTextLayer(actor: ReturnType<typeof textActor>['actor']): string {
-    return (actor.dispatch('add_layer', { track: root(actor.snapshot()).tracks[1].id, kind: 'text', t_start_us: 3_000_000, t_end_us: 5_000_000 }) as { ok: true; value: string }).value
+    return (actor.dispatch('add_layer', { track: root(actor.snapshot()).tracks[0].id, kind: 'text', t_start_us: 3_000_000, t_end_us: 5_000_000 }) as { ok: true; value: string }).value
   }
   const transformOfLayer = (actor: ReturnType<typeof textActor>['actor'], layerId: string) =>
     root(actor.snapshot()).tracks.flatMap((t) => t.layers).find((l) => l.id === layerId)!.params as {
@@ -1694,7 +1696,7 @@ describe('dispatch: attribute-panel timing/envelope ops', () => {
 
   it('trim_layer Out fans out to an aligned link sibling within the same single undo entry', () => {
     const { actor, mk } = setup()
-    const b = root(actor.snapshot()).tracks[1].id
+    const b = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
     // Siblings on different tracks sharing the SAME out-edge: the coupled
     // trim fans out (mirrors mutations/trim.test.ts's aligned-set cases).
     const l1 = mk(0, 1_000_000)
@@ -1732,7 +1734,7 @@ describe('dispatch: emptied-track cleanup', () => {
   function setup() {
     const idGen = seededGen(); const initial = blankProject(idGen, 'prune')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-    return { actor, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+    return { actor, aRoll: root(initial).tracks[0].id }
   }
   type Actor = ReturnType<typeof createActor>
   function value(r: DispatchResult): string {
@@ -1787,10 +1789,11 @@ describe('dispatch: emptied-track cleanup', () => {
   })
 
   it('a lane born empty survives deletions and moves elsewhere in the project', () => {
-    const { actor, aRoll, bRoll } = setup()
+    const { actor, aRoll } = setup()
     const untouched = addLane(actor) // created, never filled
+    const second = addLane(actor)
     const doomed = addClip(actor, aRoll)
-    const travelling = addClip(actor, bRoll)
+    const travelling = addClip(actor, second)
     expect(actor.dispatch('delete_layers', { layers: [doomed] }).ok).toBe(true)
     expect(actor.dispatch('move_layer', { layer: travelling, to_track: aRoll, t_start_us: 0 }).ok).toBe(true)
     expect(lanes(actor)).toContain(untouched)
@@ -1810,13 +1813,14 @@ describe('dispatch: emptied-track cleanup', () => {
     expect(clipsOn(actor, lane)).toHaveLength(1)
   })
 
-  it('reserved A/B-roll lanes survive emptying by either path', () => {
-    const { actor, aRoll, bRoll } = setup()
+  it('the reserved A-roll lane survives emptying by either path', () => {
+    const { actor, aRoll } = setup()
     const onA = addClip(actor, aRoll)
-    const onB = addClip(actor, bRoll)
     expect(actor.dispatch('delete_layers', { layers: [onA] }).ok).toBe(true)
-    expect(actor.dispatch('move_layer', { layer: onB, to_track: aRoll, t_start_us: 0 }).ok).toBe(true)
-    expect(lanes(actor)).toEqual([aRoll, bRoll])
+    expect(lanes(actor)).toEqual([aRoll])
+    const travelling = addClip(actor, aRoll)
+    expect(actor.dispatch('move_layer', { layer: travelling, to_track: addLane(actor), t_start_us: 0 }).ok).toBe(true)
+    expect(lanes(actor)).toContain(aRoll) // the reserved lane survives emptying
   })
 
   it('a coupled move prunes only the lane the target left; the sibling keeps its own', () => {
@@ -1854,7 +1858,7 @@ describe('dispatch: delete_layers', () => {
   function setup() {
     const idGen = seededGen(); const initial = blankProject(idGen, 'del-multi')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-    return { actor, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+    return { actor, aRoll: root(initial).tracks[0].id }
   }
   type Actor = ReturnType<typeof createActor>
   function value(r: DispatchResult): string {
@@ -1868,7 +1872,8 @@ describe('dispatch: delete_layers', () => {
   const layerIds = (actor: Actor): string[] => root(actor.snapshot()).tracks.flatMap((t) => t.layers).map((l) => l.id)
 
   it('deletes a batch spanning two lanes that ONE undo restores', () => {
-    const { actor, aRoll, bRoll } = setup()
+    const { actor, aRoll } = setup()
+    const bRoll = addLane(actor)
     const onA = addClip(actor, aRoll)
     const onB = addClip(actor, bRoll)
     const survivor = addClip(actor, aRoll, 2_000_000, 3_000_000)
@@ -1944,7 +1949,7 @@ describe('dispatch: move to a new track', () => {
   function setup() {
     const idGen = seededGen(); const initial = blankProject(idGen, 'raise')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-    return { actor, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+    return { actor, aRoll: root(initial).tracks[0].id }
   }
   type Actor = ReturnType<typeof createActor>
   function value(r: DispatchResult): string {
@@ -2013,19 +2018,19 @@ describe('dispatch: move to a new track', () => {
   // of raises, and the reason a sequence is affordable is that each raise takes
   // its emptied lane with it — the lane count is flat, not one higher per raise.
   it('restacks two overlapping overlays either way by repeated raises, stranding no lane', () => {
-    const { actor, aRoll, bRoll } = setup()
+    const { actor, aRoll } = setup()
     const lower = addLane(actor)
     const upper = addLane(actor)
     const first = addClip(actor, lower, 0, 2_000_000)
     const second = addClip(actor, upper, 1_000_000, 3_000_000)
     // Later in the vector is higher in the z-stack, so `second` composites on top.
-    expect(lanes(actor)).toEqual([aRoll, bRoll, lower, upper])
+    expect(lanes(actor)).toEqual([aRoll, lower, upper])
 
     const firstOnTop = value(raise(actor, [first]))
-    expect(lanes(actor)).toEqual([aRoll, bRoll, upper, firstOnTop])
+    expect(lanes(actor)).toEqual([aRoll, upper, firstOnTop])
 
     const secondOnTop = value(raise(actor, [second]))
-    expect(lanes(actor)).toEqual([aRoll, bRoll, firstOnTop, secondOnTop])
+    expect(lanes(actor)).toEqual([aRoll, firstOnTop, secondOnTop])
     // Both clips still overlap in time and both lanes still carry one.
     expect(clipsOn(actor, firstOnTop).map((l) => l.id)).toEqual([first])
     expect(clipsOn(actor, secondOnTop).map((l) => l.id)).toEqual([second])
@@ -2054,11 +2059,11 @@ describe('dispatch: move to a new track', () => {
     expect(clipsOn(actor, lane).map((l) => l.id)).toEqual([clip])
   })
 
-  it('leaves the reserved A/B-roll lane standing when the raise empties it', () => {
-    const { actor, aRoll, bRoll } = setup()
+  it('leaves the reserved A-roll lane standing when the raise empties it', () => {
+    const { actor, aRoll } = setup()
     const clip = addClip(actor, aRoll)
     const newLane = value(raise(actor, [clip]))
-    expect(lanes(actor)).toEqual([aRoll, bRoll, newLane])
+    expect(lanes(actor)).toEqual([aRoll, newLane])
     expect(clipsOn(actor, aRoll)).toHaveLength(0)
   })
 
@@ -2117,7 +2122,9 @@ describe('dispatch: paste_layers', () => {
   function setup() {
     const idGen = seededGen(); const initial = blankProject(idGen, 'paste-multi')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-    return { actor, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+    const aRoll = root(initial).tracks[0].id
+    const bRoll = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    return { actor, aRoll, bRoll }
   }
   type Actor = ReturnType<typeof createActor>
   function value<T>(r: DispatchResult): T {
@@ -2198,7 +2205,9 @@ describe('dispatch: set_layers_enabled', () => {
   function setup() {
     const idGen = seededGen(); const initial = blankProject(idGen, 'enabled-multi')
     const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-    return { actor, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+    const aRoll = root(initial).tracks[0].id
+    const bRoll = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    return { actor, aRoll, bRoll }
   }
   type Actor = ReturnType<typeof createActor>
   const addClip = (actor: Actor, track: string): string => {
@@ -2401,7 +2410,9 @@ describe('actor commit pipeline: the marker reconcile', () => {
     const gen = seededGen()
     const p = blankProject(gen, 'am')
     p.media_pool[MEDIA_M] = mediaItemTemplate(MEDIA_M, 'Video', 10_000_000)
-    return { p, gen, aRoll: root(p).tracks[0].id, bRoll: root(p).tracks[1].id }
+    const aRoll = root(p).tracks[0].id
+    const bRoll = applyAddTrack(p, gen, null)
+    return { p, gen, aRoll, bRoll }
   }
 
   it('an edit that touches nothing marker-shaped still re-derives a stale t_us — the reconcile runs on EVERY commit', () => {

@@ -36,6 +36,8 @@ import { foreignCompositionAtPoint } from "../timelineSurfaces";
 import { playheadClockUs } from "../../state/playheadProjection";
 import {
   evaluateTimelinePlacements,
+  isSpawnTrackId,
+  SPAWN_BOTTOM_TRACK_ID,
   SPAWN_TRACK_ID,
   type PlacementValidity,
   type TimelinePlacement,
@@ -147,6 +149,9 @@ export function useLayerDrag(opts: {
   /// separately and folded into the same measured rows instead — one band rule
   /// still decides every destination.
   dropStripEl: React.RefObject<HTMLElement | null>;
+  /// The bottom strip's row: same protocol as the top strip, resolving to the
+  /// bottom spawn target (a lane below everything) rather than the top one.
+  dropStripBottomEl: React.RefObject<HTMLElement | null>;
   pxPerSec: number;
   fpsNum: number;
   fpsDen: number;
@@ -170,6 +175,7 @@ export function useLayerDrag(opts: {
     orderedTracks,
     laneEls,
     dropStripEl,
+    dropStripBottomEl,
     pxPerSec,
     fpsNum,
     fpsDen,
@@ -245,12 +251,12 @@ export function useLayerDrag(opts: {
   useEffect(() => {
     if (!pendingCommit) return;
     const allLanded = pendingCommit.placements.every((placement) => {
-      // A raise's promise names `SPAWN_TRACK_ID`, a lane that has no id until
+      // A raise's promise names a spawn target, a lane that has no id until
       // the command returns, so "landed" cannot be "landed on THAT row" — it is
       // "the layer exists at the promised span, wherever the actor put it". The
       // spawned lane is empty by construction, so there is nothing else the
       // times could belong to.
-      const spawning = placement.trackId === SPAWN_TRACK_ID;
+      const spawning = isSpawnTrackId(placement.trackId);
       const track = spawning
         ? tracks.find((t) => t.layers.some((l) => l.id === placement.layerId))
         : tracks.find((t) => t.id === placement.trackId);
@@ -434,9 +440,9 @@ export function useLayerDrag(opts: {
 
   // -------- Layer drag (move / trim) --------
 
-  /// Which destination a pointer at `clientY` is over, as a track id —
-  /// `SPAWN_TRACK_ID` when that destination is the drop strip, i.e. a lane that
-  /// does not exist yet (ADR 0042). Measure the rendered rows, then band-select.
+  /// Which destination a pointer at `clientY` is over, as a track id — a spawn
+  /// target when that destination is a drop strip, i.e. a lane that does not
+  /// exist yet (ADR 0042). Measure the rendered rows, then band-select.
   /// Cost is one forced reflow per pointer event; the remaining rect reads then
   /// hit clean layout.
   const destinationUnderPointer = useCallback(
@@ -450,8 +456,8 @@ export function useLayerDrag(opts: {
         const rect = el.getBoundingClientRect();
         rows.push({ trackId: track.id, top: rect.top, bottom: rect.bottom });
       }
-      // The strip joins the SAME row list, so the seam between it and the
-      // topmost lane is decided by the one band rule that already hands an
+      // Both strips join the SAME row list, so the seam between a strip and its
+      // neighbouring lane is decided by the one band rule that already hands an
       // expanded track's sub-lanes to their owner. A second hit-test would be a
       // second chance to disagree with this one at exactly that boundary.
       const stripEl = dropStripEl.current;
@@ -463,9 +469,18 @@ export function useLayerDrag(opts: {
           bottom: rect.bottom,
         });
       }
+      const bottomStripEl = dropStripBottomEl.current;
+      if (bottomStripEl) {
+        const rect = bottomStripEl.getBoundingClientRect();
+        rows.push({
+          trackId: SPAWN_BOTTOM_TRACK_ID,
+          top: rect.top,
+          bottom: rect.bottom,
+        });
+      }
       return trackIdAtClientY(rows, clientY);
     },
-    [dropStripEl, laneEls, orderedTracks],
+    [dropStripBottomEl, dropStripEl, laneEls, orderedTracks],
   );
 
   /// Snap a raw drag delta so the dragged edge / clip-start lands on
@@ -546,15 +561,15 @@ export function useLayerDrag(opts: {
           ? overTrackId
           : state.trackId;
       // A raise takes the WHOLE subject set onto the one new lane, where a
-      // landing move re-lanes the anchor alone. Projecting them all onto
-      // `SPAWN_TRACK_ID` is exactly the question "could one empty lane hold
+      // landing move re-lanes the anchor alone. Projecting them all onto the
+      // spawn target is exactly the question "could one empty lane hold
       // them" — which is what makes a set that would overlap itself there answer
       // `"collision"` and refuse.
       //
       // TIME is not part of that difference any more: `move_layers_to_new_track`
       // takes a landing, so a raise reads the same shift a landing move does and
       // the strip's ghost slides with the pointer like every other destination.
-      const spawning = destinationTrackId === SPAWN_TRACK_ID;
+      const spawning = isSpawnTrackId(destinationTrackId);
       const projected: TimelinePlacement[] = [];
 
       for (const subject of state.subjects) {
@@ -658,7 +673,7 @@ export function useLayerDrag(opts: {
       // the release — the dark strip says the strip is not the target, and the
       // visible ghost says what is.
       const overTrackId =
-        hitTrackId === SPAWN_TRACK_ID && state.duplicate ? null : hitTrackId;
+        hitTrackId !== null && isSpawnTrackId(hitTrackId) && state.duplicate ? null : hitTrackId;
       const destinationTrackId =
         overTrackId !== null && trackAcceptsForLayer(overTrackId, state)
           ? overTrackId
@@ -829,8 +844,11 @@ export function useLayerDrag(opts: {
         const escape = committed.escapeLink;
         switch (committed.kind) {
           case "move": {
+            const spawnDestination = moveProjection?.destinationTrackId ?? null;
             const spawning =
-              moveProjection?.destinationTrackId === SPAWN_TRACK_ID;
+              spawnDestination !== null && isSpawnTrackId(spawnDestination);
+            const spawnPosition =
+              spawnDestination === SPAWN_BOTTOM_TRACK_ID ? "bottom" : "top";
             // The verdict a committable release has to carry: `"spawn"` over the
             // strip (a lane that does not exist yet is never `"valid"`),
             // `"valid"` over a real lane. Collision and lock out-rank both, so
@@ -850,13 +868,13 @@ export function useLayerDrag(opts: {
               // add-track + move — that is two entries and a stranded lane if the
               // second half fails.
               //
-              // Bridged like every other move, on `SPAWN_TRACK_ID` — the same
+              // Bridged like every other move, on the spawn target — the same
               // sentinel row the ghost was just drawn in, so the drop strip
               // keeps drawing the clip there for the round trip and the release
               // is not a flash of the clip back where it started. No lane can
               // match that id, which is deliberate twice over: the source lane
               // filters the clip out (`TrackLane`) because the clip really is
-              // leaving, and the settle watcher's `SPAWN_TRACK_ID` arm is what
+              // leaving, and the settle watcher's spawn arm is what
               // gives the promise its equality exit without an id to compare.
               setPendingCommit({
                 seq: commitSeq,
@@ -874,6 +892,7 @@ export function useLayerDrag(opts: {
                   layerId: committed.layerId,
                   tStartUs: moveProjection.anchorStartUs,
                 },
+                spawnPosition,
               );
               onLaneSpawned(spawnedTrackId);
               break;

@@ -105,6 +105,7 @@ import { useLogStore } from "./logs/store";
 import { useCommandProvider } from "./commands/registry";
 import { buildAppCommands } from "./commands/appCommands";
 import { splitAtPlayhead } from "./commands/splitAtPlayhead";
+import { collapseToPlayhead } from "./commands/collapseToPlayhead";
 import { applyTransitionAtPlayhead } from "./timeline/applyTransition";
 import {
   displayMode,
@@ -780,6 +781,8 @@ export function App({ onCloseProject }: AppProps) {
     // `project:changed` subscription refreshes the view, as it does for every
     // other command that doesn't hold App's `refresh`.
     splitAtPlayhead,
+    collapseLeftToPlayhead: () => collapseToPlayhead("left"),
+    collapseRightToPlayhead: () => collapseToPlayhead("right"),
     importMedia: importMediaFiles,
     export: () => setExportDialogOpen(true),
     // One key per tool, all idempotent (`toolStore.ts`). `Esc` → Selection is

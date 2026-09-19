@@ -17,7 +17,13 @@ what no single tool can: how a session should go.
    gap list, windowed by `t_start_us`/`t_end_us` (`project://current` only when
    you need the whole project). Never write against a guessed state. If your
    client cannot read MCP resources, `read_project` returns the same views as
-   a tool result.
+   a tool result. Parameterized URIs (`project://layers/{id}`,
+   `media://{id}/transcript`, …) are advertised on `resources/templates/list`.
+2. Handshake first: force a fresh `tools/list` on (re)connect and confirm
+   `apply_cut_list` and the `media://{id}/transcript` template are present,
+   and note the server `version` from `initialize`. A catalog without them is
+   a stale build still running — restart the app and re-list; never work
+   around a missing verb with many single-purpose calls.
 2. Call `create_checkpoint` before your first edit, so the user has a one-step
    restore point.
 3. A small change (a handful of tool calls) needs no more ceremony than that:
@@ -28,6 +34,9 @@ what no single tool can: how a session should go.
    `begin_agent_session`. It creates a checkpoint once per session. Wrap the
    batch in `set_history_lock`, both ways, rehearse with `dry_run` where
    supported, and call `end_agent_session` when finished (also on failure).
+   If `begin_agent_session` answers `AgentSessionBusy` after a reconnect (a
+   long op re-established your connection), retry once with `steal: true` to
+   reclaim the orphaned session — never by default.
    Use a finally-style cleanup so a failed tool does not leave undo locked.
    Manual view switching neither starts nor ends work. The user can end work
    or unlock locally; explicit transport close also ends its owned session.
@@ -56,7 +65,12 @@ descriptions:
   as the `/cut-pauses` prompt).
 - Captions: `transcribe_clip` with `segment` set to `sentence` → inspect the
   returned SRT → `apply_transcripts`, passing the envelope's `segments` and
-  `word_timing` through (also `/auto-caption`). Sentence segmentation merges
+  `word_timing` through (also `/auto-caption`). Transcribe in windows of at
+  most ~5 minutes (`t_start_us`/`t_end_us`): a 10-minute window can OOM the
+  local engines, while 5-minute windows serve reliably. The result names the
+  `backend` that served it — record it; parallel calls may resolve to
+  different engines, so a crash root-cause starts with which backend ran
+  which window. Sentence segmentation merges
   choppy engine fragments across sub-pause gaps — never re-merge thresholds
   yourself. A transcript persists per source: re-read it from the `transcript`
   media resource instead of re-transcribing it next session.
@@ -74,9 +88,19 @@ descriptions:
 - Rough cut: name the spans to keep and call `apply_cut_list` — one recorded
   edit that splits, discards, labels and closes the gaps, rehearsable with
   `dry_run` (use it; a 21-step trim-and-delete cannot be rehearsed).
+  Before building the keep list, cluster near-duplicate takes: normalize each
+  transcript segment's text (lowercase, strip punctuation/filler) and group
+  segments by similarity, keeping the best take per group — otherwise repeat
+  takes survive the cut and the film says everything twice. After the cut,
+  read back: re-read `project://timeline`, confirm the survivor count and
+  total duration match the keep list, and spot-check one boundary.
   `analyze_clip` or `auto_split_by_shot` first when the boundaries come from
-  shot cuts; `delete_layers` with `ripple: true` when the gap a cut leaves
-  should close behind it.
+  shot cuts (on a long clip, run `analyze_clip` with `passes: ["shots"]` for
+  timing only before any stats pass, and prefer the proxy); `delete_layers` with `ripple: true` when the gap a cut leaves
+  should close behind it. A split cuts a linked pair into a left pair and a
+  right pair (links never grow across a cut), and dissolving a link after a
+  frame-grid cut is safe — orphaned audio snaps to the sample lattice in the
+  same edit.
 - Music, sound effects, a separate voice track: `add_audio_layer`. It is the
   only tool that places audio-only media — `add_video_layer` builds a visual
   layer and refuses an audio file.

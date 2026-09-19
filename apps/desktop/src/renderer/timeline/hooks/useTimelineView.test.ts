@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { viewStateDefaults, type ViewState } from "../../../shared/view-state";
 import { resetViewState } from "../../state/viewState";
 import { DEFAULT_PX_PER_SEC, HEADER_COL_PX, MAX_PX_PER_SEC } from "../geometry";
+import { WHEEL_ZOOM_PER_PX } from "../zoom";
 import { useTimelineView } from "./useTimelineView";
 
 // The view-state read is the hook's one side effect on mount. Left permanently
@@ -161,7 +162,26 @@ describe("useTimelineView keyboard zoom", () => {
 });
 
 describe("useTimelineView wheel zoom", () => {
-  afterEach(cleanup);
+  const frames = new Map<number, FrameRequestCallback>();
+  let nextFrameId = 0;
+  beforeEach(() => {
+    frames.clear();
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      const id = ++nextFrameId;
+      frames.set(id, cb);
+      return id;
+    });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+  function flushFrame() {
+    const pending = [...frames.values()];
+    frames.clear();
+    for (const cb of pending) cb(0);
+  }
 
   /// One notch of the wheel over the middle of the lane, with whatever modifier
   /// the case is about. Negative deltaY is "away from the user" = zoom in.
@@ -187,10 +207,41 @@ describe("useTimelineView wheel zoom", () => {
     const { result } = renderHook(() => useTimelineView({ rootRef: ref, ...LONG }));
     const { event, preventDefault } = notch({ [mod]: true });
 
-    act(() => el.wheel?.(event));
+    act(() => {
+      el.wheel?.(event);
+      flushFrame();
+    });
 
     expect(result.current.pxPerSec).toBeGreaterThan(DEFAULT_PX_PER_SEC);
     expect(preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("compounds rapid ticks within one frame instead of dropping them", () => {
+    const { ref, el } = root();
+    const { result } = renderHook(() => useTimelineView({ rootRef: ref, ...LONG }));
+    const tick = () =>
+      ({
+        deltaY: -100,
+        deltaMode: 0,
+        clientX: HEADER_COL_PX + 500,
+        ctrlKey: true,
+        altKey: false,
+        preventDefault: vi.fn(),
+      }) as unknown as WheelEvent;
+
+    act(() => {
+      el.wheel?.(tick());
+      el.wheel?.(tick());
+      expect(frames.size).toBe(1);
+      expect(result.current.pxPerSec).toBe(DEFAULT_PX_PER_SEC);
+      flushFrame();
+    });
+
+    const f = Math.exp(100 * WHEEL_ZOOM_PER_PX);
+    expect(result.current.pxPerSec).toBeCloseTo(DEFAULT_PX_PER_SEC * f * f, 8);
+    // The re-anchor holds the cursor's time across the COMPOUND ratio, not
+    // one tick's: (scrollLeft + 500) / newPps === 500 / oldPps.
+    expect(el.scrollLeft).toBeCloseTo(500 * f * f - 500, 8);
   });
 
   // The bare wheel and Shift belong to the scroll gesture

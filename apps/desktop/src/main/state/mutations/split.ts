@@ -113,7 +113,21 @@ function splitSingleLayer(p: Project, idGen: IdGen, id: Uuid, atTUs: number): { 
   return { left: id, right: right.id }
 }
 
-/** Split with link spanning fan-out. */
+/** Split with link spanning fan-out, then per-side link partition.
+ *
+ *  A split cuts a link into a LEFT link and a RIGHT link — never one growing
+ *  link. After all spanning siblings are cut at the one instant, every member
+ *  of the touched link sits wholly on one side of `atTUs` (a spanner was cut,
+ *  so none remains), and the link is partitioned by position: left members
+ *  keep the original link id when they still number ≥ 2 (else they leave the
+ *  link), right members form a new link when they number ≥ 2 (else they stay
+ *  unlinked). A 30-cut rough cut therefore yields 31 pairs, not one
+ *  32-member bundle — and no link ever straddles a cut it just made, so a
+ *  later ripple never meets `RippleLinkStraddles` over the split's own seam.
+ *
+ *  `escape_link` keeps the legacy grow: siblings are deliberately NOT cut, so
+ *  they still span the instant and no partition exists — the caller asked to
+ *  edit alone without dissolving the link, and the straddle is theirs. */
 export function applySplitLayer(p: Project, idGen: IdGen, id: Uuid, atTUsRaw: number, escapeLink: boolean): { left: Uuid; right: Uuid } {
   // Pre-flight on the target.
   const target = requireLayer(p, id)
@@ -141,20 +155,71 @@ export function applySplitLayer(p: Project, idGen: IdGen, id: Uuid, atTUsRaw: nu
   const linkByMember = indexLinks(c.links)
   const linkById = new Map(c.links.map((g) => [g.id, g]))
 
-  // Split each spanning sibling in sorted order; add its right-half to the sibling's link.
+  if (escapeLink) {
+    // Escape path (unchanged): siblings are not cut and still span the
+    // instant, so no partition exists. The target's right half joins its
+    // link, if any (split.test.ts: an escape_link split leaves 3 members).
+    const tgid = linkByMember.get(targetHalves.left)
+    if (tgid !== undefined) { const g = linkById.get(tgid); if (g) { g.members = [...g.members, targetHalves.right].sort() } }
+    return targetHalves
+  }
+
+  // Split each spanning sibling in sorted order (no link writes yet — the
+  // partition below owns all membership writes, so intermediate states never
+  // name a straddling set).
+  const newRightIds: Uuid[] = [targetHalves.right]
   for (const sid of spanning) {
     const { right: rightId } = splitSingleLayer(p, idGen, sid, atTUs)
-    const gid = linkByMember.get(sid)
-    if (gid !== undefined) {
-      const g = linkById.get(gid)
-      if (g) { g.members = [...g.members, rightId].sort() }
+    newRightIds.push(rightId)
+  }
+
+  // Partition the touched link (at most one: `spanning` holds members of the
+  // target's own link only) by position. Every spanner was just cut, so each
+  // member sits wholly on one side; a member ending exactly at the instant is
+  // left, one starting there is right.
+  const tgid = linkByMember.get(targetHalves.left)
+  if (tgid !== undefined) {
+    const g = linkById.get(tgid)
+    if (g) {
+      const spanById = new Map<Uuid, { t_start_us: number; t_end_us: number }>()
+      for (const t of c.tracks) for (const l of t.layers) spanById.set(l.id, l)
+      const left: Uuid[] = []
+      const right: Uuid[] = []
+      for (const m of g.members) {
+        const s = spanById.get(m)
+        if (!s) continue
+        // Right halves are new ids already in `members`? No — nothing was
+        // appended yet, so add them explicitly below; classify the stored
+        // members first (left halves + untouched members).
+        if (s.t_end_us <= atTUs) left.push(m)
+        else if (s.t_start_us >= atTUs) right.push(m)
+        else {
+          // Unreachable for the touched link (every spanner was cut), but a
+          // defensive keep-left rather than a throw: partition must never
+          // abort a split mid-batch.
+          left.push(m)
+        }
+      }
+      for (const r of newRightIds) right.push(r)
+      const uniq = (xs: Uuid[]) => [...new Set(xs)].sort()
+      const l = uniq(left)
+      const r = uniq(right)
+      if (l.length >= 2 && r.length >= 2) {
+        g.members = l
+        c.links.push({ id: idGen(), members: r })
+      } else if (l.length >= 2) {
+        g.members = l
+        // Right side too small to link — its members stay unlinked.
+      } else if (r.length >= 2) {
+        g.members = r
+        // Left side too small — its members leave the link with it.
+      } else {
+        // Neither side links — dissolve.
+        const idx = c.links.findIndex((x) => x.id === tgid)
+        if (idx >= 0) c.links.splice(idx, 1)
+      }
     }
   }
-  // Add the target's right-half to its link, if any. UNCONDITIONAL:
-  // even with escape_link, the target's left half keeps the original id and stays linked,
-  // so its right half joins too (split.test.ts: an escape_link split leaves 3 members).
-  const tgid = linkByMember.get(targetHalves.left)
-  if (tgid !== undefined) { const g = linkById.get(tgid); if (g) { g.members = [...g.members, targetHalves.right].sort() } }
 
   return targetHalves
 }

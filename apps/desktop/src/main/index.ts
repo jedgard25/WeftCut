@@ -17,7 +17,7 @@ import { setRuntimeSource, captureMotifFrameB64, setMotifStore, shutdownCaptureH
 import { UserMotifStore } from './motif/store.js'
 import { spawnMotifWatcher, type MotifWatcher } from './motif/watcher.js'
 import { builtinAssetDir } from './motif/builtinAssets.js'
-import { createSecondary, actOnSecondary, secondaryExists, hardenWindow, restoreGeometry, rememberGeometry, quitIfLastUserWindowClosed } from './windows.js'
+import { createSecondary, actOnSecondary, secondaryExists, hardenWindow, restoreGeometry, rememberGeometry, quitIfLastUserWindowClosed, logProcessGone } from './windows.js'
 import { registerScreenPick } from './screenPick.js'
 import type { SecondaryWinOpts } from './windowConfig.js'
 import { shouldClearApplicationMenu } from './inputPolicy.js'
@@ -2256,6 +2256,13 @@ app.whenReady().then(async () => {
 // this event cannot be trusted; a double quit is absorbed by quitFlushed below.
 // No platform test, for the same reason the gate carries none — a windowless
 // WeftCut is never a state to leave running.
+// GPU/utility/other child-process deaths. A GPU-process crash is one of the
+// ways the whole editor window can go black, and it is invisible without this
+// (the webContents `render-process-gone` handler only sees the renderer).
+app.on('child-process-gone', (_event, details) => {
+  logProcessGone('child-process-gone', details)
+})
+
 app.on('window-all-closed', () => app.quit())
 
 // Flush the TS actor's debounced autosave before the process exits — an edit made

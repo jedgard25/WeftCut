@@ -431,7 +431,10 @@ test.describe("Add to Group", () => {
       // broken offset pass unnoticed.
       const s0 = await wire(page);
       const aRoll = trackWithRole(rootOf(s0), "a-roll");
-      const bRoll = trackWithRole(rootOf(s0), "b-roll");
+      // Single-lane skeleton: the members need a second lane, spawned, and the
+      // All Tracks display to draw it (A/B Roll shows the A roll alone).
+      await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+      const bRoll = await invokeCmd<string>(page, "add_track", {});
       const seedId = await invokeCmd<string>(page, "add_color_layer", {
         trackId: aRoll,
         tStartUs: 2_000_000,

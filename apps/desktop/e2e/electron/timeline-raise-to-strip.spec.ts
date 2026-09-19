@@ -78,7 +78,7 @@ test.describe('timeline drop strip — an existing clip', () => {
       expect(sourceLaneId).not.toBeNull()
       const laneIdsBefore = new Set(before.tracks.map((t) => t.id))
 
-      const strip = page.locator('[data-testid="timeline-drop-strip"]')
+      const strip = page.locator('[data-testid="timeline-drop-strip"][data-position="top"]')
       await expect(strip).toBeVisible()
       const stripBox = await strip.boundingBox()
       const clipBox = await clip.boundingBox()

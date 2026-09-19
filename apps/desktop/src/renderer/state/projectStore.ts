@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useMemo } from "react";
 import { listen, type UnlistenFn } from "@/bridge/events";
 
 import {
@@ -377,6 +378,81 @@ export const useFirstVideoMediaIdIn = (
   useProjectStore((s) =>
     compositionId ? firstVideoMediaIdIn(s.summary, compositionId) : null,
   );
+
+/// A Group clip's footage-like passthrough: when the composition holds exactly
+/// one VideoClip (plus at most one Audio layer) and that media covers the
+/// Group's window end to end, the clip draws the inner filmstrip + waveform
+/// instead of a poster still — the "treat a precomposed take as footage" look.
+/// Anything else (several clips, titles, a partial cover, an overhang) falls
+/// back to the poster, which claims nothing about the rest of the span. An
+/// audio-only Group passes its waveform through alone.
+export interface GroupAvPassthrough {
+  video: { layerId: string; mediaId: string; srcInUs: number; srcOutUs: number } | null;
+  audio: { layerId: string; mediaId: string; srcInUs: number; srcOutUs: number } | null;
+}
+
+export function groupAvPassthrough(
+  comp: CompositionSummary | null,
+  srcInUs: number,
+  srcOutUs: number,
+): GroupAvPassthrough | null {
+  if (!comp || !(srcOutUs > srcInUs)) return null;
+  let video: LayerSummary | null = null;
+  let audio: LayerSummary | null = null;
+  for (const track of comp.tracks) {
+    for (const layer of track.layers) {
+      const kind = layer.params.kind;
+      if (kind === "VideoClip") {
+        if (video !== null) return null;
+        video = layer;
+      } else if (kind === "Audio") {
+        if (audio !== null) return null;
+        audio = layer;
+      } else {
+        return null;
+      }
+    }
+  }
+  if (video === null && audio === null) return null;
+  // The Group window IS composition time, so the inner layer must cover it
+  // whole; the media range shown is the inner source window shifted by the
+  // composition-time offset between the two.
+  const mapWindow = (
+    layer: LayerSummary,
+  ): { layerId: string; mediaId: string; srcInUs: number; srcOutUs: number } | null => {
+    const p = layer.params;
+    if (p.kind !== "VideoClip" && p.kind !== "Audio") return null;
+    if (layer.t_start_us > srcInUs || layer.t_end_us < srcOutUs) return null;
+    return {
+      layerId: layer.id,
+      mediaId: p.media_id,
+      srcInUs: p.src_in_us + (srcInUs - layer.t_start_us),
+      srcOutUs: p.src_out_us - (layer.t_end_us - srcOutUs),
+    };
+  };
+  // A video that does not cover is a poster even with audio present: the strip
+  // must not claim frames the composition does not show there.
+  const v = video ? mapWindow(video) : null;
+  if (video !== null && v === null) return null;
+  const a = audio ? mapWindow(audio) : null;
+  if (audio !== null && a === null) return null;
+  return { video: v, audio: a };
+}
+
+/// Memoized hook form: stable identity across unrelated store ticks (the
+/// file's atomic-selector rule), recomputed when the composition or the
+/// Group's window changes. `null` compositionId reads as "not a Group".
+export function useGroupAvPassthrough(
+  compositionId: string | null,
+  srcInUs: number,
+  srcOutUs: number,
+): GroupAvPassthrough | null {
+  const comp = useComposition(compositionId);
+  return useMemo(
+    () => (compositionId === null ? null : groupAvPassthrough(comp, srcInUs, srcOutUs)),
+    [comp, compositionId, srcInUs, srcOutUs],
+  );
+}
 
 // Reused empty sentinels so `?? []` doesn't allocate a fresh array on
 // every render (which would defeat referential-equality short-circuits

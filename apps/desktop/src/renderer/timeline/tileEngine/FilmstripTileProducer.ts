@@ -7,8 +7,27 @@ export const FILMSTRIP_KIND = "filmstrip";
 /// FILMSTRIP_BASE_SPACING_US / spacing_us — both sides pin the same endpoints.
 export const FILMSTRIP_BASE_SPACING_US = 250_000;
 export const FILMSTRIP_MAX_LOD = 12;
+/// Canonical tile height. Twin: native jobs/filmstrip.rs FILMSTRIP_TILE_HEIGHT.
+export const FILMSTRIP_TILE_HEIGHT = 256;
 /// Every miss spawns one ffmpeg on the native side — do not stampede.
 export const FILMSTRIP_MAX_CONCURRENT_FETCHES = 4;
+
+/// Spike flag: decode filmstrip tiles in-process with WebCodecs (hardware
+/// decode, no ffmpeg process / JPEG / disk round-trip) instead of the native
+/// ffmpeg producer. Defaults OFF. Flip at runtime with
+/// `localStorage.setItem("weftcut.filmstripGpuDecode", "1")` and reload, or set
+/// `globalThis.__weftcutFilmstripGpuDecode` (tests). Any GPU-path failure falls
+/// back to ffmpeg, so this can only change cost, never correctness.
+export function filmstripGpuDecodeEnabled(): boolean {
+  const override = (globalThis as { __weftcutFilmstripGpuDecode?: boolean })
+    .__weftcutFilmstripGpuDecode;
+  if (typeof override === "boolean") return override;
+  try {
+    return localStorage.getItem("weftcut.filmstripGpuDecode") === "1";
+  } catch {
+    return false;
+  }
+}
 /// Proxy completion flips a Proxied source's not_ready tiles (proxy-wait rule).
 export const FILMSTRIP_INVALIDATE_ON = ["proxy", "quick_proxy"];
 /// Engine-side bitmap budget. 256 px bitmaps run ~466 KB — a dedicated pool
@@ -79,6 +98,27 @@ function releaseFetchSlot(): void {
   waiters.shift()?.();
 }
 
+/// Native path: one ffmpeg process per miss, writing a JPEG the renderer then
+/// fetches and decodes. The tile time is the grid index's own time.
+async function fetchTileViaFfmpeg(key: TileKey): Promise<FilmstripTileValue> {
+  const tile = await getFilmstripTile(key.mediaId, key.lod, key.index);
+  const res = await fetch(convertFileSrc(tile.path));
+  const bitmap = await createImageBitmap(await res.blob());
+  return { bitmap, tUs: key.index * spacingUs(key.lod) };
+}
+
+/// GPU path: hardware-decode the frame in-process, scaled straight to the tile
+/// height. No ffmpeg, JPEG, disk or IPC. Throws when the media has no decodable
+/// source or the capture times out; the caller falls back to ffmpeg.
+async function fetchTileViaGpu(key: TileKey): Promise<FilmstripTileValue> {
+  const { filmstripFrameProvider } = await import("./filmstripGpuTiles");
+  const tUs = key.index * spacingUs(key.lod);
+  const bitmap = await filmstripFrameProvider().getFrameAt(key.mediaId, tUs, {
+    height: FILMSTRIP_TILE_HEIGHT,
+  });
+  return { bitmap, tUs };
+}
+
 let registered = false;
 export function registerFilmstripProducer(engine: TileEngine = tileEngine): void {
   if (registered) return;
@@ -90,10 +130,19 @@ export function registerFilmstripProducer(engine: TileEngine = tileEngine): void
     fetch: async (key: TileKey) => {
       await acquireFetchSlot();
       try {
-        const tile = await getFilmstripTile(key.mediaId, key.lod, key.index);
-        const res = await fetch(convertFileSrc(tile.path));
-        const bitmap = await createImageBitmap(await res.blob());
-        return { bitmap, tUs: key.index * spacingUs(key.lod) };
+        if (filmstripGpuDecodeEnabled()) {
+          try {
+            return await fetchTileViaGpu(key);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[weftcut/timeline] GPU filmstrip decode failed for ${key.mediaId}@${key.index}; ` +
+                `falling back to ffmpeg:`,
+              e,
+            );
+          }
+        }
+        return await fetchTileViaFfmpeg(key);
       } finally {
         releaseFetchSlot();
       }

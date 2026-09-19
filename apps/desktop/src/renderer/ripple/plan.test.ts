@@ -222,7 +222,7 @@ describe("a layer that starts inside the span", () => {
     });
   });
 
-  it("refuses a B-roll cut inside the clip, and accepts once that cut joins the selection", () => {
+  it("refuses a second-lane cut inside the clip, and accepts once that cut joins the selection", () => {
     const view = viewOf([
       track("TV", [vis("V1", 0, 4), vis("V2", 4, 6)]),
       track("TB", [vis("B1", 1, 3)]),

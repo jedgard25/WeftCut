@@ -5,7 +5,7 @@ import { applySegmentEasing } from '../../../shared/easing'
 import { createActor } from '../actor'
 import { parseProject, serializeProject } from '../serialize'
 import { applySetScaleLinked, scaleTracksTwins } from './scaleLink'
-import { applyAddLayer, textParamsDefault } from './add'
+import { applyAddLayer, applyAddTrack, textParamsDefault } from './add'
 import { group, groupedProject, root } from '../__tests__/fixtures/project'
 
 /** Keys with identity sides; an entry's easing is written onto the segment
@@ -67,8 +67,9 @@ describe('scaleTracksTwins', () => {
 function textActor() {
   const idGen = seededGen(); const initial = blankProject(idGen, 'sl')
   const actor = createActor({ initial, idGen, clock: () => '<TS>' })
-  const id = (actor.dispatch('add_layer', { track: root(initial).tracks[1].id, kind: 'text', t_start_us: 0, t_end_us: 2_000_000 }) as { ok: true; value: string }).value
-  return { actor, id }
+  const lane = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+  const id = (actor.dispatch('add_layer', { track: lane, kind: 'text', t_start_us: 0, t_end_us: 2_000_000 }) as { ok: true; value: string }).value
+  return { actor, id, lane }
 }
 const textParams = (actor: ReturnType<typeof textActor>['actor']) =>
   root(actor.snapshot()).tracks[1].layers[0].params as TextParams
@@ -143,8 +144,8 @@ describe('scale-link invariant (result-based, same commit)', () => {
     const a2 = createActor({ initial, idGen, clock: () => '<TS>' })
     const IMG = '00000000-0000-0000-0000-0000000000aa'
     expect(a2.dispatch('add_media', { id: IMG, kind: 'Image', duration_us: null }).ok).toBe(true)
-    const lid = (a2.dispatch('add_layer', { track: root(initial).tracks[1].id, kind: 'image', media: IMG, t_start_us: 0, t_end_us: 1_000_000 }) as { ok: true; value: string }).value
-    const params = () => root(a2.snapshot()).tracks[1].layers[0].params as { transform: { scale_linked: boolean } }
+    const lid = (a2.dispatch('add_layer', { track: (a2.dispatch('add_track', { label: null }) as { ok: true; value: string }).value, kind: 'image', media: IMG, t_start_us: 0, t_end_us: 1_000_000 }) as { ok: true; value: string }).value
+    const params = () => root(a2.snapshot()).tracks.find((t) => t.layers.some((l) => l.id === lid))!.layers[0].params as { transform: { scale_linked: boolean } }
     expect(a2.dispatch('update_layer_params', { layer: lid, patch: { kind: 'ImageOverlay', scale_x: 2, scale_y: 2 } }).ok).toBe(true)
     expect(params().transform.scale_linked).toBe(true) // result is twins → still linked
     expect(a2.dispatch('update_layer_params', { layer: lid, patch: { kind: 'ImageOverlay', scale_y: 3 } }).ok).toBe(true)
@@ -199,8 +200,9 @@ describe('scale link inside a Group', () => {
   it('applySetScaleLinked finds the layer in its Group', () => {
     const { p, idGen, groupId } = groupedProject()
     const g = group(p, groupId)
-    const id = applyAddLayer(p, idGen, g.tracks[1].id, textParamsDefault('hi', g), 0, 1_000_000)
+    const lane = applyAddTrack(p, idGen, null, undefined, groupId)
+    const id = applyAddLayer(p, idGen, lane, textParamsDefault('hi', g), 0, 1_000_000)
     applySetScaleLinked(p, idGen, id, false)
-    expect((g.tracks[1].layers[0].params as TextParams).transform.scale_linked).toBe(false)
+    expect((group(p, groupId).tracks.find((t) => t.id === lane)!.layers[0].params as TextParams).transform.scale_linked).toBe(false)
   })
 })

@@ -26,7 +26,7 @@ const errorOf = (r: { ok: boolean; error?: unknown }): string => JSON.stringify(
 describe('composition scope — MCP tools', () => {
   it('move_layer on a layer inside a Group takes no scope argument', () => {
     const { actor, groupId, innerId } = mk()
-    const bRoll = groupOf(actor, groupId).tracks[1].id
+    const bRoll = (actor.dispatch('add_track', { composition_id: groupId }) as { ok: true; value: string }).value
     const r = actor.mcpCall('move_layer', JSON.stringify({ layer_id: innerId, new_track_id: bRoll, new_t_start_us: 2_000_000 }))
     expect(r.ok).toBe(true)
     expect(groupOf(actor, groupId).tracks[1].layers[0]).toMatchObject({ id: innerId, t_start_us: 2_000_000 })
@@ -43,7 +43,7 @@ describe('composition scope — MCP tools', () => {
   })
   it('add_color_layer { composition_id } lands inside the Group; a track elsewhere and an unknown composition refuse', () => {
     const { actor, groupId } = mk()
-    const gB = groupOf(actor, groupId).tracks[1].id
+    const gB = (actor.dispatch('add_track', { composition_id: groupId }) as { ok: true; value: string }).value
     const ok = actor.mcpCall('add_color_layer', JSON.stringify({ track_id: gB, composition_id: groupId, color: BLUE, t_start_us: 0, t_end_us: 1_000_000 }))
     expect(ok.ok).toBe(true)
     expect(groupOf(actor, groupId).tracks[1].layers).toHaveLength(1)
@@ -57,8 +57,8 @@ describe('composition scope — MCP tools', () => {
   it('add_track / add_marker { composition_id } create inside the Group', () => {
     const { actor, groupId } = mk()
     expect(actor.mcpCall('add_track', JSON.stringify({ composition_id: groupId })).ok).toBe(true)
-    expect(groupOf(actor, groupId).tracks).toHaveLength(3)
-    expect(root(actor.snapshot()).tracks).toHaveLength(3)
+    expect(groupOf(actor, groupId).tracks).toHaveLength(2)
+    expect(root(actor.snapshot()).tracks).toHaveLength(2)
     expect(actor.mcpCall('add_marker', JSON.stringify({ t_us: 500_000, label: 'x', color: BLUE, composition_id: groupId })).ok).toBe(true)
     expect(groupOf(actor, groupId).markers).toHaveLength(1)
     expect(root(actor.snapshot()).markers).toHaveLength(0)
@@ -127,17 +127,17 @@ describe('composition scope — renderer channels', () => {
     const r = actor.command('add_color_layer', { tStartUs: 0, durationUs: 1_000_000, compositionId: groupId })
     expect(r.ok).toBe(true)
     const g = groupOf(actor, groupId)
-    // The Group's skeleton lanes are role-stamped, so no overlay lane was free
+    // The Group's skeleton lane is role-stamped, so no overlay lane was free
     // and one was minted — in the Group.
-    expect(g.tracks).toHaveLength(3)
-    expect(g.tracks[2].layers.map((l) => l.id)).toEqual([r.ok ? r.value : ''])
-    expect(root(actor.snapshot()).tracks).toHaveLength(3)
+    expect(g.tracks).toHaveLength(2)
+    expect(g.tracks[1].layers.map((l) => l.id)).toEqual([r.ok ? r.value : ''])
+    expect(root(actor.snapshot()).tracks).toHaveLength(2)
   })
   it('add_track / add_marker { compositionId } land in the Group', () => {
     const { actor, groupId } = mk()
     expect(actor.command('add_track', { compositionId: groupId }).ok).toBe(true)
     expect(actor.command('add_marker', { tUs: 0, compositionId: groupId }).ok).toBe(true)
-    expect(groupOf(actor, groupId).tracks).toHaveLength(3)
+    expect(groupOf(actor, groupId).tracks).toHaveLength(2)
     expect(groupOf(actor, groupId).markers).toHaveLength(1)
     expect(root(actor.snapshot()).markers).toHaveLength(0)
   })

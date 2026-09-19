@@ -29,18 +29,19 @@ function trackOf(c: Composition, id: Uuid): number {
 
 /** A root holding a Group clip `[2 s, 3 s)` over a composition whose A roll
  *  holds one colour layer at `[0, 1 s)`, plus two colour layers waiting to move:
- *  `[3 s, 4 s)` on B roll and `[5 s, 6 s)` on a transient lane. Two source
+ *  `[3 s, 4 s)` and `[5 s, 6 s)` each on its own transient lane. Two source
  *  tracks, so a move carries two blocks; disjoint in time, so the two blocks can
  *  share one lane without colliding with each other. */
-function crossing(): { p: Project; gen: IdGen; comp: Uuid; g: Uuid; inner: Uuid; x: Uuid; y: Uuid; lane: Uuid } {
+function crossing(): { p: Project; gen: IdGen; comp: Uuid; g: Uuid; inner: Uuid; x: Uuid; y: Uuid; lane: Uuid; lane2: Uuid } {
   const gen = seededGen()
   const p = blankProject(gen, 't')
   const inner = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 2 * S, 3 * S)
   const r = applyGroupsCreate(p, gen, [inner], null)
   const lane = applyAddTrack(p, gen, null)
-  const x = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 3 * S, 4 * S)
-  const y = applyAddLayer(p, gen, lane, color(), 5 * S, 6 * S)
-  return { p, gen, comp: r.compositionId, g: r.layerId, inner, x, y, lane }
+  const lane2 = applyAddTrack(p, gen, null)
+  const x = applyAddLayer(p, gen, lane, color(), 3 * S, 4 * S)
+  const y = applyAddLayer(p, gen, lane2, color(), 5 * S, 6 * S)
+  return { p, gen, comp: r.compositionId, g: r.layerId, inner, x, y, lane, lane2 }
 }
 
 describe('applyMoveLayersToComposition', () => {
@@ -56,18 +57,19 @@ describe('applyMoveLayersToComposition', () => {
   })
 
   it('lands every source block on a named lane, rather than one lane per source track', () => {
-    const { p, gen, comp, inner, x, y, lane } = crossing()
-    const bRoll = group(p, comp).tracks[1].id
+    const { p, gen, comp, inner, x, y, lane, lane2 } = crossing()
+    const named = applyAddTrack(p, gen, null, undefined, comp)
     // Left to itself the walk would split these: x onto the destination's first
     // lane, y onto its second. Naming a lane collapses both blocks onto it.
-    applyMoveLayersToComposition(p, gen, [x, y], comp, x, S, bRoll)
+    applyMoveLayersToComposition(p, gen, [x, y], comp, x, S, named)
     const c = group(p, comp)
     expect(c.tracks).toHaveLength(2) // nothing spawned, nothing bounced
     expect(c.tracks[1].layers.map((l) => l.id)).toEqual([x, y]) // and still t-sorted
     expect(layerOf(c, x)).toMatchObject({ t_start_us: S, t_end_us: 2 * S })
     expect(layerOf(c, y)).toMatchObject({ t_start_us: 3 * S, t_end_us: 4 * S }) // phase kept: 2 s after the anchor
     expect(trackOf(c, inner)).toBe(0)
-    expect(root(p).tracks.some((t) => t.id === lane)).toBe(false) // emptied transient source lane pruned
+    expect(root(p).tracks.some((t) => t.id === lane)).toBe(false) // emptied transient source lanes pruned
+    expect(root(p).tracks.some((t) => t.id === lane2)).toBe(false)
     expect(() => validate(p)).not.toThrow()
   })
 
@@ -86,11 +88,11 @@ describe('applyMoveLayersToComposition', () => {
 
   it('refuses a named lane that is locked', () => {
     const { p, gen, comp, x, y } = crossing()
-    const bRoll = group(p, comp).tracks[1].id
-    group(p, comp).tracks[1].locked = true
+    const named = applyAddTrack(p, gen, null, undefined, comp)
+    group(p, comp).tracks.find((t) => t.id === named)!.locked = true
     const before = structuredClone(p)
-    expect(expectCmd(() => applyMoveLayersToComposition(p, gen, [x, y], comp, x, S, bRoll)))
-      .toEqual({ error: 'TrackLocked', track: bRoll })
+    expect(expectCmd(() => applyMoveLayersToComposition(p, gen, [x, y], comp, x, S, named)))
+      .toEqual({ error: 'TrackLocked', track: named })
     expect(p).toEqual(before)
   })
 
@@ -99,10 +101,10 @@ describe('applyMoveLayersToComposition', () => {
     const skeleton = group(p, comp).tracks.map((t) => t.id)
     applyMoveLayersToComposition(p, gen, [x, y], comp, x, S, 'spawn')
     const c = group(p, comp)
-    expect(c.tracks).toHaveLength(3)
-    expect(c.tracks.slice(0, 2).map((t) => t.id)).toEqual(skeleton) // appended, so top of the z-stack
-    expect(c.tracks[2]).toMatchObject({ role: null, transient: true })
-    expect(c.tracks[2].layers.map((l) => l.id)).toEqual([x, y])
+    expect(c.tracks).toHaveLength(2)
+    expect(c.tracks.slice(0, 1).map((t) => t.id)).toEqual(skeleton) // appended, so top of the z-stack
+    expect(c.tracks[1]).toMatchObject({ role: null, transient: true })
+    expect(c.tracks[1].layers.map((l) => l.id)).toEqual([x, y])
     expect(() => validate(p)).not.toThrow()
   })
 

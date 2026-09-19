@@ -33,6 +33,23 @@ export interface Closeable {
 
 const DEFAULT_MAX_FRAMES = 240;
 
+/// Byte ceiling for L0, independent of the frame COUNT. A frame count alone is
+/// not a memory bound: motif frames rasterize at the manifest size (e.g.
+/// text-fx is 1920×1080 → ~8.3 MB/bitmap), so 240 frames is ~2 GB worst case.
+/// This is the honest cap; the frame count stays as a second, cheap bound.
+const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
+
+/// Approximate GPU-backed byte cost of a cached frame: an `ImageBitmap` is
+/// RGBA, so `w × h × 4`. Non-bitmap test doubles (no dimensions) count as 0, so
+/// the byte budget is inert for them and the frame-count bound still applies.
+function bytesOfBitmap(bmp: Closeable): number {
+  const { width, height } = bmp as { width?: number; height?: number };
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return 0;
+  return (width as number) > 0 && (height as number) > 0
+    ? (width as number) * (height as number) * 4
+    : 0;
+}
+
 /// Composite L0 map key. `frameIndex` is appended after a `#`; callers'
 /// cacheKeys are JSON and may themselves contain `#`, so any code that
 /// splits a key back into `(cacheKey, frameIndex)` must anchor on the
@@ -70,9 +87,13 @@ export class MotifFrameCache {
   /// LAST is the most-recent. `get` and `set` both move a touched entry
   /// to the tail (delete + re-insert) so recency stays accurate.
   private readonly store = new Map<string, Closeable>();
+  /// Per-entry byte cost, parallel to `store` (0 for dimension-less doubles).
+  private readonly bytesByKey = new Map<string, number>();
+  private totalBytes = 0;
   private readonly maxFrames: number;
+  private readonly maxBytes: number;
 
-  constructor(maxFrames: number = DEFAULT_MAX_FRAMES) {
+  constructor(maxFrames: number = DEFAULT_MAX_FRAMES, maxBytes: number = DEFAULT_MAX_BYTES) {
     // Guard against a zero/negative cap silently disabling the cache. A NaN
     // cap is especially dangerous: `store.size > NaN` is always false, so
     // eviction would never fire and the cache would grow unbounded — fall back
@@ -81,6 +102,9 @@ export class MotifFrameCache {
     this.maxFrames = Number.isFinite(maxFrames)
       ? Math.max(1, Math.floor(maxFrames))
       : DEFAULT_MAX_FRAMES;
+    this.maxBytes = Number.isFinite(maxBytes)
+      ? Math.max(1, Math.floor(maxBytes))
+      : DEFAULT_MAX_BYTES;
   }
 
   // ----------------------------------------------------------------
@@ -126,21 +150,35 @@ export class MotifFrameCache {
       this.store.set(k, prev);
       return prev as unknown as ImageBitmap;
     }
+    const bytes = bytesOfBitmap(bmp as unknown as Closeable);
     this.store.set(k, bmp as unknown as Closeable);
+    this.bytesByKey.set(k, bytes);
+    this.totalBytes += bytes;
     this.evictToCapacity();
     return bmp;
   }
 
-  /// Evict LRU entries until at most `maxFrames` remain, closing each.
+  /// Evict LRU entries until BOTH bounds hold — at most `maxFrames` entries AND
+  /// at most `maxBytes` retained. The byte bound is what actually protects
+  /// memory for large motifs; the frame bound protects against many tiny ones.
   private evictToCapacity(): void {
-    while (this.store.size > this.maxFrames) {
+    while (this.store.size > this.maxFrames || this.totalBytes > this.maxBytes) {
       // The first key in insertion order is the LRU victim.
       const oldest = this.store.keys().next();
       if (oldest.done) break;
-      const victim = this.store.get(oldest.value);
-      this.store.delete(oldest.value);
+      const key = oldest.value;
+      const victim = this.store.get(key);
+      this.store.delete(key);
+      this.totalBytes -= this.bytesByKey.get(key) ?? 0;
+      this.bytesByKey.delete(key);
       victim?.close();
     }
+  }
+
+  /// Bytes currently retained by L0 (0 for dimension-less test doubles). For
+  /// diagnostics / assertions.
+  retainedBytes(): number {
+    return this.totalBytes;
   }
 
   /// True when (cacheKey, frameIndex) is held, WITHOUT touching recency (unlike
@@ -170,15 +208,25 @@ export class MotifFrameCache {
       if (keyMatchesCacheKey(k, cacheKey)) {
         const bmp = this.store.get(k);
         this.store.delete(k);
+        this.totalBytes -= this.bytesByKey.get(k) ?? 0;
+        this.bytesByKey.delete(k);
         bmp?.close();
       }
     }
   }
 
-  /// Close every held bitmap and empty the store. Call on teardown.
-  dispose(): void {
+  /// Close every held bitmap and empty the store, staying usable afterwards.
+  /// Call on project switch (old keys are unreferenced) and on teardown.
+  clear(): void {
     for (const bmp of this.store.values()) bmp.close();
     this.store.clear();
+    this.bytesByKey.clear();
+    this.totalBytes = 0;
+  }
+
+  /// Close every held bitmap and empty the store. Call on teardown.
+  dispose(): void {
+    this.clear();
   }
 
   /// Frames currently held across all keys, for diagnostics.

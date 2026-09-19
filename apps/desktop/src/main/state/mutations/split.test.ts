@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Layer, type LayerParams, type Marker, type Project } from '../model'
+import { applyAddTrack } from './add'
 import { applySplitLayer } from './split'
 import { videoClipParams } from './media'
 import { markerHibernating } from '../summary'
@@ -67,26 +68,56 @@ describe('applySplitLayer', () => {
     expect(markerHibernating(root(p), mk)).toBe(true)    // …and its window is now [500 k, 900 k)
   })
 
-  it('link spanning split: both halves stay in the link; non-spanning members untouched', () => {
+  it('link spanning split: the link is cut into a left link and a right link (never one growing link)', () => {
     const p = blankProject(seededGen(), 't')
-    // a:[0,1s] and b:[0,1s] on track B linked; both span t=400k
+    // a:[0,1s] and b:[0,1s] on a spawned lane linked; both span t=400k
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
-    root(p).tracks[1].layers = [color('b', 0, 1_000_000)]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 1_000_000)]
     const gid = applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     const r = applySplitLayer(p, seededGen(), 'a', 400_000, false)
-    const link = root(p).links.find((g) => g.id === gid)!
-    // a's right-half + b's right-half both joined the link → 4 members
-    expect(link.members.length).toBe(4)
-    expect(link.members).toContain(r.right)
-    expect(root(p).tracks[1].layers.length).toBe(2) // b was spanning → split too
+    // Left halves keep the original link; right halves form a second link.
+    expect(root(p).links.length).toBe(2)
+    const left = root(p).links.find((g) => g.id === gid)!
+    expect(left.members.length).toBe(2)
+    expect(left.members).toEqual(['a', 'b'])
+    const right = root(p).links.find((g) => g.id !== gid)!
+    expect(right.members.length).toBe(2)
+    expect(right.members).toContain(r.right)
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers.length).toBe(2) // b was spanning → split too
+    // No link straddles the cut: every member sits wholly on one side.
+    for (const g of root(p).links) {
+      const spans = g.members.map((m) => root(p).tracks.flatMap((t) => t.layers).find((l) => l.id === m)!)
+      expect(spans.every((s) => s.t_end_us <= 400_000 || s.t_start_us >= 400_000)).toBe(true)
+    }
+  })
+  it('repeated splits yield one pair per segment, never one growing link', () => {
+    const gen = seededGen()
+    const p = blankProject(gen, 't')
+    root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 1_000_000)]
+    applyLinksCreate(p, gen, ['a', 'b'], null, false)
+    // Three cuts like a tiny rough cut: pairs, not a 8-member bundle.
+    // (200/400/600/800k are all exact 30 fps frame boundaries.)
+    applySplitLayer(p, gen, 'a', 200_000, false)
+    const seg = root(p).tracks[0].layers.find((l) => l.t_start_us === 200_000)!.id
+    applySplitLayer(p, gen, seg, 400_000, false)
+    const seg2 = root(p).tracks[0].layers.find((l) => l.t_start_us === 400_000)!.id
+    applySplitLayer(p, gen, seg2, 600_000, false)
+    expect(root(p).tracks[0].layers.length).toBe(4)
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers.length).toBe(4)
+    expect(root(p).links.length).toBe(4)
+    for (const g of root(p).links) expect(g.members.length).toBe(2)
   })
   it('escape_link splits only the target (sibling not split), but the target stays linked so its right-half joins', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
-    root(p).tracks[1].layers = [color('b', 0, 1_000_000)]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 1_000_000)]
     const gid = applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     const r = applySplitLayer(p, seededGen(), 'a', 400_000, true)
-    expect(root(p).tracks[1].layers.length).toBe(1) // sibling b NOT split (escape → no spanning fan-out)
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers.length).toBe(1) // sibling b NOT split (escape → no spanning fan-out)
     const link = root(p).links.find((g) => g.id === gid)!
     expect(link.members.length).toBe(3) // target stays linked; its right-half joins
     expect(link.members).toContain(r.right)
@@ -124,10 +155,10 @@ describe('applySplitLayer inside a Group, and of the Group layer itself', () => 
   it("splitting a CompositionRef divides its source window like a clip's (ADR 0052 §4)", () => {
     const { p, idGen, refLayerId } = groupedProject() // ref: t [0, 1 s), src [0, 1 s)
     const r = applySplitLayer(p, idGen, refLayerId, 400_000, false)
-    const [left, right] = root(p).tracks[2].layers.map((l) => l.params as Extract<LayerParams, { kind: 'CompositionRef' }>)
+    const [left, right] = root(p).tracks[1].layers.map((l) => l.params as Extract<LayerParams, { kind: 'CompositionRef' }>)
     expect([left.src_in_us, left.src_out_us]).toEqual([0, 400_000])
     expect([right.src_in_us, right.src_out_us]).toEqual([400_000, 1_000_000])
-    expect(root(p).tracks[2].layers.map((l) => [l.t_start_us, l.t_end_us])).toEqual([[0, 400_000], [400_000, 1_000_000]])
+    expect(root(p).tracks[1].layers.map((l) => [l.t_start_us, l.t_end_us])).toEqual([[0, 400_000], [400_000, 1_000_000]])
     expect(r.left).toBe(refLayerId)
   })
 })

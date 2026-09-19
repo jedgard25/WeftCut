@@ -7,7 +7,8 @@ import { transportPause, transportSeek } from "../state/playbackStore";
 import { previewLocalUs } from "../state/playheadProjection";
 import { playheadTimeUs, setPlayheadTimeUs } from "../state/playheadStore";
 import { useMediaById } from "../state/projectStore";
-import { layerSliceRect, type LayerSlice } from "./geometry";
+import { DEFAULT_PX_PER_SEC, layerSliceRect, type LayerSlice } from "./geometry";
+import { useCameraPxPerSec } from "./camera";
 import {
   transitionLeftEdgeClampUs,
   transitionLeftEdgeDragArgs,
@@ -41,6 +42,7 @@ const EDGE_ZONE_PX = 6;
 /// frame.
 export function TransitionChip({
   chip,
+  compositionId,
   pxPerSec,
   laneHeight,
   slice,
@@ -52,7 +54,10 @@ export function TransitionChip({
   onResize,
 }: {
   chip: TrackTransitionChip;
-  pxPerSec: number;
+  /// The Panel's composition — the camera key. Absent in isolated tests, which
+  /// hand a fixed `pxPerSec`.
+  compositionId?: string | null | undefined;
+  pxPerSec?: number;
   laneHeight: number;
   /// Vertical slot of the INCOMING layer's block, so the chip hugs it in
   /// combined V+A rows too.
@@ -71,6 +76,12 @@ export function TransitionChip({
   onResize: (args: TransitionResizeArgs) => void;
 }) {
   const { t } = useTranslation();
+  // Reactive: the chip's geometry tracks the zoom, and its parent lane does not
+  // re-render on zoom.
+  const pps = useCameraPxPerSec(
+    compositionId ?? null,
+    pxPerSec ?? DEFAULT_PX_PER_SEC,
+  );
   // Live drag ghost: the clamped window while an edge gesture is in flight.
   // Frame-quantized upstream, so a pointer wiggle inside one frame neither
   // re-renders nor re-seeks.
@@ -85,8 +96,8 @@ export function TransitionChip({
   const fromMedia = useMediaById(isMediaBearing ? fromParams.media_id : null);
   const startUs = ghost?.startUs ?? chip.startUs;
   const endUs = ghost?.endUs ?? chip.endUs;
-  const left = (startUs / 1_000_000) * pxPerSec;
-  const width = Math.max(6, ((endUs - startUs) / 1_000_000) * pxPerSec);
+  const left = (startUs / 1_000_000) * pps;
+  const width = Math.max(6, ((endUs - startUs) / 1_000_000) * pps);
   const edgeZonePx = Math.min(EDGE_ZONE_PX, Math.floor(width / 3));
   // The same band the incoming layer's chip gets, so the transition chip hugs
   // it exactly in both full-row and combined V+A rows.
@@ -132,7 +143,7 @@ export function TransitionChip({
       let restoreUs: number | null = null;
       const onMove = (me: PointerEvent) => {
         const targetUs =
-          initialUs + ((me.clientX - startClientX) / pxPerSec) * 1_000_000;
+          initialUs + ((me.clientX - startClientX) / pps) * 1_000_000;
         const nextUs =
           edge === "left"
             ? transitionLeftEdgeClampUs({

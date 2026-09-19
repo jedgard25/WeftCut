@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDprVersion } from "./hooks/useDprVersion";
 import { useSegmentVisibility } from "./hooks/useSegmentVisibility";
+import { DEFAULT_PX_PER_SEC } from "./geometry";
+import { useCameraPxPerSec } from "./camera";
 import { tileEngine } from "./tileEngine/TileEngine";
 import {
   ensureWaveformWindow,
@@ -124,6 +126,56 @@ const INITIAL_WINDOW_DATA: WindowData = {
   winLoUs: 0,
   winHiUs: 0,
 };
+
+/// Opaque bundle of the draw inputs handed to `WaveformTileCanvas`.
+///
+/// WHY this exists: `WaveformWindow.min/max/rms` are `Float32Array`s — tens of
+/// thousands of columns. React's DEVELOPMENT build deep-diffs a component's
+/// changed props and passes the diff to `performance.measure`, whose structured
+/// clone of that diff throws `DataCloneError: ... out of memory` (it walks a
+/// typed array's indices via `for...in`). That throw lands inside React's
+/// commit, and the resulting corruption / allocation churn crashes the renderer
+/// (`render-process-gone: reason=crashed`). Because these fields are `#private`,
+/// they have no enumerable own properties, so the dev diff treats the whole
+/// bundle as one opaque value and never walks the arrays. The draw effect still
+/// reads them through the getters.
+export class WaveformDrawData {
+  readonly #channels: number;
+  readonly #win0: WaveformWindow | null;
+  readonly #win1: WaveformWindow | null;
+  readonly #winLoUs: number;
+  readonly #winHiUs: number;
+
+  constructor(
+    channels: number,
+    win0: WaveformWindow | null,
+    win1: WaveformWindow | null,
+    winLoUs: number,
+    winHiUs: number,
+  ) {
+    this.#channels = channels;
+    this.#win0 = win0;
+    this.#win1 = win1;
+    this.#winLoUs = winLoUs;
+    this.#winHiUs = winHiUs;
+  }
+
+  get channels(): number {
+    return this.#channels;
+  }
+  get win0(): WaveformWindow | null {
+    return this.#win0;
+  }
+  get win1(): WaveformWindow | null {
+    return this.#win1;
+  }
+  get winLoUs(): number {
+    return this.#winLoUs;
+  }
+  get winHiUs(): number {
+    return this.#winHiUs;
+  }
+}
 
 /// Runs one channel-count + window(s) assembly for the VISIBLE window
 /// [winLoUs, winHiUs) at pxPerSec. Pulled out of the hook so both the
@@ -399,11 +451,14 @@ function drawTile(
 
 export function TimelineWaveform({
   mediaId,
+  compositionId,
+  tStartUs,
+  tEndUs,
   waveformKey,
   layerId,
   srcInUs,
   srcOutUs,
-  layerWidthPx,
+  layerWidthPx = 0,
   layerHeightPx,
   colorHint,
   waveformColor = "#ffffff",
@@ -412,6 +467,13 @@ export function TimelineWaveform({
   mediaChannels,
 }: {
   mediaId: string;
+  /// The Panel's composition — the camera key. Absent in isolated tests, which
+  /// hand a fixed `layerWidthPx`/`pxPerSec`.
+  compositionId?: string | null | undefined;
+  /// Live clip edges. When present the strip derives its own width from the
+  /// camera, so it re-maps on zoom without its parent block re-rendering.
+  tStartUs?: number | undefined;
+  tEndUs?: number | undefined;
   /// Which of the media's peaks files to draw: `mediaId` for the raw conform,
   /// an `fx:` key for the layer's baked effect-chain sibling. Defaults to the
   /// raw conform, so a caller with no chain to consider passes nothing.
@@ -422,18 +484,27 @@ export function TimelineWaveform({
   layerId?: string;
   srcInUs: number;
   srcOutUs: number;
-  layerWidthPx: number;
+  /// Fallback width for isolated tests; the live app passes live edges.
+  layerWidthPx?: number | undefined;
   layerHeightPx: number;
   colorHint: string;
   waveformColor?: string;
   enabled: boolean;
-  pxPerSec: number;
+  pxPerSec?: number | undefined;
   /// Source audio channel count from probe metadata, when known. Caps the
   /// (always-stereo) peaks-file header count — see assembleWindowData.
   mediaChannels?: number | undefined;
 }) {
   const dprVersion = useDprVersion();
-  const totalWidthPx = Math.max(1, Math.ceil(layerWidthPx));
+  const pps = useCameraPxPerSec(
+    compositionId ?? null,
+    pxPerSec ?? DEFAULT_PX_PER_SEC,
+  );
+  const liveWidthPx =
+    tStartUs !== undefined && tEndUs !== undefined
+      ? Math.max(((tEndUs - tStartUs) / 1_000_000) * pps, 4)
+      : layerWidthPx;
+  const totalWidthPx = Math.max(1, Math.ceil(liveWidthPx));
   const height = Math.max(1, Math.ceil(layerHeightPx));
 
   const tiles = useMemo<SegmentGeom[]>(() => {
@@ -460,10 +531,25 @@ export function TimelineWaveform({
     fetchWindow?.loUs ?? 0,
     fetchWindow?.hiUs ?? 0,
     fetchWindow !== null,
-    pxPerSec,
+    pps,
     enabled,
     mediaChannels,
     visibilityVersion,
+  );
+
+  // Memoized so its identity is stable across unrelated re-renders: the draw
+  // effect re-runs only when the window data itself changes. See WaveformDrawData
+  // for why the arrays must not travel as plain props.
+  const drawData = useMemo(
+    () =>
+      new WaveformDrawData(
+        channels,
+        state === "ready" ? win0 : null,
+        state === "ready" ? win1 : null,
+        winLoUs,
+        winHiUs,
+      ),
+    [channels, state, win0, win1, winLoUs, winHiUs],
   );
 
   return (
@@ -484,15 +570,11 @@ export function TimelineWaveform({
           key={tile.startPx}
           widthPx={tile.widthPx}
           height={height}
-          channels={channels}
-          win0={state === "ready" ? win0 : null}
-          win1={state === "ready" ? win1 : null}
+          data={drawData}
           tileStartPx={tile.startPx}
           totalWidthPx={totalWidthPx}
           srcInUs={srcInUs}
           srcOutUs={srcOutUs}
-          winLoUs={winLoUs}
-          winHiUs={winHiUs}
           dprVersion={dprVersion}
           visible={isSegmentVisible(tile.startPx)}
           observe={observeSegment}
@@ -506,15 +588,11 @@ export function TimelineWaveform({
 function WaveformTileCanvas({
   widthPx,
   height,
-  channels,
-  win0,
-  win1,
+  data,
   tileStartPx,
   totalWidthPx,
   srcInUs,
   srcOutUs,
-  winLoUs,
-  winHiUs,
   dprVersion,
   visible,
   observe,
@@ -522,15 +600,11 @@ function WaveformTileCanvas({
 }: {
   widthPx: number;
   height: number;
-  channels: number;
-  win0: WaveformWindow | null;
-  win1: WaveformWindow | null;
+  data: WaveformDrawData;
   tileStartPx: number;
   totalWidthPx: number;
   srcInUs: number;
   srcOutUs: number;
-  winLoUs: number;
-  winHiUs: number;
   dprVersion: number;
   visible: boolean;
   observe: (el: HTMLCanvasElement, startPx: number) => () => void;
@@ -561,15 +635,15 @@ function WaveformTileCanvas({
     // CURRENT geometry, so a stale window drawn mid-zoom/scroll still lands
     // at its true positions.
     const span = srcOutUs - srcInUs;
-    const winLoPx = span > 0 ? ((winLoUs - srcInUs) / span) * totalWidthPx : 0;
-    const winHiPx = span > 0 ? ((winHiUs - srcInUs) / span) * totalWidthPx : totalWidthPx;
+    const winLoPx = span > 0 ? ((data.winLoUs - srcInUs) / span) * totalWidthPx : 0;
+    const winHiPx = span > 0 ? ((data.winHiUs - srcInUs) / span) * totalWidthPx : totalWidthPx;
     drawTile(
       c,
       widthPx,
       height,
-      channels,
-      win0,
-      win1,
+      data.channels,
+      data.win0,
+      data.win1,
       tileStartPx,
       winLoPx,
       winHiPx - winLoPx,
@@ -581,15 +655,11 @@ function WaveformTileCanvas({
   }, [
     widthPx,
     height,
-    channels,
-    win0,
-    win1,
+    data,
     tileStartPx,
     totalWidthPx,
     srcInUs,
     srcOutUs,
-    winLoUs,
-    winHiUs,
     dprVersion,
     visible,
     waveformColor,

@@ -54,7 +54,8 @@ const wire = (a: ActorT) => serializeProject(a.snapshot()) as unknown as WirePro
  *  Requested times are deliberately raw µs — off grid at the fractional rates —
  *  so the seeding itself exercises the mutators' snap. */
 function seedTimeline(a: ActorT): ActorT {
-  const [aRoll, bRoll] = root(a.snapshot()).tracks.map((t) => t.id)
+  const aRoll = root(a.snapshot()).tracks[0].id
+  const bRoll = (a.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
   a.dispatch('add_layer', { track: aRoll, kind: 'video', media: VIDEO_MEDIA, src_in_us: 0, src_out_us: 500_001, t_start_us: 0, t_end_us: 500_001 })
   a.dispatch('add_layer', { track: aRoll, kind: 'video', media: VIDEO_MEDIA, src_in_us: 0, src_out_us: 499_999, t_start_us: 500_001, t_end_us: 1_000_000 })
   a.dispatch('add_layer', { track: aRoll, kind: 'color', t_start_us: 1_100_003, t_end_us: 1_700_003 })

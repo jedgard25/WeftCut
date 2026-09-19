@@ -121,6 +121,13 @@ function seekExact(clampedUs: number): void {
   transportSeek(previewLocalUs(clampedUs));
 }
 
+/// A Group's own timeline can extend beyond its trimmed placement in the
+/// film. Its scrub is bounded on that timeline before projection, so the root
+/// bound must not discard the projected position.
+export function seekProjectedRootUs(rootUs: number): void {
+  seekExact(rootUs);
+}
+
 /// Clamped seek through the module-level transport. `tUs` is ROOT time — a
 /// caller holding a composition's own clock projects first
 /// (`state/playheadProjection.ts`).

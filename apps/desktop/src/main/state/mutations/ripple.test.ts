@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest'
 import { seededGen, type IdGen } from '../ids'
 import { blankProject, type Composition, type Layer, type Project, type Uuid } from '../model'
 import { createActor, type ActorHandle, type DispatchResult } from '../actor'
-import { applyAddLayer, applyAddMarker, colorParams } from './add'
+import { applyAddLayer, applyAddMarker, applyAddTrack, colorParams } from './add'
 import { applyDurationAutofit } from './helpers'
 import { applyLinksCreate } from './links'
 import { audioParams, mediaItemTemplate, videoClipParams } from './media'
@@ -59,10 +59,11 @@ function fx(name = 'ripple'): Fx {
   const p = blankProject(gen, name)
   p.media_pool[VIDEO] = mediaItemTemplate(VIDEO, 'Video', 600_000_000)
   p.media_pool[SOUND] = mediaItemTemplate(SOUND, 'Audio', 600_000_000)
+  const bRoll = applyAddTrack(p, gen, null)
   return {
     p, gen, burned,
     aRoll: root(p).tracks[0].id,
-    bRoll: root(p).tracks[1].id,
+    bRoll,
     open: () => createActor({ initial: p, idGen: gen, clock: () => '<TS>' }),
   }
 }
@@ -183,8 +184,8 @@ describe('applyRippleDeleteLayers closes the span the deletion vacated', () => {
 // ── links ────────────────────────────────────────────────────────────────────
 
 describe('applyRippleDeleteLayers over a link', () => {
-  /** The A/V pair every timeline has: picture on the A roll, its sound on the
-   *  B roll, the two co-starting and linked. */
+  /** The A/V pair every timeline has: picture on the A roll, its sound on a
+   *  spawned lane, the two co-starting and linked. */
   function pair(): { x: Fx; v1: Uuid; v2: Uuid; a1: Uuid; a2: Uuid } {
     const x = fx()
     const v1 = color(x, x.aRoll, sec(0), sec(2))
@@ -414,7 +415,7 @@ describe('dispatch: ripple_delete_layers refuses rather than making room', () =>
     }
   }
 
-  it('names a B-roll clip that starts inside the span, and succeeds once it joins the selection', () => {
+  it('names a spawned-lane clip that starts inside the span, and succeeds once it joins the selection', () => {
     const x = fx()
     color(x, x.aRoll, sec(0), sec(2))
     const b = color(x, x.aRoll, sec(2), sec(6))
@@ -514,7 +515,7 @@ describe('dispatch: ripple_delete_layers records one entry that one undo unwinds
     const b2 = color(x, x.aRoll, sec(6), sec(8))
     applyAddTransition(x.p, x.gen, b1, b2, sec(1), CROSSFADE)
     const anchored = clip(x, x.bRoll, sec(4), sec(6))
-    applyAddMarker(x.p, x.gen, sec(5), null, 'on the B roll', BLUE, null, '', { layer: anchored, src_us: sec(1) })
+    applyAddMarker(x.p, x.gen, sec(5), null, 'on the second lane', BLUE, null, '', { layer: anchored, src_us: sec(1) })
     const actor = x.open()
 
     const before = JSON.stringify(actor.snapshot())
@@ -595,7 +596,7 @@ describe('dispatch: ripple_delete_gap', () => {
     const b2 = color(x, x.aRoll, sec(6), sec(8))
     applyAddTransition(x.p, x.gen, b1, b2, sec(1), CROSSFADE)
     const anchored = clip(x, x.bRoll, sec(4), sec(6))
-    applyAddMarker(x.p, x.gen, sec(5), null, 'on the B roll', BLUE, null, '', { layer: anchored, src_us: sec(1) })
+    applyAddMarker(x.p, x.gen, sec(5), null, 'on the second lane', BLUE, null, '', { layer: anchored, src_us: sec(1) })
     const actor = x.open()
 
     const before = JSON.stringify(actor.snapshot())

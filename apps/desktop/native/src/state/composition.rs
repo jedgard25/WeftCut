@@ -84,21 +84,19 @@ pub struct Composition {
 
 impl Composition {
     /// Mirror of TS `newComposition` (model.ts): default settings, empty
-    /// timeline, and the reserved A/B roll skeleton. Mints A roll, then B roll
-    /// — the id order `Project::new_blank` and the fixtures assert.
+    /// timeline, and the reserved single A-roll skeleton. Mints A roll —
+    /// the id order `Project::new_blank` and the fixtures assert.
     pub fn new_with_skeleton(id: CompositionId, label: Option<String>) -> Self {
         Self::from_skeleton(id, label, Self::skeleton_tracks())
     }
 
-    /// The two reserved, kind-agnostic tracks (A roll, B roll) every fresh
-    /// composition seeds; layers of any kind coexist on them. V+A pairs from
+    /// The one reserved, kind-agnostic track (A roll) every fresh
+    /// composition seeds; layers of any kind coexist on it. V+A pairs from
     /// import land on the same track and render as one combined row. See
     /// `docs/data-model.md`.
     ///
-    /// A roll is the primary base and B roll overlays paint on top, per the
-    /// z-order convention on `tracks`. Separated-audio rows insert adjacent to
-    /// their source video; on-screen order is derived from data order, not
-    /// stored.
+    /// A roll is the primary base additional lanes accrete around; on-screen
+    /// order is derived from data order, not stored.
     ///
     /// `label` is left `None`: a reserved track's name is DERIVED from its
     /// `role` in the renderer (ADR 0042), so a literal written here could
@@ -108,11 +106,7 @@ impl Composition {
         a_roll.removable = false;
         a_roll.role = Some(TrackRole::ARoll);
 
-        let mut b_roll = Track::new();
-        b_roll.removable = false;
-        b_roll.role = Some(TrackRole::BRoll);
-
-        imbl::vector![a_roll, b_roll]
+        imbl::vector![a_roll]
     }
 
     /// Default settings (1080p30, 48 kHz stereo, BT.709, black) around an

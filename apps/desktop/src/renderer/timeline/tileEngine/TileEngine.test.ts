@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TileEngine, ERROR_RETRY_COOLDOWN_MS, type TileProducer, type TileKey } from "./TileEngine";
+import {
+  TileEngine,
+  ERROR_RETRY_COOLDOWN_MS,
+  NON_READY_SLOT_CAP,
+  type TileProducer,
+  type TileKey,
+} from "./TileEngine";
 
 vi.mock("@/bridge/events", () => ({ listen: vi.fn(async () => () => {}) }));
 
@@ -221,5 +227,37 @@ describe("TileEngine", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("prunes byte-less (pending) slots past NON_READY_SLOT_CAP", () => {
+    const { producer } = makeProducer();
+    engine.register(producer);
+    const overflow = 10;
+    const keys = Array.from({ length: NON_READY_SLOT_CAP + overflow }, (_, i) => ({
+      mediaId: "m",
+      kind: "test",
+      lod: 0,
+      index: i,
+    }));
+    for (const key of keys) engine.request(key);
+    // Oldest non-ready slots evicted; newest still pending.
+    expect(engine.get(keys[0]!)).toBeUndefined();
+    expect(engine.get(keys[overflow - 1]!)).toBeUndefined();
+    expect(engine.get(keys[keys.length - 1]!)?.state).toBe("pending");
+  });
+
+  it("clear() drops every slot and disposes ready values", async () => {
+    const disposed: number[][] = [];
+    const { producer, resolve } = makeProducer({ dispose: (v) => disposed.push(v) });
+    engine.register(producer);
+    const k0: TileKey = { mediaId: "m", kind: "test", lod: 0, index: 0 };
+    const k1: TileKey = { mediaId: "m", kind: "test", lod: 0, index: 1 };
+    engine.request(k0); resolve("0:0", [1]); await Promise.resolve();
+    engine.request(k1); resolve("0:1", [2]); await Promise.resolve();
+    expect(engine.get(k0)?.state).toBe("ready");
+    engine.clear();
+    expect(disposed.length).toBe(2);
+    expect(engine.get(k0)).toBeUndefined();
+    expect(engine.get(k1)).toBeUndefined();
   });
 });

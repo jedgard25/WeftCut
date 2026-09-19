@@ -205,7 +205,7 @@ describe('buildProjectSummary (mirror commands/mod.rs:322 build_project_summary)
     const actor = createActor({ initial, idGen: gen, clock: () => '<TS>' })
     const s = buildProjectSummary(actor.snapshot(), actor.historyStatus(), NEVER)
     expect(s.name).toBe('demo')
-    expect([s.track_count, s.layer_count]).toEqual([2, 0]) // A-roll + B-roll, no layers
+    expect([s.track_count, s.layer_count]).toEqual([1, 0]) // single A-roll, no layers
     expect(Object.keys(s.compositions)).toEqual([s.root_id])
     const r = s.compositions[s.root_id]!
     // fps_locked false on a blank project: nothing in the stack has ever held a layer.
@@ -252,14 +252,14 @@ describe('buildProjectSummary (mirror commands/mod.rs:322 build_project_summary)
     expect(t0.layers[0]!.color_hint).toBe('#ff0000') // default add_layer color is red (255,0,0)
     expect(s.layer_count).toBe(1)
   })
-  it('track roles emit kebab wire form (ARoll→a-roll, BRoll→b-roll)', () => {
-    // blankProject reserves two role-stamped tracks, ARoll and BRoll. Neither
-    // stores a label — the role IS the name, resolved renderer-side.
+  it('track roles emit kebab wire form (ARoll→a-roll)', () => {
+    // blankProject mints a single role-stamped A-roll track. The role IS the
+    // name, resolved renderer-side — it stores no label.
     const gen = seededGen()
     const initial = blankProject(gen, 'demo')
     const actor = createActor({ initial, idGen: gen, clock: () => '<TS>' })
     const s = buildProjectSummary(actor.snapshot(), actor.historyStatus(), NEVER)
-    expect(s.compositions[s.root_id]!.tracks.map((t) => t.role)).toEqual(['a-roll', 'b-roll'])
+    expect(s.compositions[s.root_id]!.tracks.map((t) => t.role)).toEqual(['a-roll'])
   })
 })
 
@@ -317,7 +317,7 @@ describe('buildProjectSummary carries every composition', () => {
     const perComp = Object.values(s.compositions)
     expect(s.track_count).toBe(perComp.reduce((n, c) => n + c.tracks.length, 0))
     expect(s.layer_count).toBe(perComp.reduce((n, c) => n + c.tracks.reduce((m, t) => m + t.layers.length, 0), 0))
-    // Root: A + B roll + the reference lane (1 layer); Group: A + B roll (1 layer).
+    // Root: A-roll + the reference lane (1 layer); Group: A-roll (1 layer).
     expect(s.compositions[s.root_id]!.tracks.length + s.compositions[groupId]!.tracks.length).toBe(s.track_count)
     expect(s.layer_count).toBe(2)
   })

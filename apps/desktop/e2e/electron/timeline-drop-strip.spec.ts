@@ -101,7 +101,7 @@ test.describe('timeline drop strip', () => {
       const card = page.locator(`.media-item[data-media-id="${mediaId}"][draggable="true"]`)
       await expect(card).toBeVisible({ timeout: 30_000 })
 
-      const strip = page.locator('[data-testid="timeline-drop-strip"]')
+      const strip = page.locator('[data-testid="timeline-drop-strip"][data-position="top"]')
       await expect(strip).toBeVisible()
       const stripBox = await strip.boundingBox()
       if (!stripBox) throw new Error('drop strip has no layout box')
@@ -110,7 +110,7 @@ test.describe('timeline drop strip', () => {
       const trackIdsBefore = new Set(before.tracks.map((t) => t.id))
       expect(before.tracks.flatMap((t) => t.layers)).toHaveLength(0)
       const lanes = page.locator('[data-testid="track-lane"]')
-      await expect(lanes).toHaveCount(2) // the reserved A/B skeleton
+      await expect(lanes).toHaveCount(1) // the single reserved A roll
 
       // 32px in from the strip's left edge is the cursor-in-ghost offset, so the
       // clip lands at t=0 — well clear of the sticky header column.

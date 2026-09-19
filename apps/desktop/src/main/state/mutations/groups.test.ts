@@ -65,12 +65,13 @@ function normalise(c: Composition) {
   }
 }
 
-/** Two linked colour layers [2 s, 5 s): V on A roll, W on B roll. */
+/** Two linked colour layers [2 s, 5 s): V on A roll, W on a spawned lane. */
 function pair(): { p: Project; gen: IdGen; v: Uuid; w: Uuid; link: Uuid } {
   const gen = seededGen()
   const p = blankProject(gen, 't')
+  const laneB = applyAddTrack(p, gen, null)
   const v = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 2 * S, 5 * S)
-  const w = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 2 * S, 5 * S)
+  const w = applyAddLayer(p, gen, laneB, color(), 2 * S, 5 * S)
   const link = applyLinksCreate(p, gen, [v, w], null, false)
   return { p, gen, v, w, link }
 }
@@ -82,7 +83,8 @@ describe('applyGroupsCreate', () => {
     const c = group(p, r.compositionId)
     expect(groupIds(p)).toEqual([r.compositionId])
     expect(c.label).toBe('Intro')
-    expect(c.tracks.map((t) => t.role)).toEqual(['ARoll', 'BRoll'])
+    expect(c.tracks.map((t) => t.role)).toEqual(['ARoll', null])
+    expect(c.tracks[1]).toMatchObject({ transient: true })
     expect(c.fps).toEqual(root(p).fps)
     expect(layerOf(c, v)).toMatchObject({ t_start_us: 0, t_end_us: 3 * S })
     expect(layerOf(c, w)).toMatchObject({ t_start_us: 0, t_end_us: 3 * S })
@@ -91,7 +93,7 @@ describe('applyGroupsCreate', () => {
     expect(c.links).toEqual([{ id: link, members: [v, w].sort() }])
     expect(root(p).links).toEqual([])
     expect(c.duration_us).toBe(3 * S)
-    // The Group layer: on the top-most former track (B roll), spanning the composition.
+    // The Group layer: on the top-most former track (the spawned lane), spanning the composition.
     const g = layerOf(root(p), r.layerId)
     expect(g).toMatchObject({ t_start_us: 2 * S, t_end_us: 5 * S, effects: [] })
     expect(refParams(root(p), r.layerId)).toMatchObject({ composition: r.compositionId, src_in_us: 0, src_out_us: 3 * S, blend_mode: 'Normal' })
@@ -114,9 +116,10 @@ describe('applyGroupsCreate', () => {
   it('a link fully inside the set moves with its id; a straddling link loses its inside members and dissolves below two', () => {
     const gen = seededGen()
     const p = blankProject(gen, 't')
+    const laneB = applyAddTrack(p, gen, null)
     const t3 = applyAddTrack(p, gen, null)
     const x = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 0, S)
-    const y = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, S)
+    const y = applyAddLayer(p, gen, laneB, color(), 0, S)
     const z = applyAddLayer(p, gen, t3, color(), 0, S)
     const link = applyLinksCreate(p, gen, [x, y, z], null, false)
     const r = applyGroupsCreate(p, gen, [x, y], null)
@@ -126,8 +129,9 @@ describe('applyGroupsCreate', () => {
 
     const q = blankProject(seededGen(), 't')
     const gen2 = seededGen(); gen2(); gen2(); gen2(); gen2()
+    const laneB2 = applyAddTrack(q, gen2, null)
     const a = applyAddLayer(q, gen2, root(q).tracks[0].id, color(), 0, S)
-    const b = applyAddLayer(q, gen2, root(q).tracks[1].id, color(), 0, S)
+    const b = applyAddLayer(q, gen2, laneB2, color(), 0, S)
     const inside = applyLinksCreate(q, gen2, [a, b], 'AB', false)
     const c = applyAddLayer(q, gen2, applyAddTrack(q, gen2, null), color(), 0, S)
     const r2 = applyGroupsCreate(q, gen2, [a, b, c], null)
@@ -190,8 +194,8 @@ describe('applyGroupsCreate', () => {
     const snapshot2 = structuredClone(p)
     expect(expectCmd(() => applyGroupsCreate(p, gen, [v, w], null))).toEqual({ error: 'TrackLocked', track: root(p).tracks[0].id })
     expect(p).toEqual(snapshot2)
-    // No id was burned by either refusal: blankProject took 1–4, the two layers 5–6, the link 7.
-    expect(gen()).toBe('00000000-0000-0000-0000-000000000008')
+    // No id was burned by either refusal: blankProject took 1–4, the spawned lane 5, the two layers 6–7, the link 8.
+    expect(gen()).toBe('00000000-0000-0000-0000-000000000009')
   })
 
   it('refuses an empty set, a missing member and a set spanning two compositions', () => {
@@ -203,22 +207,24 @@ describe('applyGroupsCreate', () => {
     expect(expectCmd(() => applyGroupsCreate(p, gen, [r.layerId, inner.id], null))).toMatchObject({ error: 'CrossCompositionSet', layer: inner.id })
   })
 
-  it('members on three tracks map onto A roll, B roll and a transient lane in z order', () => {
+  it('members on three tracks map onto A roll and two transient lanes in z order', () => {
     const gen = seededGen()
     const p = blankProject(gen, 't')
+    const laneB = applyAddTrack(p, gen, null)
     const t3 = applyAddTrack(p, gen, null)
     const x = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 0, S)
-    const y = applyAddLayer(p, gen, root(p).tracks[1].id, color(), S, 2 * S)
+    const y = applyAddLayer(p, gen, laneB, color(), S, 2 * S)
     const z = applyAddLayer(p, gen, t3, color(), 0, S)
     const r = applyGroupsCreate(p, gen, [z, x, y], null)
     const c = group(p, r.compositionId)
     expect(c.tracks.map((t) => [t.role, t.transient, t.layers.map((l) => l.id)])).toEqual([
-      ['ARoll', false, [x]], ['BRoll', false, [y]], [null, true, [z]],
+      ['ARoll', false, [x]], [null, true, [y]], [null, true, [z]],
     ])
-    // The Group layer took the top former lane (t3), which therefore survives.
-    expect(root(p).tracks).toHaveLength(3)
-    expect(trackOf(root(p), r.layerId)).toBe(2)
-    expect(root(p).tracks[2].id).toBe(t3)
+    // The Group layer took the top former lane (t3), which therefore survives;
+    // the other emptied transient lane is pruned, the reserved A-roll stays.
+    expect(root(p).tracks).toHaveLength(2)
+    expect(trackOf(root(p), r.layerId)).toBe(1)
+    expect(root(p).tracks[1].id).toBe(t3)
     expect(layerOf(root(p), r.layerId)).toMatchObject({ t_start_us: 0, t_end_us: 2 * S })
     expect(() => validate(p)).not.toThrow()
   })
@@ -226,9 +232,10 @@ describe('applyGroupsCreate', () => {
   it('spawns a lane above when the Group span collides on the top former track, and prunes the emptied transient lane', () => {
     const gen = seededGen()
     const p = blankProject(gen, 't')
+    const laneB = applyAddTrack(p, gen, null)
     const x = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 0, S)
-    const y = applyAddLayer(p, gen, root(p).tracks[1].id, color(), S, 2 * S)
-    const n = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, S) // non-member on the top former lane
+    const y = applyAddLayer(p, gen, laneB, color(), S, 2 * S)
+    const n = applyAddLayer(p, gen, laneB, color(), 0, S) // non-member on the top former lane
     const r = applyGroupsCreate(p, gen, [x, y], null)
     expect(root(p).tracks).toHaveLength(3)
     expect(trackOf(root(p), r.layerId)).toBe(2)
@@ -244,12 +251,12 @@ describe('applyGroupsCreate', () => {
     const other = applyAddLayer(q, gen2, root(q).tracks[0].id, color(), 0, S)
     // Group span [0, 1 s) collides with nothing on `lane` once m leaves — so it lands there, and the lane stays.
     const r2 = applyGroupsCreate(q, gen2, [m], null)
-    expect(trackOf(root(q), r2.layerId)).toBe(2)
-    expect(root(q).tracks).toHaveLength(3)
+    expect(trackOf(root(q), r2.layerId)).toBe(1)
+    expect(root(q).tracks).toHaveLength(2)
     // Whereas grouping `other` (on A roll) with m puts the Group on `lane` too; both former lanes hold something after.
     const r3 = applyGroupsCreate(q, gen2, [r2.layerId, other], null)
-    expect(root(q).tracks).toHaveLength(3)
-    expect(trackOf(root(q), r3.layerId)).toBe(2)
+    expect(root(q).tracks).toHaveLength(2)
+    expect(trackOf(root(q), r3.layerId)).toBe(1)
   })
 
   it('nests: a Group inside a Group validates, and a member that is itself a Group moves as one layer', () => {
@@ -277,18 +284,19 @@ describe('applyGroupsCreate', () => {
 })
 
 /** A root holding a Group clip `[2 s, 3 s)` over a composition with one colour
- *  layer at `[0, 1 s)`, plus two more colour layers at `[3 s, 4 s)` — one on
- *  B roll, one on a transient lane — waiting to move in. The Group clip starts
+ *  layer at `[0, 1 s)`, plus two more colour layers at `[3 s, 4 s)` — each on
+ *  its own transient lane — waiting to move in. The Group clip starts
  *  at 2 s with `src_in_us` 0, so a member's landing time is its own minus 2 s. */
-function withDest(): { p: Project; gen: IdGen; comp: Uuid; g: Uuid; inner: Uuid; x: Uuid; y: Uuid; lane: Uuid } {
+function withDest(): { p: Project; gen: IdGen; comp: Uuid; g: Uuid; inner: Uuid; x: Uuid; y: Uuid; lane: Uuid; lane2: Uuid } {
   const gen = seededGen()
   const p = blankProject(gen, 't')
   const inner = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 2 * S, 3 * S)
   const r = applyGroupsCreate(p, gen, [inner], null)
   const lane = applyAddTrack(p, gen, null)
-  const x = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 3 * S, 4 * S)
-  const y = applyAddLayer(p, gen, lane, color(), 3 * S, 4 * S)
-  return { p, gen, comp: r.compositionId, g: r.layerId, inner, x, y, lane }
+  const lane2 = applyAddTrack(p, gen, null)
+  const x = applyAddLayer(p, gen, lane, color(), 3 * S, 4 * S)
+  const y = applyAddLayer(p, gen, lane2, color(), 3 * S, 4 * S)
+  return { p, gen, comp: r.compositionId, g: r.layerId, inner, x, y, lane, lane2 }
 }
 
 describe('applyGroupsAddMembers', () => {
@@ -301,8 +309,8 @@ describe('applyGroupsAddMembers', () => {
     expect(layerOf(c, x)).toMatchObject({ t_start_us: S, t_end_us: 2 * S })
     expect(layerOf(c, y)).toMatchObject({ t_start_us: S, t_end_us: 2 * S })
     expect(trackOf(c, inner)).toBe(0)
-    expect(trackOf(c, x)).toBe(0) // source B roll → the destination's first lane
-    expect(trackOf(c, y)).toBe(1) // source transient lane → its second
+    expect(trackOf(c, x)).toBe(0) // first source lane → the destination's first lane
+    expect(trackOf(c, y)).toBe(1) // second source lane → its second
     expect(c.duration_us).toBe(2 * S)
     expect(() => validate(p)).not.toThrow()
   })
@@ -317,11 +325,12 @@ describe('applyGroupsAddMembers', () => {
   })
 
   it('prunes the emptied transient source lane, keeps the emptied reserved one, and refits the source duration', () => {
-    const { p, gen, g, x, y, lane } = withDest()
+    const { p, gen, g, x, y, lane, lane2 } = withDest()
     expect(root(p).duration_us).toBe(4 * S)
     applyGroupsAddMembers(p, gen, [x, y], g)
-    expect(root(p).tracks.map((t) => t.role)).toEqual(['ARoll', 'BRoll'])
+    expect(root(p).tracks.map((t) => t.role)).toEqual(['ARoll'])
     expect(root(p).tracks.some((t) => t.id === lane)).toBe(false)
+    expect(root(p).tracks.some((t) => t.id === lane2)).toBe(false)
     expect(root(p).duration_us).toBe(3 * S)
     expect(() => validate(p)).not.toThrow()
   })
@@ -509,7 +518,8 @@ describe('applyGroupsUngroup', () => {
     const vid = applyAddLayer(p, gen, root(p).tracks[0].id, videoParams(0, 3 * S), 0, 3 * S)
     layerOf(root(p), vid).params = { ...videoParams(0, 3 * S), opacity: { mode: 'Keyframed', extrapolate: { before: 'Hold', after: 'Hold' }, value: [
       { id: 'k1', t_us: 500_000, value: 0, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } }, { id: 'k2', t_us: 1_500_000, value: 1, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' }, continuity: 'Broken', segment: { kind: 'Linear' } }] } }
-    const tail = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 2_500_000, 3 * S)
+    const laneB = applyAddTrack(p, gen, null)
+    const tail = applyAddLayer(p, gen, laneB, color(), 2_500_000, 3 * S)
     const r = applyGroupsCreate(p, gen, [vid, tail], null)
     // Trim the Group layer by hand to the window [1 s, 2 s), shown at t = 2 s.
     const g = layerOf(root(p), r.layerId)
@@ -556,14 +566,14 @@ describe('applyGroupsUngroup', () => {
     root(p).transitions.push({ id: tr, from_layer: a1, to_layer: a2, duration_us: 500_000, kind: { kind: 'Crossfade' }, extended_us: 0 })
     const link = applyLinksCreate(p, gen, [a1, b], null, false)
     const r = applyGroupsCreate(p, gen, [a1, a2, b], null)
-    // Group layer sits on t3 (the top former lane, index 2 — A roll and B roll below it).
-    expect(trackOf(root(p), r.layerId)).toBe(2)
+    // Group layer sits on t3 (the top former lane, index 1 — A roll below it).
+    expect(trackOf(root(p), r.layerId)).toBe(1)
     applyGroupsUngroup(p, gen, r.layerId)
-    // Fresh lanes at index 2 and 3; t3 was emptied of its Group layer and pruned.
-    expect(root(p).tracks.map((t) => [t.role, t.layers.length])).toEqual([['ARoll', 0], ['BRoll', 0], [null, 1], [null, 2]])
+    // Fresh lanes at index 1 and 2; t3 was emptied of its Group layer and pruned.
+    expect(root(p).tracks.map((t) => [t.role, t.layers.length])).toEqual([['ARoll', 0], [null, 1], [null, 2]])
     expect(root(p).tracks.some((t) => t.id === t3)).toBe(false)
-    const [nb] = root(p).tracks[2].layers
-    const [na1, na2] = root(p).tracks[3].layers
+    const [nb] = root(p).tracks[1].layers
+    const [na1, na2] = root(p).tracks[2].layers
     expect(root(p).links).toEqual([{ id: expect.any(String), members: [na1.id, nb.id].sort() }])
     expect(root(p).links[0].id).not.toBe(link)
     expect(root(p).transitions).toEqual([{ id: expect.any(String), from_layer: na1.id, to_layer: na2.id, duration_us: 500_000, kind: { kind: 'Crossfade' }, extended_us: 0 }])

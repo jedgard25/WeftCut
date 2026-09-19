@@ -1,5 +1,4 @@
-/** LogBus instrumentation for the MCP request funnel: one decorator wrapping
- *  each of `server.ts`'s six `setRequestHandler` calls, so every request the
+/** One decorator wrapping each of `server.ts`'s `setRequestHandler` calls, so every request the
  *  host serves lands in the log without a per-tool call to remember.
  *
  *  Owns the entry shape (level, message, `details`) and the slow-op timing.
@@ -10,11 +9,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { routeMcpTool } from './mutationTools.js'
 
-/** The six request methods `buildMcpServer` registers handlers for. */
+/** The request methods `buildMcpServer` registers handlers for. */
 export type McpLoggedMethod =
   | 'tools/call'
   | 'tools/list'
   | 'resources/list'
+  | 'resources/templates/list'
   | 'resources/read'
   | 'prompts/list'
   | 'prompts/get'

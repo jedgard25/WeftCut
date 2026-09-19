@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   AudioWaveform,
@@ -17,6 +25,7 @@ import { adjacentFrameBoundaryUs, formatTimecode } from "../frames";
 import { groupDisplayName, layerDisplayName } from "../lib/layerName";
 import { AppInput } from "../components/AppInput";
 import {
+  DEFAULT_PX_PER_SEC,
   HEADER_COL_PX,
   LAYER_FULL_LABEL_MIN_PX,
   LAYER_LABEL_MIN_PX,
@@ -30,6 +39,7 @@ import {
 } from "./geometry";
 import { AudioRegionBand } from "./AudioRegionBand";
 import { PauseBands } from "./PauseBands";
+import { cameraPxPerSec, subscribeCamera } from "./camera";
 import { compUsFromSourceUs } from "./audioRegionGeometry";
 import { useArmedRegionSelect } from "./audioRegionArmStore";
 import { useAudioRegionDrag } from "./hooks/useAudioRegionDrag";
@@ -337,12 +347,23 @@ function LayerKindIcon({ kind }: { kind: LayerSummary["params"]["kind"] }) {
   }
 }
 
-export function LayerBlock({
+/// The coarse width bucket a clip's label/affordance chrome depends on: below
+/// the label threshold, short-label, full-label. Used as the zoom subscription's
+/// snapshot so a normal clip re-renders only when it crosses a threshold rather
+/// than on every scale tick.
+function labelWidthClass(widthPx: number): 0 | 1 | 2 {
+  if (widthPx > LAYER_FULL_LABEL_MIN_PX) return 2;
+  if (widthPx >= LAYER_LABEL_MIN_PX) return 1;
+  return 0;
+}
+
+export const LayerBlock = memo(function LayerBlock({
   layer,
   trackId,
   trackKind,
   trackLocked,
   isTrackExpanded,
+  compositionId,
   pxPerSec,
   laneHeight,
   slice,
@@ -373,7 +394,12 @@ export function LayerBlock({
   /// True when this track's keyframe sub-lanes are expanded — collapsed
   /// in-clip diamonds are hidden (the sub-lanes render them instead).
   isTrackExpanded: boolean;
-  pxPerSec: number;
+  /// The composition this Panel shows — the camera key. Null/absent for the
+  /// unbound row and isolated tests (see `camera.ts`).
+  compositionId?: string | null | undefined;
+  /// Scale override for isolated component tests; the live app leaves this
+  /// undefined and reads the camera.
+  pxPerSec?: number;
   laneHeight: number;
   /// Vertical slot. "full" = entire row; "top" = top half (visual
   /// layer paired with audio); "bottom" = bottom half (audio paired
@@ -575,8 +601,16 @@ export function LayerBlock({
     }
   }
 
-  const left = (Math.max(0, liveStart) / 1_000_000) * pxPerSec;
-  const width = ((liveEnd - liveStart) / 1_000_000) * pxPerSec;
+  // The camera scale, read once per render for first paint. Geometry is kept
+  // live between renders by the imperative subscription below, so the block
+  // does not subscribe to it reactively just to move.
+  const fallbackPxPerSec = pxPerSec ?? DEFAULT_PX_PER_SEC;
+  const pps = cameraPxPerSec(compositionId, fallbackPxPerSec);
+  // Event-time read: a gesture must use the scale on screen NOW, not the one
+  // captured at this block's last render.
+  const livePps = () => cameraPxPerSec(compositionId, fallbackPxPerSec);
+  const left = (Math.max(0, liveStart) / 1_000_000) * pps;
+  const width = ((liveEnd - liveStart) / 1_000_000) * pps;
   const label = layerDisplayName(layer, t, groupOrdinals);
 
   /// The clip's head in SOURCE time — 0 for the kinds that window no source.
@@ -665,7 +699,7 @@ export function LayerBlock({
         tStartUs: layer.t_start_us,
         tEndUs: layer.t_end_us,
         srcInUs,
-        pxPerSec,
+        pxPerSec: livePps(),
         blockLeftPx: blockRect.left,
       })
     ) {
@@ -701,7 +735,7 @@ export function LayerBlock({
       // the px would hand a Panel at another zoom a number it cannot read, which
       // is exactly why the crossing used to drop the grab point altogether.
       grabOffsetUs:
-        pxPerSec > 0 ? ((e.clientX - blockRect.left) / pxPerSec) * 1_000_000 : 0,
+        livePps() > 0 ? ((e.clientX - blockRect.left) / livePps()) * 1_000_000 : 0,
       originalTStart: layer.t_start_us,
       originalTEnd: layer.t_end_us,
       deltaUs: 0,
@@ -880,6 +914,55 @@ export function LayerBlock({
     };
   };
 
+  // ---- Camera: live geometry without a React commit ----
+  //
+  // Every zoom tick updates this block's `left`/`width` straight on the node.
+  // The render-time values above are the first paint; the subscription keeps
+  // them current between renders. The live edges travel through a ref so the
+  // closure never goes stale across a drag or trim.
+  const geometryRef = useRef({ liveStart, liveEnd });
+  useLayoutEffect(() => {
+    geometryRef.current = { liveStart, liveEnd };
+  });
+  useLayoutEffect(
+    () =>
+      subscribeCamera(compositionId, () => {
+        const el = blockElRef.current;
+        if (!el) return;
+        const p = cameraPxPerSec(compositionId, fallbackPxPerSec);
+        const { liveStart: s, liveEnd: e } = geometryRef.current;
+        el.style.left = `${(Math.max(0, s) / 1_000_000) * p}px`;
+        el.style.width = `${Math.max(((e - s) / 1_000_000) * p, 4)}px`;
+      }),
+    [compositionId, fallbackPxPerSec],
+  );
+
+  // Re-render on zoom only for what cannot be painted imperatively: the exact
+  // width while this block draws keyframe diamonds, a link tab or a sample
+  // region (all positioned from it), and every audio clip (its pause bands).
+  // Everything else rides the coarse label-width class — two thresholds across
+  // the whole zoom range — so a normal clip reconciles a couple of times per
+  // gesture instead of sixty.
+  const needsExactWidth =
+    (focusedParam !== null && !isTrackExpanded) ||
+    linkTab !== null ||
+    regionBandCard !== null ||
+    layer.params.kind === "Audio";
+  const subscribeZoom = useCallback(
+    (cb: () => void) => subscribeCamera(compositionId, cb),
+    [compositionId],
+  );
+  useSyncExternalStore(
+    subscribeZoom,
+    () => {
+      const w =
+        ((liveEnd - liveStart) / 1_000_000) *
+        cameraPxPerSec(compositionId, fallbackPxPerSec);
+      return needsExactWidth ? w : labelWidthClass(w);
+    },
+    () => (needsExactWidth ? layerWidthPx : labelWidthClass(layerWidthPx)),
+  );
+
   return (
     <div
       ref={blockElRef}
@@ -1000,7 +1083,9 @@ export function LayerBlock({
     >
       <TimelineVisualPreview
         layer={layer}
-        layerWidthPx={layerWidthPx}
+        compositionId={compositionId}
+        tStartUs={liveStart}
+        tEndUs={liveEnd}
         layerHeightPx={sliceHeight}
         pxPerSec={pxPerSec}
       />
@@ -1011,8 +1096,8 @@ export function LayerBlock({
       {!previewOnly && (
         <PauseBands
           layerId={layer.id}
-          pxPerSec={pxPerSec}
-          blockLeftPx={((layer.t_start_us - liveStart) / 1_000_000) * pxPerSec}
+          pxPerSec={pps}
+          blockLeftPx={((layer.t_start_us - liveStart) / 1_000_000) * pps}
           tStartUs={layer.t_start_us}
           blockLoUs={liveStart}
           blockHiUs={liveEnd}
@@ -1025,12 +1110,12 @@ export function LayerBlock({
           inKey={regionBandCard.inKey}
           outKey={regionBandCard.outKey}
           minUs={regionBandCard.minUs}
-          pxPerSec={pxPerSec}
+          pxPerSec={pps}
           // The block's left edge follows the LIVE clip head through a trim or
           // move preview while the stored region stays on the committed one;
           // this offset is what keeps the band over its own audio for the
           // length of that gesture, and is 0 the rest of the time.
-          blockLeftPx={((layer.t_start_us - liveStart) / 1_000_000) * pxPerSec}
+          blockLeftPx={((layer.t_start_us - liveStart) / 1_000_000) * pps}
           visibleLoUs={srcInUs}
           visibleHiUs={srcInUs + (layer.t_end_us - layer.t_start_us)}
           preview={regionDrag.preview}
@@ -1044,7 +1129,7 @@ export function LayerBlock({
                 tStartUs: layer.t_start_us,
                 tEndUs: layer.t_end_us,
                 srcInUs,
-                pxPerSec,
+                pxPerSec: livePps(),
                 // Measured at the press, in the coordinates the press reports.
                 blockLeftPx: blockElRef.current?.getBoundingClientRect().left ?? 0,
                 effectId: regionBandCard.effectId,
@@ -1249,7 +1334,7 @@ export function LayerBlock({
               paramKey: focusedParam,
               kfId: hitId,
               clientX: e.clientX,
-              pxPerSec,
+              pxPerSec: livePps(),
               altKey: e.altKey,
               onPress: () => transportSeek(layer.t_start_us + key.t_us),
             });
@@ -1293,4 +1378,4 @@ export function LayerBlock({
       })()}
     </div>
   );
-}
+});

@@ -13,10 +13,10 @@ function color(id: string, t0: number, t1: number): Layer {
 
 describe('helpers', () => {
   it('locateLayer finds the layer with its holders and indices', () => {
-    const p = blankProject(seededGen(), 't'); root(p).tracks[1].layers = [color('a', 0, 1)]
+    const p = blankProject(seededGen(), 't'); root(p).tracks[0].layers = [color('a', 0, 1)]
     const loc = locateLayer(p, 'a')!
-    expect([loc.trackIndex, loc.layerIndex]).toEqual([1, 0])
-    expect(loc.comp).toBe(root(p)); expect(loc.track).toBe(root(p).tracks[1]); expect(loc.layer.id).toBe('a')
+    expect([loc.trackIndex, loc.layerIndex]).toEqual([0, 0])
+    expect(loc.comp).toBe(root(p)); expect(loc.track).toBe(root(p).tracks[0]); expect(loc.layer.id).toBe('a')
     expect(locateLayer(p, 'nope')).toBeNull()
   })
   it('locateLayer / locateTrack search every composition — a Group layer names its Group', () => {

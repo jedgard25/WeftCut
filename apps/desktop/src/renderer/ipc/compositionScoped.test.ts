@@ -28,7 +28,7 @@ beforeEach(() => {
 describe("composition-scoped creation channels", () => {
   it("sends the composition it was handed, not the focused one", async () => {
     await addTrackIn(GROUP);
-    expect(invoke).toHaveBeenCalledWith("add_track", { compositionId: GROUP });
+    expect(invoke).toHaveBeenCalledWith("add_track", { compositionId: GROUP, position: null });
 
     await addMarkerAtIn(GROUP, 500_000);
     expect(invoke).toHaveBeenLastCalledWith("add_marker", {
@@ -77,7 +77,7 @@ describe("composition-scoped creation channels", () => {
 
   it("passes null through as the root, which is what the unbound row is", async () => {
     await addTrackIn(null);
-    expect(invoke).toHaveBeenCalledWith("add_track", { compositionId: null });
+    expect(invoke).toHaveBeenCalledWith("add_track", { compositionId: null, position: null });
   });
 
   // The mark and its tie ride ONE call, so one undo takes both back.

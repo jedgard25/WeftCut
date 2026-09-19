@@ -67,8 +67,11 @@ test.describe("link override", () => {
       const mediaId = await invokeCmd<string>(page, "import_media", { path: FIXTURE });
       const s0 = await snapshot(page);
       const aRoll = s0.tracks.find((t) => t.role === "a-roll");
-      const bRoll = s0.tracks.find((t) => t.role === "b-roll");
-      expect(aRoll && bRoll, "the blank skeleton carries an A roll and a B roll").toBeTruthy();
+      expect(aRoll, "the blank skeleton carries an A roll").toBeTruthy();
+      // Single-lane skeleton: the drag target is a spawned lane, drawn via the
+      // All Tracks display (A/B Roll shows the A roll alone).
+      await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+      const bRoll = await invokeCmd<string>(page, "add_track", {});
       const videoLayerId = await invokeCmd<string>(page, "add_media_layer", {
         trackId: aRoll!.id,
         mediaId,
@@ -108,10 +111,10 @@ test.describe("link override", () => {
       await clickCentre(page, videoClip);
       expect(await selectedLayerIds(page)).toEqual([videoLayerId]);
 
-      // Drag the video down onto the B roll: only it changes lane, the audio
+      // Drag the video onto the spawned lane: only it changes lane, the audio
       // stays put. Vertical, so no horizontal room is needed and the audio half
       // cannot collide with anything.
-      const bLane = page.locator(`[data-testid="track-lane"][data-track-id="${bRoll!.id}"]`);
+      const bLane = page.locator(`[data-testid="track-lane"][data-track-id="${bRoll}"]`);
       await expect(bLane).toBeVisible();
       const clipBox = await videoClip.boundingBox();
       const laneBox = await bLane.boundingBox();
@@ -126,7 +129,7 @@ test.describe("link override", () => {
           timeout: 20_000,
           intervals: [250, 500, 1000],
         })
-        .toBe(bRoll!.id);
+        .toBe(bRoll);
       const s2 = await snapshot(page);
       expect(trackHolding(s2, audioLayerId!)).toBe(aRoll!.id);
       // The link itself is untouched — the override escapes, it never dissolves.

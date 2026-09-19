@@ -269,7 +269,7 @@ pub enum CommandError {
     TrackPositionOutOfRange { position: usize, len: usize },
     #[error("track {track} is not empty (use force to delete anyway)")]
     TrackNotEmpty { track: TrackId },
-    #[error("track {track} is not removable (default A-roll/B-roll)")]
+    #[error("track {track} is not removable (reserved skeleton track)")]
     TrackNotRemovable { track: TrackId },
     #[error("track {track} is locked")]
     TrackLocked { track: TrackId },

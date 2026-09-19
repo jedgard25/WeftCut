@@ -38,7 +38,7 @@ describe('applyDeleteTrack', () => {
 
 describe('applyMoveTrack', () => {
   it('reorders a track to a new position', () => {
-    const { p, gen } = base(); const t = applyAddTrack(p, gen, 'extra') // appended at idx 2
+    const { p, gen } = base(); const t = applyAddTrack(p, gen, 'extra') // appended at idx 1
     applyMoveTrack(p, t, 0)
     expect(root(p).tracks[0].id).toBe(t)
   })
@@ -56,9 +56,9 @@ describe('track ops inside a Group', () => {
   it("delete / rename / move address the Group's track by id; the root's tracks are untouched", () => {
     const { p, idGen, groupId } = groupedProject()
     const rootBefore = structuredClone(root(p))
-    const t = applyAddTrack(p, idGen, 'extra', undefined, groupId) // idx 2 in the Group
+    const t = applyAddTrack(p, idGen, 'extra', undefined, groupId) // idx 1 in the Group
     applyRenameTrack(p, t, ' Lower third ')
-    expect(group(p, groupId).tracks[2].label).toBe('Lower third')
+    expect(group(p, groupId).tracks[1].label).toBe('Lower third')
     applyMoveTrack(p, t, 0)
     expect(group(p, groupId).tracks[0].id).toBe(t)
     applyDeleteTrack(p, t, false)

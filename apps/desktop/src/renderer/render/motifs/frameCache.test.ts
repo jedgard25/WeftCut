@@ -227,6 +227,32 @@ describe("MotifFrameCache — L0 LRU", () => {
   });
 
   test("capacity returns the cap", () => { expect(new MotifFrameCache(7).capacity()).toBe(7); });
+
+  test("byte budget evicts LRU even when under the frame count cap", () => {
+    // Room for exactly one 100×100 RGBA frame (40 000 B).
+    const c = new MotifFrameCache(240, 100 * 100 * 4);
+    const a = { width: 100, height: 100, close: vi.fn() } as unknown as ImageBitmap;
+    const b = { width: 100, height: 100, close: vi.fn() } as unknown as ImageBitmap;
+    c.setFrame("k", 0, a);
+    c.setFrame("k", 1, b); // total 80 000 > 40 000 → evict a
+    expect(a.close).toHaveBeenCalledTimes(1);
+    expect(c.getFrame("k", 0)).toBeNull();
+    expect(c.getFrame("k", 1)).toBe(b);
+    expect(c.retainedBytes()).toBe(100 * 100 * 4);
+  });
+
+  test("clear() closes every frame, resets bytes, and stays usable", () => {
+    const c = new MotifFrameCache();
+    const a = { width: 10, height: 10, close: vi.fn() } as unknown as ImageBitmap;
+    c.setFrame("k", 0, a);
+    c.clear();
+    expect(a.close).toHaveBeenCalledTimes(1);
+    expect(c.size()).toBe(0);
+    expect(c.retainedBytes()).toBe(0);
+    const b = { width: 10, height: 10, close: vi.fn() } as unknown as ImageBitmap;
+    expect(c.setFrame("k", 0, b)).toBe(b);
+    expect(c.getFrame("k", 0)).toBe(b);
+  });
 });
 
 describe("MotifFrameCache — L2 worker-safety (no window bridge)", () => {

@@ -111,6 +111,15 @@ export function resolveDurationUs(durationUs: number | undefined): number {
 // command-adapter consumers keep their './commands' import path.
 export { pickFreeOverlayTrack } from './mutations/helpers'
 
+/** Spawn-side parser shared by the `add_track` and `move_layers_to_new_track`
+ *  arms: absent/null means the top of the z-stack; anything else must name a
+ *  side, else null (the arm refuses InvalidArgument). */
+export function parseTrackPosition(v: unknown): 'top' | 'bottom' | null {
+  if (v === undefined || v === null) return 'top'
+  if (v === 'top' || v === 'bottom') return v
+  return null
+}
+
 /** Mechanical channels: pure camelCase→snake renaming, no param construction.
  *  Returns null for channels not in this table. */
 const MECHANICAL: Record<string, (a: Record<string, unknown>) => { op: string; args: Record<string, unknown> }> = {
@@ -118,7 +127,7 @@ const MECHANICAL: Record<string, (a: Record<string, unknown>) => { op: string; a
   // never be localized (ADR 0042). `compositionId` is the creation-op scope
   // (absent = root); layer-addressed channels carry none — the layer id names
   // its composition (ADR 0052).
-  add_track: (a) => ({ op: 'add_track', args: { label: null, composition_id: a.compositionId ?? null } }),
+  add_track: (a) => ({ op: 'add_track', args: { label: null, composition_id: a.compositionId ?? null, position: a.position ?? null } }),
   update_layer: (a) => ({ op: 'update_layer', args: { layer: a.layerId, patch: a.patch } }),
   // Remaining mechanical + meta channels
   move_layer: (a) => ({ op: 'move_layer', args: { layer: a.layerId, to_track: a.newTrackId, t_start_us: a.newTStartUs, escape_link: a.escapeLink ?? false } }),
@@ -126,7 +135,7 @@ const MECHANICAL: Record<string, (a: Record<string, unknown>) => { op: string; a
   // API bundles them into one `anchor` object so a caller cannot supply half,
   // and this flattens the pair onto the wire the way every other op carries its
   // args. Both null is the raise that names no time.
-  move_layers_to_new_track: (a) => ({ op: 'move_layers_to_new_track', args: { layers: a.layerIds, anchor_layer_id: a.anchorLayerId ?? null, t_start_us: a.anchorTStartUs ?? null } }),
+  move_layers_to_new_track: (a) => ({ op: 'move_layers_to_new_track', args: { layers: a.layerIds, anchor_layer_id: a.anchorLayerId ?? null, t_start_us: a.anchorTStartUs ?? null, position: a.position ?? null } }),
   // Anchored z-reorder (ADR 0044) — the Playhead Panel's drop gesture. Pure renaming;
   // position/anchor validation lives with the mutation.
   restack_layer: (a) => ({ op: 'restack_layer', args: { layer: a.layerId, anchor: a.anchorLayerId, position: a.position } }),
@@ -149,6 +158,10 @@ const MECHANICAL: Record<string, (a: Record<string, unknown>) => { op: string; a
   // toggles exactly what it is handed.
   set_layers_enabled: (a) => ({ op: 'set_layers_enabled', args: { layers: a.layerIds, enabled: a.enabled } }),
   split_layer_linked: (a) => ({ op: 'split_layer', args: { layer: a.layerId, at_t_us: a.atTUs, escape_link: a.escapeLink ?? false } }),
+  // The collapse-to-playhead gesture's commit: keep the named ranges, discard
+  // the rest, ripple the holes closed — one commit per layer. `keep` rides
+  // through untouched; the actor validates shape, bounds, grid and ripple.
+  apply_cut_list: (a) => ({ op: 'apply_cut_list', args: { layer: a.layerId, keep: a.keep } }),
   links_create: (a) => ({ op: 'links_create', args: { layers: a.layerIds, label: a.label ?? null, reassign: a.reassign ?? false } }),
   links_dissolve: (a) => ({ op: 'links_dissolve', args: { link: a.linkId } }),
   links_rename: (a) => ({ op: 'links_rename', args: { link: a.linkId, label: a.label ?? null } }),
@@ -241,7 +254,7 @@ export const PRODUCTION_OPS = new Set<string>([
   'add_color_layer', 'add_text_layer', 'add_media_layer', 'paste_layer',
   'add_demo_color_layer', 'add_demo_text_layer',
   // Remaining mechanical + meta channels
-  'move_layer', 'move_layers_to_new_track', 'restack_layer', 'trim_layer', 'delete_layers', 'ripple_delete_layers', 'ripple_delete_gap', 'remove_media', 'paste_layers', 'set_layers_enabled', 'split_layer_linked',
+  'move_layer', 'move_layers_to_new_track', 'restack_layer', 'trim_layer', 'delete_layers', 'ripple_delete_layers', 'ripple_delete_gap', 'remove_media', 'paste_layers', 'set_layers_enabled', 'split_layer_linked', 'apply_cut_list',
   'links_create', 'links_dissolve', 'links_rename',
   'groups_create', 'groups_add_members', 'move_layers_to_composition', 'groups_ungroup', 'groups_rename', 'compositions_delete', 'add_group_layer',
   'update_layer_params', 'update_layer_param_track', 'update_layer_param_tracks', 'update_param_tracks_multi', 'set_scale_linked',

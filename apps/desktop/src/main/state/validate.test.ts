@@ -7,7 +7,7 @@ import { validate } from './validate'
 import { isValidationFailure } from './errors'
 import { timeUsAtFrame } from './snap'
 import { asRoot, root, withGroup } from './__tests__/fixtures/project'
-import { applyAddLayer } from './mutations/add'
+import { applyAddLayer, applyAddTrack } from './mutations/add'
 
 function colorLayer(id: string, t0: number, t1: number): Layer {
   const params: LayerParams = { kind: 'Color', color: { mode: 'Static', value: { r: 255, g: 0, b: 0, a: 255 } }, width: 1920, height: 1080 }
@@ -79,9 +79,11 @@ describe('validate', () => {
   })
 
   it('rejects a duplicate layer id across tracks', () => {
-    const p = blankProject(seededGen(), 't')
+    const gen = seededGen()
+    const p = blankProject(gen, 't')
+    const second = applyAddTrack(p, gen, null)
     root(p).tracks[0].layers = [colorLayer('dup', 0, 100_000)]
-    root(p).tracks[1].layers = [colorLayer('dup', 0, 100_000)]
+    root(p).tracks.find((t) => t.id === second)!.layers = [colorLayer('dup', 0, 100_000)]
     expectRule(p, 'DuplicateLayerId')
   })
 
@@ -316,7 +318,8 @@ describe('validate — compositions', () => {
     const second = withGroup(p, gen)
     const g1 = second.p.compositions[groupId]
     const g2 = second.p.compositions[second.groupId]
-    applyAddLayer(asRoot(second.p, g1), gen, g1.tracks[1].id, { kind: 'CompositionRef', composition: g2.id, src_in_us: 0, src_out_us: 1_000_000, transform: textTransform(), opacity: { mode: 'Static', value: 1 }, blend_mode: 'Normal' }, 0, 1_000_000)
+    const lane1 = applyAddTrack(second.p, gen, null, undefined, g1.id)
+    applyAddLayer(asRoot(second.p, g1), gen, lane1, { kind: 'CompositionRef', composition: g2.id, src_in_us: 0, src_out_us: 1_000_000, transform: textTransform(), opacity: { mode: 'Static', value: 1 }, blend_mode: 'Normal' }, 0, 1_000_000)
     applyAddLayer(asRoot(second.p, g2), gen, g2.tracks[0].id, { kind: 'CompositionRef', composition: g1.id, src_in_us: 0, src_out_us: 1_000_000, transform: textTransform(), opacity: { mode: 'Static', value: 1 }, blend_mode: 'Normal' }, 0, 1_000_000)
     try { validate(second.p); throw new Error('expected CompositionCycle') }
     catch (e) {
@@ -358,7 +361,7 @@ describe('validate — compositions', () => {
   it('DuplicateLayerId spans compositions', () => {
     const { p, groupId } = twoComps()
     const rootLayer = root(p).tracks.flatMap((t) => t.layers)[0]
-    p.compositions[groupId].tracks[1].layers = [colorLayer(rootLayer.id, 0, 1_000_000)]
+    p.compositions[groupId].tracks[0].layers = [colorLayer(rootLayer.id, 0, 1_000_000)]
     expectRule(p, 'DuplicateLayerId')
   })
   it('DuplicateMarkerId spans compositions', () => {

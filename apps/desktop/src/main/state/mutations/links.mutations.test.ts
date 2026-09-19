@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { seededGen } from '../ids'
 import { blankProject, type Layer, type LayerParams, type Project } from '../model'
 import { applyLinksCreate, applyLinksDissolve, applyLinksAddMembers, applyLinksRemoveMembers, applyLinksRename } from './links'
-import { applyAddLayer, colorParams } from './add'
+import { applyAddLayer, applyAddTrack, colorParams } from './add'
 import { isCommandFailure } from '../errors'
 import { group, groupedProject, root } from '../__tests__/fixtures/project'
 
@@ -87,7 +87,8 @@ describe('link mutations inside a Group', () => {
   const BLACK = { r: 0, g: 0, b: 0, a: 255 }
   it("links_create lands in the members' composition; a mixed set is CrossCompositionSet; rename / dissolve find the link by id", () => {
     const { p, idGen, groupId, innerId, refLayerId } = groupedProject()
-    const second = applyAddLayer(p, idGen, group(p, groupId).tracks[1].id, colorParams(BLACK, 1, 1), 0, 500_000)
+    const laneG = applyAddTrack(p, idGen, null, undefined, groupId)
+    const second = applyAddLayer(p, idGen, laneG, colorParams(BLACK, 1, 1), 0, 500_000)
     expectCmd(() => applyLinksCreate(p, idGen, [innerId, refLayerId], null, false), 'CrossCompositionSet')
     const gid = applyLinksCreate(p, idGen, [innerId, second], null, false)
     expect(group(p, groupId).links.map((g) => g.id)).toEqual([gid])
@@ -95,8 +96,9 @@ describe('link mutations inside a Group', () => {
     applyLinksRename(p, gid, 'pair')
     expect(group(p, groupId).links[0].label).toBe('pair')
     // add_members: a link that exists in ANOTHER composition is a scope mismatch, not a missing link.
-    const rootLink = applyLinksCreate(p, idGen, [refLayerId, applyAddLayer(p, idGen, root(p).tracks[1].id, colorParams(BLACK, 1, 1), 0, 500_000)], null, false)
-    const third = applyAddLayer(p, idGen, group(p, groupId).tracks[1].id, colorParams(BLACK, 1, 1), 600_000, 900_000)
+    const laneR = applyAddTrack(p, idGen, null)
+    const rootLink = applyLinksCreate(p, idGen, [refLayerId, applyAddLayer(p, idGen, laneR, colorParams(BLACK, 1, 1), 0, 500_000)], null, false)
+    const third = applyAddLayer(p, idGen, laneG, colorParams(BLACK, 1, 1), 600_000, 900_000)
     expectCmd(() => applyLinksAddMembers(p, rootLink, [third], false), 'CrossCompositionSet')
     applyLinksDissolve(p, gid)
     expect(group(p, groupId).links).toEqual([])

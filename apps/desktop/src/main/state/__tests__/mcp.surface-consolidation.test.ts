@@ -44,7 +44,13 @@ function refusal(r: ReturnType<Actor['mcpCall']>): { code: string; message: stri
   return r.error
 }
 function aRoll(a: Actor): string { return root(a.snapshot()).tracks[0].id }
-function bRoll(a: Actor): string { return root(a.snapshot()).tracks[1].id }
+/** A real second lane, spawned on demand via the MCP tool: the fresh skeleton
+ *  holds only the single A-roll track. */
+function bRoll(a: Actor): string {
+  const t = root(a.snapshot()).tracks
+  if (t.length > 1) return t[1].id
+  return text(call(a, 'add_track', {}))
+}
 function threeClips(a: Actor): string[] {
   const track = aRoll(a)
   return [0, 1, 2].map((i) => text(call(a, 'add_color_layer', {

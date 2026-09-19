@@ -384,12 +384,13 @@ test.describe("many compositions, one moment", () => {
       const s0 = await wire(page);
       rootId = s0.root_id;
       const aRoll = trackWithRole(rootOf(s0), "a-roll");
-      const bRoll = trackWithRole(rootOf(s0), "b-roll");
+      // Single-lane skeleton: the second lane is spawned, and the All Tracks
+      // display draws it (A/B Roll shows the A roll alone) — Select All
+      // reaches only the lanes that are drawn.
+      await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+      const bRoll = await invokeCmd<string>(page, "add_track", {});
 
       // ── The pair: RED then GREEN, on the A roll where they are visible ───
-      // Named lanes rather than the default overlay placement: an unnamed
-      // Color layer lands on a role-less transient lane, which A/B Roll leaves
-      // collapsed — and Select All reaches only the lanes that are drawn.
       const redId = await invokeCmd<string>(page, "add_color_layer", {
         trackId: aRoll,
         tStartUs: GROUP_START_US,
@@ -829,7 +830,10 @@ test.describe("a clip crosses between two timeline Panels", () => {
       const s0 = await wire(page);
       const rootId = s0.root_id;
       const aRoll = trackWithRole(rootOf(s0), "a-roll");
-      const bRoll = trackWithRole(rootOf(s0), "b-roll");
+      // Single-lane skeleton: the second lane is spawned, drawn via the All
+      // Tracks display (the drags below hit-test rendered rows).
+      await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+      const bRoll = await invokeCmd<string>(page, "add_track", {});
       const colour = (over: Record<string, unknown>) =>
         invokeCmd<string>(page, "add_color_layer", {
           durationUs: CUT_US,

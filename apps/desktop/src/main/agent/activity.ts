@@ -171,14 +171,30 @@ export class AgentActivityService {
     })
   }
 
-  begin(reason: string): AgentWorkSession {
+  begin(reason: string, opts?: { steal?: boolean }): AgentWorkSession {
     const ctx = this.context.getStore()
     if (!ctx || ctx.workspace !== this.workspace) throw new Error('Agent session requires a current MCP connection')
     const connection = ctx.activity.connection_id!
     if (this.active) {
-      if (this.active.connection_id !== connection) throw new Error('AgentSessionBusy: another connection has an active work session')
-      ctx.activity.session_id = this.active.id
-      return this.active
+      if (this.active.connection_id !== connection) {
+        // SESSION-ORPHAN: a long op can re-establish the MCP connection, so
+        // the new connection owns nothing yet the old one is gone — end()
+        // refuses (OwnerMismatch) and a plain begin() refuses (Busy), with no
+        // reclaim path short of restart. `steal: true` is that path: close the
+        // orphaned session (recorded as disconnected, lock released) and begin
+        // anew. Never implicit — an unrelated client must not kill live work.
+        if (!opts?.steal) throw new Error('AgentSessionBusy: another connection has an active work session (it may be orphaned — retry with steal=true to take over)')
+        const orphan = this.active
+        orphan.ended_at = new Date().toISOString()
+        orphan.end_reason = 'disconnected'
+        this.active = null
+        if (this.lockOwner?.session === orphan.id) this.unlock()
+        this.trim()
+        this.publish()
+      } else {
+        ctx.activity.session_id = this.active.id
+        return this.active
+      }
     }
     if (!reason.trim()) throw new Error('Agent session reason must be non-empty')
     const checkpoint = this.actor.checkpoint(`Pre-agent: ${reason.trim()}`, { kind: 'Agent', client: ctx.activity.client })

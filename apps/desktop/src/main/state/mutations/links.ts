@@ -63,6 +63,33 @@ function requireLink(p: Project, id: Uuid): { comp: Composition; link: Link; ind
 
 import type { IdGen } from '../ids'
 import { dropLayerFromLinks } from './helpers'
+import { AUDIO_GRID, isCanonicalOnGrid, snapOnGrid } from '../snap'
+
+/** Snap an orphaned Audio layer's endpoints onto the 48 kHz sample lattice.
+ *
+ *  A linked split cuts picture and sound at ONE frame instant, leaving the
+ *  audio up to half a sample off its own lattice (validate's linked-audio
+ *  exception covers exactly that shape). Dissolving the link afterwards must
+ *  not strand it there: an unlinked frame-aligned endpoint fails validate
+ *  (`OffGridLayerBoundary`), so after any frame-snapped cut the link could
+ *  never be dissolved. Snapping here — in the same commit that orphans it —
+ *  keeps the dissolve total: the move is ≤ half a sample (≈10 µs, the same
+ *  sample index the mixer reads), abutting ex-partners snap identically so
+ *  they still abut, and an already sample-canonical endpoint is the identity.
+ *  Surviving (still-linked) members are never touched. */
+function snapOrphanedAudio(c: Composition, ids: Iterable<Uuid>): void {
+  for (const id of ids) {
+    let found: { layer: { t_start_us: number; t_end_us: number; params: { kind: string } } } | null = null
+    for (const t of c.tracks) {
+      const l = t.layers.find((x) => x.id === id)
+      if (l) { found = { layer: l }; break }
+    }
+    if (!found || found.layer.params.kind !== 'Audio') continue
+    const l = found.layer
+    if (!isCanonicalOnGrid(l.t_start_us, AUDIO_GRID)) l.t_start_us = snapOnGrid(l.t_start_us, AUDIO_GRID)
+    if (!isCanonicalOnGrid(l.t_end_us, AUDIO_GRID)) l.t_end_us = snapOnGrid(l.t_end_us, AUDIO_GRID)
+  }
+}
 
 function sortedUnique(ids: Uuid[]): Uuid[] { return [...new Set(ids)].sort() }
 
@@ -87,7 +114,9 @@ export function applyLinksCreate(p: Project, idGen: IdGen, layerIds: Uuid[], lab
 
 export function applyLinksDissolve(p: Project, id: Uuid): void {
   const { comp: c, index } = requireLink(p, id)
+  const orphaned = [...c.links[index].members]
   c.links.splice(index, 1)
+  snapOrphanedAudio(c, orphaned)
 }
 
 /** Add members to an existing link.
@@ -116,14 +145,22 @@ export function applyLinksAddMembers(p: Project, id: Uuid, layerIds: Uuid[], rea
   target.members = [...new Set([...target.members, ...layerIds])].sort()
 }
 
-/** Remove members; auto-dissolve below 2. */
+/** Remove members; auto-dissolve below 2. Removed members leave the link, so
+ *  an Audio member cut at a frame instant snaps back to the sample lattice
+ *  (see `snapOrphanedAudio`); survivors keep their geometry verbatim. */
 export function applyLinksRemoveMembers(p: Project, id: Uuid, layerIds: Uuid[]): void {
   const { comp: c, link: g, index } = requireLink(p, id)
   const members = new Set(g.members)
   for (const m of layerIds) if (!members.has(m)) throw new CommandFailure({ error: 'LayerNotInLink', link: id, layer: m })
   const removals = new Set(layerIds)
   g.members = g.members.filter((m) => !removals.has(m))
-  if (g.members.length < 2) c.links.splice(index, 1)
+  if (g.members.length < 2) {
+    const orphaned = [...g.members, ...layerIds.filter((m) => members.has(m))]
+    c.links.splice(index, 1)
+    snapOrphanedAudio(c, orphaned)
+  } else {
+    snapOrphanedAudio(c, layerIds)
+  }
 }
 
 /** Rename a link; null → delete label field (serde None parity). */

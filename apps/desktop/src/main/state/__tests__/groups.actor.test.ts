@@ -9,13 +9,13 @@ import { root } from './fixtures/project'
 
 const S = 1_000_000
 
-/** A root with a linked colour pair [2 s, 5 s) — V on A roll, W on B roll. */
+/** A root with a linked colour pair [2 s, 5 s) — V on A roll, W on a spawned second lane. */
 function pairActor() {
   const idGen = seededGen()
   const initial = blankProject(idGen, 'groups')
   const actor = createActor({ initial, idGen, clock: () => '<TS>' })
   const aRoll = root(initial).tracks[0].id
-  const bRoll = root(initial).tracks[1].id
+  const bRoll = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
   const v = actor.dispatch('add_layer', { track: aRoll, kind: 'color', t_start_us: 2 * S, t_end_us: 5 * S })
   const w = actor.dispatch('add_layer', { track: bRoll, kind: 'color', t_start_us: 2 * S, t_end_us: 5 * S })
   if (!v.ok || !w.ok) throw new Error('fixture')

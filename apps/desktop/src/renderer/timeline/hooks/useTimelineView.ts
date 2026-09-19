@@ -8,11 +8,13 @@ import {
   clamp,
 } from "../geometry";
 import {
+  WHEEL_ZOOM_PER_PX,
   fitPxPerSec,
   steppedPxPerSec,
   zoomAnchorX,
   zoomedScrollLeft,
 } from "../zoom";
+import { setCameraPxPerSec } from "../camera";
 import { wheelPixels } from "../wheelScroll";
 import {
   loadViewState,
@@ -87,13 +89,15 @@ export function useTimelineView(opts: {
       const tab = state.composition_tabs.find(
         (entry) => entry.composition_id === compositionId,
       );
-      setPxPerSec(
-        clamp(
-          tab?.px_per_sec ?? DEFAULT_PX_PER_SEC,
-          MIN_PX_PER_SEC_FLOOR,
-          MAX_PX_PER_SEC,
-        ),
+      const restored = clamp(
+        tab?.px_per_sec ?? DEFAULT_PX_PER_SEC,
+        MIN_PX_PER_SEC_FLOOR,
+        MAX_PX_PER_SEC,
       );
+      // Seed the camera alongside React state so a block's first paint and its
+      // imperative subscription agree from the start.
+      setCameraPxPerSec(compositionId, restored);
+      setPxPerSec(restored);
       setTrackHeights(state.track_heights);
       setExpandedTracks(new Set(state.expanded_tracks));
       setPendingScrollLeftPx(tab?.scroll_left_px ?? null);
@@ -122,6 +126,7 @@ export function useTimelineView(opts: {
   // Refs hold the latest values for the event-time handlers, which read them
   // rather than closing over React's render cadence.
   const pxPerSecRef = useRef(pxPerSec);
+  const renderedPxPerSecRef = useRef(pxPerSec);
   const trackHeightsRef = useRef(trackHeights);
   // Latest project duration — the wheel handler reads this to compute
   // the "fit-to-viewport" min zoom each tick, so a project getting
@@ -144,8 +149,9 @@ export function useTimelineView(opts: {
       window.removeEventListener("resize", measure);
     };
   }, [rootRef]);
-  useEffect(() => {
-    pxPerSecRef.current = pxPerSec;
+  useLayoutEffect(() => {
+    renderedPxPerSecRef.current = pxPerSec;
+    if (wheelFrameRef.current === null) pxPerSecRef.current = pxPerSec;
   }, [pxPerSec]);
   useEffect(() => {
     trackHeightsRef.current = trackHeights;
@@ -155,6 +161,10 @@ export function useTimelineView(opts: {
   }, [durationUs]);
 
   useEffect(() => {
+    // Publish to the camera on every committed scale: the wheel path already
+    // published in its rAF for same-frame geometry, this covers the keyboard,
+    // restore, and any other writer.
+    setCameraPxPerSec(compositionId, pxPerSec);
     if (!viewLoadedRef.current) return;
     noteTabZoom(compositionId, pxPerSec);
   }, [compositionId, pxPerSec]);
@@ -193,14 +203,14 @@ export function useTimelineView(opts: {
   // -------- Zoom: Ctrl/Alt+wheel (cursor-anchored), keys (playhead-anchored) --------
 
   // Re-anchoring happens in a layout effect, after React has re-rendered with
-  // the new px/sec. Doing it inline in the gesture handler reads stale state and
-  // produces a one-frame jitter. Both gestures queue the same record here; all
-  // that distinguishes them is which x they chose to hold.
+  // the new px/sec. Both gestures queue the same record here; all that
+  // distinguishes them is which x they chose to hold.
   const zoomPendingRef = useRef<{
     scrollLeft: number;
     anchorXInViewport: number;
     oldPxPerSec: number;
   } | null>(null);
+  const wheelFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -231,30 +241,41 @@ export function useTimelineView(opts: {
       // computing the zoom factor. Shared with the scroll gesture's mapping
       // (`timeline/wheelScroll.ts`) so a notch means the same travel in both.
       const px = wheelPixels(e.deltaY, e.deltaMode);
-      // Exponential zoom: small wheel ticks scale by ~ε near 1.0, big
-      // ones don't snap-jump. Negative px (scrolling up) zooms in.
-      const factor = Math.exp(-px * 0.001);
+      // Exponential zoom preserves the trackpad's fractional deltas. The rate
+      // lives in `zoom.ts` so the gesture is tuned in one place.
+      const factor = Math.exp(-px * WHEEL_ZOOM_PER_PX);
       const oldPxPerSec = pxPerSecRef.current;
-      // Lower bound = "fit-to-viewport" zoom (`zoom.fitPxPerSec`), recomputed
-      // every tick so it tracks viewport resize + project growth.
       const fitMin = fitPxPerSec(laneWidthPx(root), durationUsRef.current);
       const newPxPerSec = clamp(oldPxPerSec * factor, fitMin, MAX_PX_PER_SEC);
       if (newPxPerSec === oldPxPerSec) return;
+      pxPerSecRef.current = newPxPerSec;
+      const chained = zoomPendingRef.current;
       zoomPendingRef.current = {
-        scrollLeft: root.scrollLeft,
+        scrollLeft: chained?.scrollLeft ?? root.scrollLeft,
         anchorXInViewport: cursorXInViewport,
-        oldPxPerSec,
+        oldPxPerSec: chained?.oldPxPerSec ?? oldPxPerSec,
       };
-      // The gesture owns the offset from here; a still-unapplied restore would
-      // fight the re-anchor below for it.
-      setPendingScrollLeftPx(null);
-      setPxPerSec(newPxPerSec);
+      if (wheelFrameRef.current === null) {
+        wheelFrameRef.current = requestAnimationFrame(() => {
+          wheelFrameRef.current = null;
+          setPendingScrollLeftPx(null);
+          if (pxPerSecRef.current === renderedPxPerSecRef.current) {
+            zoomPendingRef.current = null;
+          } else {
+            setPxPerSec(pxPerSecRef.current);
+          }
+        });
+      }
     };
     root.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       root.removeEventListener("wheel", onWheel);
+      if (wheelFrameRef.current !== null) {
+        cancelAnimationFrame(wheelFrameRef.current);
+        wheelFrameRef.current = null;
+      }
     };
-  }, [rootRef]);
+  }, [rootRef, compositionId]);
 
   /// Keyboard zoom. Same bounds and same re-anchor as the wheel; the anchor is
   /// the playhead instead of the cursor, and the step is a doubling instead of
@@ -266,6 +287,10 @@ export function useTimelineView(opts: {
     (steps: number, anchorTimeUs: number) => {
       const root = rootRef.current;
       if (!root) return;
+      if (wheelFrameRef.current !== null) {
+        cancelAnimationFrame(wheelFrameRef.current);
+        wheelFrameRef.current = null;
+      }
       const oldPxPerSec = pxPerSecRef.current;
       const viewportPx = laneWidthPx(root);
       const newPxPerSec = steppedPxPerSec(
@@ -276,35 +301,42 @@ export function useTimelineView(opts: {
       // Already parked against the stop this press asks for.
       if (newPxPerSec === oldPxPerSec) return;
       const scrollLeft = root.scrollLeft;
+      pxPerSecRef.current = newPxPerSec;
+      const chained = zoomPendingRef.current;
       zoomPendingRef.current = {
-        scrollLeft,
+        scrollLeft: chained?.scrollLeft ?? scrollLeft,
         anchorXInViewport: zoomAnchorX({
           anchorPx: (anchorTimeUs / 1_000_000) * oldPxPerSec,
-          scrollLeftPx: scrollLeft,
+          scrollLeftPx: chained?.scrollLeft ?? scrollLeft,
           viewportPx,
         }),
-        oldPxPerSec,
+        oldPxPerSec: chained?.oldPxPerSec ?? oldPxPerSec,
       };
       setPendingScrollLeftPx(null);
+      setCameraPxPerSec(compositionId, newPxPerSec);
       setPxPerSec(newPxPerSec);
     },
-    [rootRef],
+    [rootRef, compositionId],
   );
 
-  // Re-anchor the scroll position so the anchored time stays put. Runs
-  // synchronously after the layout flip so there's no flash.
+  // Apply the new scale to the clip geometry AND re-anchor the scroll in ONE
+  // post-commit pass, before the browser paints. Ordering matters: publishing
+  // the camera drives the blocks' imperative `left`/`width`, and if that ran a
+  // commit ahead of the scroll write the content would zoom against the old
+  // scroll offset for a frame — the "elastic" wobble. Here both land together.
   useLayoutEffect(() => {
     const pending = zoomPendingRef.current;
     if (!pending) return;
     zoomPendingRef.current = null;
     const root = rootRef.current;
     if (!root) return;
+    setCameraPxPerSec(compositionId, pxPerSec);
     root.scrollLeft = zoomedScrollLeft({
       scrollLeftPx: pending.scrollLeft,
       anchorX: pending.anchorXInViewport,
       ratio: pxPerSec / pending.oldPxPerSec,
     });
-  }, [pxPerSec, rootRef]);
+  }, [pxPerSec, rootRef, compositionId]);
 
   const toggleExpanded = useCallback(
     (id: string) =>

@@ -6,6 +6,12 @@ import { LAYER_PREVIEW_MIN_PX } from "./geometry";
 import { FILMSTRIP_KIND } from "./tileEngine/FilmstripTileProducer";
 import { tileEngine } from "./tileEngine/TileEngine";
 import { TimelineVisualPreview } from "./TimelineVisualPreview";
+import { useProjectStore } from "../state/projectStore";
+import {
+  compositionFixture,
+  groupLayerFixture,
+  summaryFixture,
+} from "../testing/summaryFixture";
 
 const mocks = vi.hoisted(() => ({
   getFilmstripTile: vi.fn(),
@@ -27,6 +33,12 @@ vi.mock("../ipc", async (importOriginal) => {
     getFilmstripTile: mocks.getFilmstripTile,
   };
 });
+
+vi.mock("./tileEngine/WaveformTileProducer", () => ({
+  registerWaveformProducer: vi.fn(),
+  ensureWaveformWindow: vi.fn(async () => "pending" as const),
+  getWaveformChannelCount: vi.fn(async () => 1),
+}));
 
 // TimelineFilmstrip's tile engine reads these globals directly (not
 // injected) — stub them as in FilmstripTileProducer.test.ts.
@@ -326,5 +338,119 @@ describe("TimelineVisualPreview", () => {
     const preview = getByTestId("timeline-visual-preview");
     expect(preview.textContent).toBe("");
     expect(preview.textContent).not.toContain("Once upon");
+  });
+});
+
+describe("TimelineVisualPreview Group passthrough", () => {
+  const innerVideo: LayerSummary = {
+    ...videoLayer,
+    id: "inner-v",
+    t_start_us: 0,
+    t_end_us: 4_000_000,
+    params: { ...videoLayer.params, media_id: "m-v", src_in_us: 0, src_out_us: 4_000_000 } as LayerSummary["params"],
+  };
+  const innerAudio: LayerSummary = {
+    id: "inner-a",
+    label: null,
+    t_start_us: 0,
+    t_end_us: 4_000_000,
+    kind: "Audio",
+    color_hint: "#446688",
+    enabled: true,
+    locked: false,
+    params: {
+      kind: "Audio",
+      media_id: "m-a",
+      media_label: "m-a",
+      src_in_us: 0,
+      src_out_us: 4_000_000,
+      gain_db: staticNum(0),
+      pan: staticNum(0),
+      fade_in_us: 0,
+      fade_out_us: 0,
+      mute: false,
+      role: "dialogue",
+    },
+    effects: [],
+  };
+  const lane = (id: string, layers: LayerSummary[]) => ({
+    id,
+    kind: "Video",
+    label: null,
+    enabled: true,
+    locked: false,
+    muted: false,
+    solo: false,
+    role: null,
+    transient: true,
+    layers,
+  });
+  const seedGroup = (layers: LayerSummary[][]) => {
+    useProjectStore.getState().apply(
+      summaryFixture({
+        groups: [
+          compositionFixture({
+            id: "g1",
+            duration_us: 4_000_000,
+            tracks: layers.map((ls, i) => lane(`t-${i}`, ls)),
+          }),
+        ],
+      }),
+    );
+  };
+  const clearStore = () => {
+    useProjectStore.getState().apply(null);
+  };
+  const groupOf = (): LayerSummary =>
+    groupLayerFixture({
+      id: "group-1",
+      compositionId: "g1",
+      tStartUs: 0,
+      tEndUs: 4_000_000,
+      srcInUs: 0,
+      srcOutUs: 4_000_000,
+    });
+
+  afterEach(() => clearStore());
+
+  it("draws a single-take Group as footage: filmstrip over waveform, no poster", () => {
+    delete intersectionObserverGlobal.IntersectionObserver;
+    seedGroup([[innerVideo], [innerAudio]]);
+
+    const { getByTestId, queryByTestId } = render(
+      <TimelineVisualPreview
+        layer={groupOf()}
+        layerWidthPx={400}
+        layerHeightPx={56}
+        pxPerSec={80}
+      />,
+    );
+
+    expect(getByTestId("timeline-filmstrip")).toBeTruthy();
+    expect(getByTestId("timeline-waveform")).toBeTruthy();
+    // No poster still image beside the strips: one clip, one visual.
+    expect(
+      queryByTestId("timeline-visual-preview")?.querySelector("img"),
+    ).toBeNull();
+  });
+
+  it("falls back to the poster for a multi-clip Group", () => {
+    delete intersectionObserverGlobal.IntersectionObserver;
+    seedGroup([
+      [{ ...innerVideo, id: "v1", t_end_us: 2_000_000, params: { ...innerVideo.params, src_out_us: 2_000_000 } as LayerSummary["params"] }],
+      [{ ...innerVideo, id: "v2", t_start_us: 2_000_000, params: { ...innerVideo.params, src_in_us: 2_000_000 } as LayerSummary["params"] }],
+    ]);
+
+    const { queryByTestId } = render(
+      <TimelineVisualPreview
+        layer={groupOf()}
+        layerWidthPx={400}
+        layerHeightPx={56}
+        pxPerSec={80}
+      />,
+    );
+
+    expect(queryByTestId("timeline-filmstrip")).toBeNull();
+    expect(queryByTestId("timeline-waveform")).toBeNull();
   });
 });

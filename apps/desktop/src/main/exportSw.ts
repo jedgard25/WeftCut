@@ -31,8 +31,14 @@ export function openExportSw(
 ): ExportSwOpenReply {
   const info = backend.exportSwOpen(sessionId, path, outFormat, creditWindow, (err, msg) => {
     if (err) return
-    if (win.isDestroyed()) return // renderer reloaded/closed mid-export → webContents.send would throw
-    win.webContents.send('exportSw:msg', msg)
+    // Same disposed-render-frame hazard as previewSw: a crashed renderer leaves
+    // the window alive but `send` throwing.
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return
+    try {
+      win.webContents.send('exportSw:msg', msg)
+    } catch {
+      // Render frame disposed mid-send; drop this message.
+    }
   })
   sessions.add(sessionId)
   return {

@@ -42,7 +42,7 @@ import {
   useFocusedCompositionId,
   usePreviewRenderTargetId,
 } from "./compositionAnchorStore";
-import { seekToClamped } from "./navigation";
+import { seekProjectedRootUs, seekToClamped } from "./navigation";
 import {
   playheadTimeUs,
   setPlayheadTimeUs,
@@ -108,10 +108,9 @@ export function useAnchorFrame(compositionId: string | null): AnchorFrame | null
   );
 }
 
-/// What a Panel DRAWS, given an already-resolved frame: the one moment on this
-/// composition's clock, or null when its placement is not on screen at that
-/// moment. An orphan reads its own parked moment instead, which is the whole of
-/// its axis.
+/// What a Panel draws on its own clock. A Group shows positions within its
+/// contents even when the parent clip was trimmed shorter. Outside its own
+/// duration it draws nothing. An orphan reads its parked moment instead.
 export function localPlayheadIn(
   compositionId: string | null,
   frame: AnchorFrame | null,
@@ -119,7 +118,27 @@ export function localPlayheadIn(
   if (frame === null) {
     return compositionId === null ? null : orphanPlayheadUs(compositionId);
   }
-  return rootToLocalIn(frame, playheadTimeUs());
+  const summary = useProjectStore.getState().summary;
+  if (compositionId === null || compositionId === summary?.root_id) {
+    const rootUs = playheadTimeUs();
+    const rootDurationUs = summary?.compositions[summary.root_id]?.duration_us;
+    return rootDurationUs !== undefined && (rootUs < 0 || rootUs >= rootDurationUs)
+      ? null
+      : rootToLocalIn(frame, rootUs);
+  }
+  const durationUs = summary?.compositions[compositionId]?.duration_us;
+  return durationUs === undefined
+    ? null
+    : panelPlayheadUs(frame, playheadTimeUs(), durationUs);
+}
+
+function panelPlayheadUs(
+  frame: AnchorFrame,
+  rootUs: number,
+  durationUs: number,
+): number | null {
+  const localUs = localClockUs(frame, rootUs);
+  return localUs >= 0 && localUs < durationUs ? localUs : null;
 }
 
 /// The same reading for a caller with no frame in hand — resolves one, so it
@@ -141,7 +160,7 @@ export function localClockUsOf(compositionId: string | null, rootUs: number): nu
 /// window ignored. A composition's clock runs whether or not its placement shows
 /// it (`localClockUs`), so "insert here", "split here" and "what is this
 /// parameter worth now" stay answerable from a Panel whose Group has scrolled
-/// off the film — where a drawn playhead would have to admit it has no position.
+/// off the film.
 export function playheadClockUs(compositionId: string | null): number {
   return playheadClockUsIn(compositionId, anchorFrameOf(compositionId));
 }
@@ -225,11 +244,16 @@ function seekIn(
     setOrphanPlayheadUs(compositionId, clampOrphanUs(compositionId, localUs));
     return;
   }
-  seekToClamped(localToRootIn(frame, localUs));
+  const summary = useProjectStore.getState().summary;
+  if (compositionId !== null && compositionId !== summary?.root_id) {
+    const clampedLocalUs = clampOrphanUs(compositionId, localUs);
+    seekProjectedRootUs(localToRootIn(frame, clampedLocalUs));
+  } else {
+    seekToClamped(localToRootIn(frame, localUs));
+  }
 }
 
-/// An orphan clamps against its own duration, the way every other seek clamps
-/// against the root's: its timeline is the only one its playhead is on.
+/// Clamp a composition-local seek to that composition's last frame.
 function clampOrphanUs(compositionId: string, localUs: number): number {
   const comp = useProjectStore.getState().summary?.compositions[compositionId];
   if (!comp) return Math.max(0, localUs);
@@ -401,8 +425,21 @@ export function subscribeLocalPlayhead(
       apply(orphanPlayheadUs(compositionId)),
     );
   }
-  apply(rootToLocalIn(frame, playheadTimeUs()));
-  return usePlayheadStore.subscribe((s) => apply(rootToLocalIn(frame, s.timeUs)));
+  const summary = useProjectStore.getState().summary;
+  const rootDurationUs = summary?.compositions[summary.root_id]?.duration_us;
+  const durationUs = compositionId !== null && compositionId !== summary?.root_id
+    ? summary?.compositions[compositionId]?.duration_us
+    : undefined;
+  const project = (rootUs: number) =>
+    compositionId === null || compositionId === summary?.root_id
+      ? rootDurationUs !== undefined && (rootUs < 0 || rootUs >= rootDurationUs)
+        ? null
+        : rootToLocalIn(frame, rootUs)
+      : durationUs === undefined
+        ? null
+        : panelPlayheadUs(frame, rootUs, durationUs);
+  apply(project(playheadTimeUs()));
+  return usePlayheadStore.subscribe((s) => apply(project(s.timeUs)));
 }
 
 /// The editing target, resolved the way every other consumer resolves it: an id

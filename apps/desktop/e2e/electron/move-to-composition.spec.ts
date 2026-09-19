@@ -155,7 +155,10 @@ test.describe("Move to…", () => {
       // Away from t = 0 and apart from each other, so a landing that ignored
       // either the playhead or the set's mutual geometry could not pass.
       const s0 = await wire(page);
-      const bRoll = trackWithRole(rootOf(s0), "b-roll");
+      // Single-lane skeleton: the pair needs a second lane, spawned, and the
+      // All Tracks display to draw it (the test clicks the clips).
+      await invokeCmd(page, "app_settings_set", { patch: { display_mode: "AllTracks" } });
+      const bRoll = await invokeCmd<string>(page, "add_track", {});
       const aId = await invokeCmd<string>(page, "add_color_layer", {
         trackId: bRoll,
         tStartUs: 3_000_000,

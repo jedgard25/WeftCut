@@ -45,8 +45,16 @@ export function openPreviewSw(
 ): { width: number; height: number } {
   const info = backend.previewSwOpen(streamId, path, (err: Error | null, frame) => {
     if (err) return
-    if (win.isDestroyed()) return // renderer reloaded/closed mid-stream → webContents.send would throw
-    win.webContents.send('previewSw:frame', frame)
+    // A renderer CRASH leaves the BrowserWindow alive but its render frame
+    // disposed — `win.isDestroyed()` is false, yet `send` throws. Check the
+    // webContents too and swallow, so a dead renderer cannot spam the console
+    // for every frame a still-running decode thread emits.
+    if (win.isDestroyed() || win.webContents.isDestroyed()) return
+    try {
+      win.webContents.send('previewSw:frame', frame)
+    } catch {
+      // Render frame disposed mid-send; drop this frame.
+    }
   }, lane, device, scaleDiv, cadenceDiv, outFormat)
   return { width: info.width, height: info.height }
 }

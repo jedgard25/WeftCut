@@ -339,7 +339,7 @@ describe('project://compositions and the ?composition= scope', () => {
       expect.objectContaining({ id: p.root_id, label: null, ref_count: 0 }),
       expect.objectContaining({ id: groupId, ref_count: 1, duration_us: 1_000_000 }),
     ]))
-    expect(JSON.parse(text(serveProjectResource(`project://tracks?composition=${groupId}`, actor)))).toHaveLength(2)
+    expect(JSON.parse(text(serveProjectResource(`project://tracks?composition=${groupId}`, actor)))).toHaveLength(1)
     expect(JSON.parse(text(serveProjectResource('project://tracks', actor)))).toHaveLength(root(p).tracks.length)
     expect(JSON.parse(text(serveProjectResource(`project://markers?composition=${groupId}`, actor)))).toEqual([])
     expect(() => serveProjectResource('project://tracks?composition=ghost', actor)).toThrow(/not found/)

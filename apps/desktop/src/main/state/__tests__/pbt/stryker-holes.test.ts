@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { seededGen } from '../../ids'
 import { blankProject, type Layer, type LayerParams, type Project } from '../../model'
 import { validate } from '../../validate'
-import { applyAddLayer, colorParams } from '../../mutations/add'
+import { applyAddLayer, applyAddTrack, colorParams } from '../../mutations/add'
 import { applyMoveLayer } from '../../mutations/move'
 import { applyTrimLayer, clampSigned, trimDeltaBounds } from '../../mutations/trim'
 import { applyLinksCreate } from '../../mutations/links'
@@ -428,9 +428,10 @@ describe('applyMoveLayer: locked destination track', () => {
     const p = mkProject()
     const g = seededGen()
     const id = applyAddLayer(p, g, root(p).tracks[0].id, colorParams({ r: 0, g: 0, b: 0, a: 255 }, 1, 1), 0, 500_000)
-    root(p).tracks[1].locked = true
+    const secondLane = applyAddTrack(p, g, null)
+    root(p).tracks.find((t) => t.id === secondLane)!.locked = true
     try {
-      applyMoveLayer(p, id, root(p).tracks[1].id, 0, false)
+      applyMoveLayer(p, id, secondLane, 0, false)
       throw new Error('expected throw')
     } catch (e: unknown) {
       expect(isCommandFailure(e) && (e as { err: { error: string } }).err.error).toBe('TrackLocked')
@@ -507,8 +508,9 @@ describe('validate: transition structural integrity', () => {
 
   it('rejects a cross-track transition', () => {
     const p = mkProject()
+    const secondLane = applyAddTrack(p, seededGen(), null)
     root(p).tracks[0].layers = [colorLayer('l1', 0, 1_000_000)]
-    root(p).tracks[1].layers = [colorLayer('l2', 800_000, 1_800_000)]
+    root(p).tracks.find((t) => t.id === secondLane)!.layers = [colorLayer('l2', 800_000, 1_800_000)]
     root(p).duration_us = 1_800_000
     root(p).transitions.push({ id: 'tr1', from_layer: 'l1', to_layer: 'l2', duration_us: 200_000, kind: { kind: 'Crossfade' }, extended_us: 0 })
     expect(() => validate(p)).toThrow(ValidationFailure)

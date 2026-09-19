@@ -643,6 +643,8 @@ const zhCN: Resources = {
     copy_selected: "复制选中的片段",
     paste_at_playhead: "在播放头粘贴片段",
     split_at_playhead: "在播放头切割",
+    collapse_left_to_playhead: "闭合到播放头（保留右侧）",
+    collapse_right_to_playhead: "闭合到播放头（保留左侧）",
     toggle_log: "切换活动日志",
     focus_log_search: "聚焦活动日志搜索",
     toggle_display_mode: "切换 A/B Roll / 全轨显示",
@@ -830,7 +832,7 @@ const zhCN: Resources = {
   timeline: {
     empty_placeholder: "时间线（导入片段或选择 Motif 开始）",
     empty_ab_roll:
-      "此处没有 A/B 轨内容。将片段拖到 $t(tracks.roles.a-roll) 或 $t(tracks.roles.b-roll)，或按 {{key}} 切换到全轨显示。",
+      "当前没有可见的 A/B 轨片段。按 {{key}} 显示所有轨道。",
     mode_ab_roll_hint: "A/B Roll，其余轨道已隐藏。点击显示全部。",
     mode_all_tracks_hint: "全轨显示，未隐藏任何轨道。点击切回 A/B Roll。",
     separate_audio: "将音频分离到新轨道",

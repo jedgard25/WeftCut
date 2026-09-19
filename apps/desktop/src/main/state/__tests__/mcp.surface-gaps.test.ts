@@ -32,7 +32,13 @@ function call(a: Actor, tool: string, args: Record<string, unknown> = {}) {
   return a.mcpCall(tool, JSON.stringify(args))
 }
 function aRoll(a: Actor): string { return root(a.snapshot()).tracks[0].id }
-function bRoll(a: Actor): string { return root(a.snapshot()).tracks[1].id }
+/** A real second lane, spawned on demand via the MCP tool: the fresh skeleton
+ *  holds only the single A-roll track. */
+function bRoll(a: Actor): string {
+  const t = root(a.snapshot()).tracks
+  if (t.length > 1) return t[1].id
+  return text(call(a, 'add_track', {}))
+}
 function text(r: ReturnType<Actor['mcpCall']>): string {
   expect(r.ok, r.ok ? '' : `${r.error.code}: ${r.error.message}`).toBe(true)
   if (!r.ok) throw new Error('call failed')

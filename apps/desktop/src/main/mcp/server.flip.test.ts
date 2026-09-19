@@ -107,7 +107,7 @@ describe('handleCallTool flip routing', () => {
   // the same fallback a not-yet-baked layer takes.
   it('injects the resolved fx peaks path for detect_pauses, and null without a baker', async () => {
     const ts = tsHostStub()
-    const track = root(ts.actor.snapshot()).tracks[1].id
+    const track = root(ts.actor.snapshot()).tracks[0].id
     const AID = '00000000-0000-0000-0000-0000000000dd'
     ts.actor.dispatch('add_media', { id: AID, kind: 'Audio', duration_us: 4_000_000 })
     const add = ts.actor.dispatch('add_layer', { track, kind: 'audio', media: AID,
@@ -129,7 +129,14 @@ describe('handleCallTool flip routing', () => {
     const begin = vi.fn(() => ({ id: 'session' }))
     ;(ts as any).agent = { begin }
     await handleCallTool(fakeBackend(async () => { throw new Error('rust must not be called') }), () => ts, 'begin_agent_session', { reason: 'cleanup' })
-    expect(begin).toHaveBeenCalledWith('cleanup')
+    expect(begin).toHaveBeenCalledWith('cleanup', { steal: false })
+  })
+  it('forwards a steal takeover to the session service', async () => {
+    const ts = tsHostStub()
+    const begin = vi.fn(() => ({ id: 'session' }))
+    ;(ts as any).agent = { begin }
+    await handleCallTool(fakeBackend(async () => { throw new Error('rust must not be called') }), () => ts, 'begin_agent_session', { reason: 'cleanup', steal: true })
+    expect(begin).toHaveBeenCalledWith('cleanup', { steal: true })
   })
   // ADR 0036: transcribe_clip selects by user preference THEN availability.
   // The host injects the stored preferred engine as the SOFT `preferred_backend`
@@ -246,5 +253,20 @@ describe('handleCallTool flip routing', () => {
     expect(sent.language).toBeUndefined()
     expect(sent.fps).toBeUndefined()
     expect(sent.focus).toBeUndefined()
+  })
+})
+
+describe('resource templates (RESOURCE-URI-DRIFT)', () => {
+  it('advertises every parameterized URI the docs name', async () => {
+    const { MCP_RESOURCE_TEMPLATES } = await import('./server')
+    const templates = MCP_RESOURCE_TEMPLATES.map((t) => t.uriTemplate)
+    // Tool/resource descriptions name these; resources/list never carries them.
+    for (const want of [
+      'project://layers/{id}',
+      'project://tracks{?composition}',
+      'project://timeline{?composition,t_start_us,t_end_us,offset,limit}',
+      'project://markers{?composition}',
+      'media://{id}/transcript{?format,segment,detail,t_start_us,t_end_us,backend,language,words}',
+    ]) expect(templates).toContain(want)
   })
 })

@@ -111,9 +111,9 @@ describe('createTsActorHost — persistence-route integration', () => {
       const persisted = JSON.parse(vfs[`${currentDir}/project.json`]!) as {
         compositions: Record<string, { tracks: Array<{ label: string | null; role: string | null }> }>; root_id: string
       }
-      // The flushed edit is the third track; it stores no label, because a
+      // The flushed edit is the second track; it stores no label, because a
       // spawned lane's name is derived renderer-side.
-      expect(persisted.compositions[persisted.root_id].tracks).toHaveLength(3)
+      expect(persisted.compositions[persisted.root_id].tracks).toHaveLength(2)
       expect(persisted.compositions[persisted.root_id].tracks.at(-1)).toMatchObject({ label: null, role: null })
       expect(await host.handleInvoke('project_summary', {})).toMatchObject({ name: 'target' })
     } finally {
@@ -151,7 +151,7 @@ describe('createTsActorHost — persistence-route integration', () => {
       const persisted = JSON.parse(vfs[`${currentDir}/project.json`]!) as {
         compositions: Record<string, { tracks: Array<{ label: string }> }>; root_id: string
       }
-      expect(persisted.compositions[persisted.root_id].tracks).toHaveLength(3)
+      expect(persisted.compositions[persisted.root_id].tracks).toHaveLength(2)
       expect(await host.handleInvoke('project_summary', {})).toMatchObject({ name: 'replacement' })
     } finally {
       host.stop()

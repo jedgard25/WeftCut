@@ -9,7 +9,9 @@ function actor() {
   const initial = blankProject(idGen, 't')
   const logged: ActorLogEntry[] = []
   const a = createActor({ initial, idGen, clock: () => '<TS>', emitLog: (e) => logged.push(e) })
-  return { a, logged, aRoll: root(initial).tracks[0].id, bRoll: root(initial).tracks[1].id }
+  const aRoll = root(initial).tracks[0].id
+  const bRoll = (a.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+  return { a, logged, aRoll, bRoll }
 }
 
 function body(r: ReturnType<ReturnType<typeof createActor>['mcpCall']>): { halted_at: number | null; results: Array<{ index: number; status: string; output?: Record<string, unknown>; error?: string }> } {

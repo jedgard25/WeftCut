@@ -11,7 +11,7 @@ import {
 } from "./DragGhostChip";
 import { DROP_STRIP_HEIGHT_PX } from "./geometry";
 import type { PendingLayerPlacement } from "./LayerBlock";
-import { placementRefuses, SPAWN_TRACK_ID } from "./placement";
+import { placementRefuses, SPAWN_BOTTOM_TRACK_ID, SPAWN_TRACK_ID } from "./placement";
 import { playheadClockUs } from "../state/playheadProjection";
 import { useMarqueeAnchor } from "./hooks/useMarqueeAnchor";
 import {
@@ -95,7 +95,7 @@ export function DropStripHeader() {
   return (
     <div
       data-testid="timeline-drop-strip-header"
-      className="relative flex items-end justify-center bg-card pb-px"
+      className="timeline-header-fade relative flex items-end justify-center bg-card pb-px"
       style={{ height: DROP_STRIP_HEIGHT_PX }}
       aria-hidden="true"
     >
@@ -109,15 +109,17 @@ export function DropStripHeader() {
   );
 }
 
-/// The permanently reserved row above the topmost lane: releasing a drag here
-/// spawns a lane at the top of the z-stack and places the clip on it (ADR 0042).
+/// The permanently reserved row above the topmost lane (or below the bottommost
+/// one): releasing a drag here spawns a lane at that side of the z-stack and
+/// places the clip on it (ADR 0042, extended below the lane for the centered
+/// single-lane timeline — the A roll sits in the middle once both sides exist).
 ///
 /// Idle it is a plus in the header half and a dashed rule that Timeline paints
 /// as `DropStripSeam` after this row — a seam, not a lane. No fill, nothing
 /// that reads as an empty track the editor is supposed to manage, because that
 /// mental model is what tracks-as-a-by-product removes. It lights up only while
 /// a drag is in flight, and it claims the highlight through the SAME drop-target
-/// protocol the lanes use, under `SPAWN_TRACK_ID`, so ownership transfers
+/// protocol the lanes use, under the row's spawn target, so ownership transfers
 /// between the strip and a lane without a second mechanism deciding who is lit.
 ///
 /// A drop here is never a collision WITH THE DESTINATION: the lane it lands on
@@ -131,7 +133,7 @@ export function DropStripHeader() {
 /// lane and can host the chip itself; this one has no lane to host it until the
 /// commit returns, so the bars live in this row — during the gesture from the
 /// live drag, and afterwards from the promise `useLayerDrag` writes on
-/// `SPAWN_TRACK_ID`, which is what keeps the clip from flashing back to where it
+/// the row's spawn target, which is what keeps the clip from flashing back to where it
 /// started for the length of the round trip.
 ///
 /// Two genuinely different event models reach this one row. The media-pool drag
@@ -149,6 +151,7 @@ export function DropStripHeader() {
 /// (`ForeignDragGhost.tsx` resolves it, and commits it).
 export function DropStrip({
   elRef,
+  position,
   pxPerSec,
   fpsNum,
   fpsDen,
@@ -161,6 +164,10 @@ export function DropStrip({
   /// The row's element, which the layer drag's hit-test measures. A ref rather
   /// than a registry entry: the strip is not a track (see `useLayerDrag`).
   elRef: React.RefObject<HTMLDivElement | null>;
+  /// Which side this row spawns: above the topmost lane or below the
+  /// bottommost one. The side only decides where the actor inserts the lane;
+  /// validity, chrome and ghosts are identical.
+  position: "top" | "bottom";
   pxPerSec: number;
   fpsNum: number;
   fpsDen: number;
@@ -172,29 +179,35 @@ export function DropStrip({
   /// gate for a Group released here.
   compositionId: string | null;
   /// The in-flight move promises, as `TrackLane` receives them. Only the ones on
-  /// `SPAWN_TRACK_ID` concern this row, and they are the raise's bridge: they
+  /// the row's spawn target concern this row, and they are the raise's bridge: they
   /// keep the clip drawn here for the round trip in which the lane it is going
   /// to does not exist yet (`useLayerDrag`'s spawn commit).
   pendingPlacements: PendingLayerPlacement[] | null;
   pendingLayerById: ReadonlyMap<string, LayerSummary>;
   /// Commits the drop. A null track means "spawn one" — the Timeline owns the
   /// two-step commit because it also owns the readiness guards every media drop
-  /// shares.
+  /// shares. `spawnPosition` names the side the lane is spawned on.
   onMediaDrop: (
     track: null,
     payload: MediaDragPayload,
     plan: MediaDropPlan,
+    spawnPosition: "top" | "bottom",
   ) => void;
 }) {
   const { t } = useTranslation();
+  const spawnTrackId =
+    position === "bottom" ? SPAWN_BOTTOM_TRACK_ID : SPAWN_TRACK_ID;
   const layerMoveArmed = useIsLayerMoveDragging(compositionId);
   // Non-null exactly while a clip drag started in this Panel names this strip.
   // The whole gesture, because the row DRAWS this drop: a raise's preview
   // belongs to the strip and to no lane (`previewTrackId`).
-  const stripDrag = useLayerDragForStrip(compositionId);
-  const foreignDropArmed = useIsForeignDropClaimed(compositionId);
-  const foreignStripAnchorUs = useForeignDropStripAnchorUs(compositionId);
-  const foreignStripValidity = useForeignDropStripValidity(compositionId);
+  const stripDrag = useLayerDragForStrip(compositionId, spawnTrackId);
+  // Foreign drops stay top-only: the cross-Panel claim resolves to the top
+  // spawn target, so the bottom row subscribes to nothing foreign.
+  const foreignCompositionId = position === "top" ? compositionId : null;
+  const foreignDropArmed = useIsForeignDropClaimed(foreignCompositionId);
+  const foreignStripAnchorUs = useForeignDropStripAnchorUs(foreignCompositionId);
+  const foreignStripValidity = useForeignDropStripValidity(foreignCompositionId);
   const activeMediaDrag = useMediaDragStore((s) => s.active);
   const dropTargetTrackId = useMediaDragStore((s) => s.dropTargetTrackId);
   const claimDropTarget = useMediaDragStore((s) => s.claimDropTarget);
@@ -206,13 +219,13 @@ export function DropStrip({
   } | null>(null);
 
   useEffect(() => {
-    if (activeMediaDrag === null || dropTargetTrackId !== SPAWN_TRACK_ID) {
+    if (activeMediaDrag === null || dropTargetTrackId !== spawnTrackId) {
       setDropPreview(null);
     }
-  }, [activeMediaDrag, dropTargetTrackId]);
+  }, [activeMediaDrag, dropTargetTrackId, spawnTrackId]);
 
   const visibleDropPreview =
-    dropTargetTrackId === SPAWN_TRACK_ID ? dropPreview : null;
+    dropTargetTrackId === spawnTrackId ? dropPreview : null;
 
   // The raise's landing, through the SAME call the move projection makes — the
   // strip promises what the commit sends, or it is not a preview of it. Every
@@ -248,7 +261,7 @@ export function DropStrip({
     // clip exists on screen until the refreshed project brings the lane.
     const ghosts: StripClipGhost[] = [];
     for (const placement of pendingPlacements ?? []) {
-      if (placement.trackId !== SPAWN_TRACK_ID) continue;
+      if (placement.trackId !== spawnTrackId) continue;
       const layer = pendingLayerById.get(placement.layerId);
       if (!layer) continue;
       ghosts.push({
@@ -296,7 +309,7 @@ export function DropStrip({
       );
       const width = Math.min(36, Math.max(14, ghostWidth));
       const height = Math.max(8, DROP_STRIP_HEIGHT_PX - 4);
-      claimDropTarget(SPAWN_TRACK_ID, {
+      claimDropTarget(spawnTrackId, {
         left:
           ghostLeft +
           Math.min(MEDIA_DRAG_CURSOR_OFFSET_PX, ghostWidth / 2) -
@@ -324,7 +337,7 @@ export function DropStrip({
         e.clientY >= rect.top &&
         e.clientY <= rect.bottom;
       if (pointerStillInside) return;
-      releaseDropTarget(SPAWN_TRACK_ID);
+      releaseDropTarget(spawnTrackId);
       setDropPreview(null);
     },
     [releaseDropTarget],
@@ -340,13 +353,14 @@ export function DropStrip({
       const rect = e.currentTarget.getBoundingClientRect();
       const plan = planFor(payload, e.clientX - rect.left);
       if (mediaDropInvalid(plan.validity)) return;
-      onMediaDrop(null, payload, plan);
+      onMediaDrop(null, payload, plan, position);
     },
-    [endMediaDrag, onMediaDrop, planFor],
+    [endMediaDrag, onMediaDrop, planFor, position],
   );
 
   // A clip drag names this strip from either side of the gesture: this Panel's
-  // own, or a neighbour's whose claim landed here. Both are this composition's
+  // own, or a neighbour's whose claim landed here (top row only — the foreign
+  // claim resolves to the top spawn target). Both are this composition's
   // µs — the local one by its composition gate, the foreign one because the
   // claim was resolved on this Panel's axis in the first place.
   const clipDragAnchorUs = stripLanding?.anchorTStartUs ?? foreignStripAnchorUs;
@@ -404,7 +418,7 @@ export function DropStrip({
   // Row-local, because the ghosts are children of the row. The SAME rule the
   // cross-Panel ghost applies to this row from outside it, which is what makes
   // the two boxes coincide instead of merely resembling each other.
-  const stripGhostBand = dragGhostBand(DROP_STRIP_HEIGHT_PX, SPAWN_TRACK_ID);
+  const stripGhostBand = dragGhostBand(DROP_STRIP_HEIGHT_PX, spawnTrackId);
   // The strip is a clip surface for selection too: a sweep may start on the
   // reserved row and reach down into the lanes.
   const { onPointerDown: onMarqueeDown } = useMarqueeAnchor({ kind: "clip" });
@@ -412,6 +426,7 @@ export function DropStrip({
     <div
       ref={elRef}
       data-testid="timeline-drop-strip"
+      data-position={position}
       data-armed={armed ? "true" : "false"}
       data-lit={lit ? "true" : "false"}
       className={`relative ${
@@ -456,14 +471,14 @@ export function DropStrip({
       {/* The raise's own preview: one bar per subject, at the landing the commit
           will send. It lives HERE and on no lane — the source lane releases the
           clip because the clip is leaving it (`previewTrackId`) — and it outlives
-          the gesture, the promise on `SPAWN_TRACK_ID` keeping it drawn through
+          the gesture, the promise on the spawn target keeping it drawn through
           the round trip in which the destination lane has no id yet. */}
       {clipGhosts.map((ghost) => (
         <DragGhostChip
           key={ghost.layerId}
           testId="timeline-drop-strip-clip-ghost"
           layerId={ghost.layerId}
-          trackId={SPAWN_TRACK_ID}
+          trackId={spawnTrackId}
           name={ghost.name}
           kind={ghost.kind}
           tStartUs={ghost.tStartUs}

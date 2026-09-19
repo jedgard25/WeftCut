@@ -139,7 +139,7 @@ describe("TimelineFilmstrip", () => {
     }
   });
 
-  it("re-runs the pass immediately on an engine subscribe notification", () => {
+  it("coalesces engine notifications into one request pass", async () => {
     // Uses the default (quickly-resolving) mock from beforeEach rather than a
     // permanently-pending one: FilmstripTileProducer's concurrency gate
     // (FILMSTRIP_MAX_CONCURRENT_FETCHES) is a module-level singleton, and a
@@ -152,10 +152,10 @@ describe("TimelineFilmstrip", () => {
 
     act(() => {
       tileEngine.invalidateMedia(mediaId, FILMSTRIP_KIND);
+      tileEngine.invalidateMedia(mediaId, FILMSTRIP_KIND);
     });
 
-    // No timer advance, no waitFor: invalidateMedia's notify is synchronous.
-    expect(requestSpy.mock.calls.length).toBe(6);
+    await waitFor(() => expect(requestSpy.mock.calls.length).toBeGreaterThanOrEqual(6));
     expect(requestSpy.mock.calls.slice(3)).toEqual([
       [filmstripTileKey(mediaId, 2, 2)],
       [filmstripTileKey(mediaId, 2, 3)],
@@ -293,6 +293,40 @@ describe("TimelineFilmstrip segment visibility", () => {
     expect(requestSpy.mock.calls.map((c) => c[0])).toEqual(
       Array.from({ length: 43 }, (_, i) => filmstripTileKey(mediaId, 2, i)),
     );
+  });
+
+  it("bounds a long clip's repaint work to the visible canvas segment", () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      setTransform: vi.fn(), clearRect: vi.fn(), drawImage: vi.fn(),
+    } as never);
+    const { getAllByTestId } = renderFilmstrip("m-long-paint", {
+      srcInUs: 0, srcOutUs: 600_000_000, layerWidthPx: 57_600, pxPerSec: 96,
+    });
+    const getSpy = vi.spyOn(tileEngine, "get");
+    fireVisible(FakeIntersectionObserver.instances[0]!, getAllByTestId("timeline-filmstrip-tile")[0]!);
+    // The visible segment spans about 21s. Even with request margins and LOD
+    // fallback, consulting thousands of keys from all 600s is unnecessary.
+    expect(getSpy.mock.calls.length).toBeLessThan(1_500);
+  });
+
+  it("mounts only viewport-near canvases for a long clip", () => {
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === "timeline-filmstrip") {
+        return { left: 0, right: 576_000, width: 576_000, top: 0, bottom: 54, height: 54 } as DOMRect;
+      }
+      if (this.dataset.testid === "filmstrip-viewport") {
+        return { left: 0, right: 800, width: 800, top: 0, bottom: 54, height: 54 } as DOMRect;
+      }
+      return originalRect.call(this);
+    });
+    const { queryAllByTestId } = render(
+      <div data-testid="filmstrip-viewport" style={{ overflowX: "auto" }}>
+        <TimelineFilmstrip mediaId="m-virtual" {...GEOMETRY}
+          srcInUs={0} srcOutUs={6_000_000_000} layerWidthPx={576_000} pxPerSec={96} />
+      </div>,
+    );
+    expect(queryAllByTestId("timeline-filmstrip-tile")).toHaveLength(2);
   });
 
   it("fires an immediate request pass when another segment becomes visible", () => {

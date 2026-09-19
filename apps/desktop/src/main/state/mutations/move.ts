@@ -98,9 +98,16 @@ export function applyMoveLayer(p: Project, id: Uuid, newTrackId: Uuid, newTStart
   pruneEmptiedTrack(c, srcTrackId)
 }
 
-/** Raise a set of layers onto ONE fresh lane at the tail of the track vector —
- *  the top of the z-stack, which is the only spawn point (ADR 0042 decision 2).
+/** Raise a set of layers onto ONE fresh lane — at the tail of the track vector
+ *  (`'top'`, the top of the z-stack) or at its head (`'bottom'`, the bottom).
  *  Returns the new track's id.
+ *
+ *  Top is the overlay direction (the clip paints over everything); bottom is
+ *  the underlay (it paints under the A roll, seen through gaps). The centered
+ *  single-lane philosophy is what makes both first-class: with extras above
+ *  AND below, the A roll sits in the middle rather than at the bottom.
+ *  (ADR 0042 decision 2 named top the only spawn point, when the skeleton was
+ *  two lanes and a below entry point was a lie; the single lane reopens it.)
  *
  *  Lives beside `applyMoveLayer` because it is a lane change and nothing else:
  *  the new lane is the destination, not the subject. Z-order is rearranged by
@@ -144,6 +151,7 @@ export function applyMoveLayersToNewTrack(
   idGen: IdGen,
   layerIds: readonly Uuid[],
   anchor: { layerId: Uuid; tStartUs: number } | null = null,
+  position: 'top' | 'bottom' = 'top',
 ): Uuid {
   const ids = [...new Set(layerIds)]
   if (ids.length === 0) throw new CommandFailure({ error: 'InvalidArgument', field: 'layers', detail: 'at least one layer is required' })
@@ -182,7 +190,7 @@ export function applyMoveLayersToNewTrack(
 
   // `label: null` lets the renderer derive the name — a literal written here
   // could never be localized (ADR 0042).
-  const trackId = applyAddTrack(p, idGen, null, undefined, c.id)
+  const trackId = applyAddTrack(p, idGen, null, position === 'bottom' ? 0 : undefined, c.id)
   const dest = c.tracks.find((t) => t.id === trackId)! // just inserted
   for (const id of ids) {
     const loc = locateLayerIn(c, id)! // verified above, and nothing has removed it

@@ -14,8 +14,8 @@ const sp = (v: number) => ({ mode: 'Static' as const, value: v })
  *  assert id-allocation order. */
 function withLayer(): { p: Project; gen: IdGen; layerId: string } {
   const gen = seededGen()
-  const p = blankProject(gen, 't') // ids #1 (A) #2 (B) #3 (project)
-  const layerId = applyAddLayer(p, gen, root(p).tracks[0].id, colorParams(RED, 1920, 1080), 0, 1_000_000) // #4
+  const p = blankProject(gen, 't') // ids #1 A-roll, #2 discarded, #3 project, #4 root
+  const layerId = applyAddLayer(p, gen, root(p).tracks[0].id, colorParams(RED, 1920, 1080), 0, 1_000_000) // #5
   return { p, gen, layerId }
 }
 function expectCmd(fn: () => void, code: string) {
@@ -191,12 +191,13 @@ describe('audio effect rules', () => {
   const kfTrack = () => ({ mode: 'Keyframed' as const, extrapolate: { before: 'Hold' as const, after: 'Hold' as const }, value: [
     { id: '00000000-0000-0000-0000-0000000000f1', t_us: 0, value: 12, in: { x: 2 / 3, y: 2 / 3, mode: 'Free' as const }, out: { x: 1 / 3, y: 1 / 3, mode: 'Free' as const }, continuity: 'Broken' as const, segment: { kind: 'Linear' as const } },
   ] })
-  /** One Audio layer and one VideoClip layer, on the two blank tracks. */
+  /** One Audio layer on A-roll and one VideoClip layer on a spawned lane. */
   function avProject(): { p: Project; gen: IdGen; audioId: string; videoId: string } {
     const gen = seededGen()
     const p = blankProject(gen, 'av')
-    const audioId = applyAddLayer(p, gen, root(p).tracks[0].id, audioParams(MID, 0, 3_000_000), 0, 3_000_000)
-    const videoId = applyAddLayer(p, gen, root(p).tracks[1].id, videoClipParams(MID, 0, 3_000_000), 0, 3_000_000)
+    const laneB = applyAddTrack(p, gen, null) // #5
+    const audioId = applyAddLayer(p, gen, root(p).tracks[0].id, audioParams(MID, 0, 3_000_000), 0, 3_000_000) // #6
+    const videoId = applyAddLayer(p, gen, laneB, videoClipParams(MID, 0, 3_000_000), 0, 3_000_000) // #7
     return { p, gen, audioId, videoId }
   }
 
@@ -234,7 +235,7 @@ describe('audio effect rules', () => {
       expect(isCommandFailure(e) && e.err).toEqual({ error: 'EffectKindNotApplicable', kind: 'audio.denoise', layer_kind: 'VideoClip' })
     }
     // Same id contract as every other add_effect refusal.
-    expect(applyAddEffect(p, gen, videoId, 'blur')).toBe('00000000-0000-0000-0000-000000000008')
+    expect(applyAddEffect(p, gen, videoId, 'blur')).toBe('00000000-0000-0000-0000-000000000009')
   })
 
   it('LayerNotFound still precedes the namespace rule', () => {

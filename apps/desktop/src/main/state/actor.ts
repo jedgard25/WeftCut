@@ -38,7 +38,7 @@ import { MotifCatalog, type Manifest } from '../../shared/motifs/catalog'
 import { applyAddCaptionTrack, applyRestyleCaptions, captionTracks, type Cue, type CaptionStylePatch } from './mutations/captions'
 import { applyRebindMotif, motifLayerParams } from './mutations/motif'
 import { canonicalizeProps, resolveMotifMaxDurUs, resolveMotifTEndUs, MotifPropError } from '../../shared/motifs/catalog'
-import { parseMechanical, prodColorParams, prodTextParams, prodMediaLayer, resolveDurationUs, pickFreeOverlayTrack, demoColor } from './commands'
+import { parseMechanical, prodColorParams, prodTextParams, prodMediaLayer, resolveDurationUs, pickFreeOverlayTrack, demoColor, parseTrackPosition } from './commands'
 import { mapCommandError, MCP_ARG_PARSERS, MCP_RESULT_SHAPERS, toolEmpty, toolText, toolJson, asArray, parseUuid, parseNum, parseNumOpt, parseStr, parseBool, parseRgba, parseRole, parseTransitionKind, parseTransitionKindOpt, parseTransitionPlacement, parseKeepRanges, McpArgError, shapeGetParamTrack, keyframePresent, shapeDryRunResponse, mcpDef, type McpCallResult, type TrackValue } from './mcp-commands'
 import { upsertKeyframe, removeKeyframe, retimeKeyframe, setSegmentEasing, setAuto, setTangent, setContinuity, setExtrapolation } from './keyframeEdits'
 import { readLayerTrack } from './mutations/params'
@@ -517,8 +517,8 @@ export function createActor(opts: ActorOptions): ActorHandle {
     // snapshot and emits nothing.
     //
     // "Temporal content" is deliberately ONE LAYER ON ANY TRACK — not markers, not
-    // a pinned duration, not imported-but-unplaced media. `blankProject` mints two
-    // tracks and no layers, so a fresh project stays freely re-rateable; marker
+    // a pinned duration, not imported-but-unplaced media. `blankProject` mints one
+    // track and no layers, so a fresh project stays freely re-rateable; marker
     // re-snapping is lossless, so a stray marker must not brick the rate.
     //
     // Judgement scope == write scope: the fps write is unrecorded, so it lands in
@@ -985,7 +985,7 @@ export function createActor(opts: ActorOptions): ActorHandle {
         }
         // Creation ops take `composition_id?` (root by default) — the ONLY ops
         // that carry a scope; everything layer-addressed derives it (ADR 0052).
-        case 'add_track': { const comp = compositionArg(a); return { ok: true, value: commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) => applyAddTrack(d, idGen, (a.label as string) ?? null, undefined, comp)) } }
+        case 'add_track': { const comp = compositionArg(a); const position = parseTrackPosition(a.position); if (position === null) return { ok: false, error: { error: 'InvalidArgument', field: 'position', detail: `position must be 'top' or 'bottom'` } }; return { ok: true, value: commit(HISTORY_SUMMARY.trackAdd, trackRef, { kind: 'Coarse' }, (d) => applyAddTrack(d, idGen, (a.label as string) ?? null, position === 'bottom' ? 0 : undefined, comp)) } }
         // `anchor` rides the ADD for the same reason `add_markers` takes one per
         // row: the mark and its tie are one gesture, and splitting them into an
         // add plus an attach would put an undo step between a marker and the clip
@@ -1015,9 +1015,14 @@ export function createActor(opts: ActorOptions): ActorHandle {
           const anchor = anchorLayerId === null || anchorTStartUs === null
             ? null
             : { layerId: anchorLayerId, tStartUs: anchorTStartUs }
+          const position = parseTrackPosition(a.position)
+          if (position === null) {
+            return { ok: false, error: { error: 'InvalidArgument', field: 'position',
+              detail: `position must be 'top' or 'bottom'` } }
+          }
           return { ok: true, value: commit(HISTORY_SUMMARY.layerMoveToNewTrack,
             (newTrackId: Uuid) => [...layerRefs(layers), { kind: 'Track', id: newTrackId }],
-            { kind: 'Coarse' }, (d) => applyMoveLayersToNewTrack(d, idGen, layers, anchor)) }
+            { kind: 'Coarse' }, (d) => applyMoveLayersToNewTrack(d, idGen, layers, anchor, position)) }
         }
         // restack_layer — anchored z-reorder (ADR 0044): ONE commit. Degradation
         // and the destination-or-null return contract are applyRestackLayer's

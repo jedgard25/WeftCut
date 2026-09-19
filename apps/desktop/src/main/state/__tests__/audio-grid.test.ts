@@ -68,7 +68,8 @@ function pairedFixture(): Fixture {
   const actor = createActor({ initial, idGen, clock: () => '<TS>' })
   actor.dispatch('add_media', { id: VIDEO_MEDIA, kind: 'Video', duration_us: 10_000_000, with_audio: false })
   actor.dispatch('add_media', { id: AUDIO_MEDIA, kind: 'Audio', duration_us: 10_000_000, with_audio: true })
-  const [videoTrack, audioTrack] = root(actor.snapshot()).tracks.map((t) => t.id)
+  const videoTrack = root(actor.snapshot()).tracks[0].id
+  const audioTrack = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
   const at = frame(V_START_FRAME())
   const v = actor.dispatch('add_layer', { track: videoTrack, kind: 'video', media: VIDEO_MEDIA, src_in_us: 0, src_out_us: 2_000_000, t_start_us: at, t_end_us: at + 2_000_000 })
   const a = actor.dispatch('add_layer', { track: audioTrack, kind: 'audio', media: AUDIO_MEDIA, src_in_us: 0, src_out_us: 2_000_000, t_start_us: at, t_end_us: at + 2_000_000 })
@@ -330,6 +331,36 @@ describe('audio grid — the 48 kHz mix lattice', () => {
     expect(findLayer(after, audioLayer).t_start_us).toBe(slipped)
   })
 
+  it('a link cut at a frame instant can be dissolved afterwards (orphaned audio snaps to samples)', () => {
+    // LATTICE-STRICTNESS: split_layer cuts a linked pair at ONE frame instant,
+    // leaving the audio up to half a sample off its lattice; dissolving the
+    // link used to strand it there (OffGridLayerBoundary on the dissolve).
+    const { actor, videoLayer } = pairedFixture()
+    const before = actor.snapshot()
+    const vStart = findLayer(before, videoLayer).t_start_us
+    const vEnd = findLayer(before, videoLayer).t_end_us
+    // An interior frame boundary at 29.97 (deliberately off the sample lattice).
+    let cut = 0
+    for (let i = 1; i < 60; i++) {
+      const t = frame(i)
+      if (t > vStart && t < vEnd && snapFrameRound(t, AUDIO_GRID.num, AUDIO_GRID.den) !== t) { cut = t; break }
+    }
+    expect(cut).toBeGreaterThan(0)
+    expect(actor.dispatch('split_layer', { layer: videoLayer, at_t_us: cut, escape_link: false }).ok).toBe(true)
+    // Per-side split: one pair per side, so two links — dissolve both.
+    expect(root(actor.snapshot()).links.length).toBe(2)
+    for (const g of [...root(actor.snapshot()).links]) {
+      expect(actor.dispatch('links_dissolve', { link: g.id }).ok).toBe(true)
+    }
+    expect(root(actor.snapshot()).links.length).toBe(0)
+    for (const t of root(actor.snapshot()).tracks) {
+      for (const l of t.layers) {
+        if (l.params.kind !== 'Audio') continue
+        expect(snapFrameRound(l.t_start_us, AUDIO_GRID.num, AUDIO_GRID.den)).toBe(l.t_start_us)
+        expect(snapFrameRound(l.t_end_us, AUDIO_GRID.num, AUDIO_GRID.den)).toBe(l.t_end_us)
+      }
+    }
+  })
   it('composition.sample_rate is untouched by all of this (export target, not a grid)', () => {
     const { actor, audioLayer, audioTrack } = pairedFixture()
     const before = root(actor.snapshot()).sample_rate

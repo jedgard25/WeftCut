@@ -19,7 +19,7 @@ function addT(p: Project, gen: IdGen, from: string, to: string, durUs: number, p
 /** Two adjacent color layers on @A: A1=[0,2M], A2=[2M,4M]. Returns gen for id-order asserts. */
 function twoAdjacent(): { p: Project; gen: IdGen; a1: string; a2: string } {
   const gen = seededGen()
-  const p = blankProject(gen, 't') // #1 A #2 B #3 project
+  const p = blankProject(gen, 't') // #1 A-roll, #2 discarded, #3 project, #4 root
   const a1 = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 0, 2_000_000) // #5
   const a2 = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 2_000_000, 4_000_000) // #6
   return { p, gen, a1, a2 }
@@ -57,7 +57,7 @@ function audioParams(media: string, srcIn: number, srcOut: number): LayerParams 
 /** VideoClip A1=[0,2M] (media 'm' src 0..2M, media duration mediaDurUs) then Color A2=[2M,4M]. */
 function videoThenColor(mediaDurUs: number | null): { p: Project; gen: IdGen; a1: string; a2: string } {
   const gen = seededGen()
-  const p = blankProject(gen, 't') // #1 A #2 B #3 project
+  const p = blankProject(gen, 't') // #1 A-roll, #2 discarded, #3 project, #4 root
   addMedia(p, 'm', 'Video', mediaDurUs)
   const a1 = applyAddLayer(p, gen, root(p).tracks[0].id, videoParams('m', 0, 2_000_000), 0, 2_000_000) // #5
   const a2 = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 2_000_000, 4_000_000) // #6
@@ -140,13 +140,13 @@ describe('applyAddTransition', () => {
     const { p, gen, a1, a2 } = twoAdjacent()
     layerOf(p, a2).t_start_us = 3_000_000; layerOf(p, a2).t_end_us = 5_000_000 // gap [2M..3M]
     expectCmd(() => applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE), 'TransitionLayersNotAdjacent')
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // #8, not #8 → no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #8, not #8 → no burn
   })
   it('missing from/to layer → LayerNotFound (no id minted)', () => {
     const { p, gen, a1, a2 } = twoAdjacent()
     expectCmd(() => applyAddTransition(p, gen, 'ghost', a2, 1_000_000, CROSSFADE), 'LayerNotFound')
     expectCmd(() => applyAddTransition(p, gen, a1, 'ghost', 1_000_000, CROSSFADE), 'LayerNotFound')
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // #7 → no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #7 → no burn
   })
 })
 
@@ -158,7 +158,7 @@ describe('applyAddTransition overlap-placement refusals (all pre-id-mint, never 
       .toEqual({ error: 'ValidationFailed', detail: { rule: 'TransitionDurationOutOfRange', transition: null, duration: 1_000_000 } })
     expect([layerOf(p, a1).t_end_us, layerOf(p, a2).t_start_us]).toEqual([2_000_000, 2_000_000]) // untouched
     expect(root(p).transitions).toEqual([])
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // #7 → no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #7 → no burn
   })
   it('d > len_A refuses too (the bound is min over BOTH spans, so B can never cross t = 0 by its own move)', () => {
     const { p, gen, a1, a2 } = twoAdjacent()
@@ -179,7 +179,7 @@ describe('applyAddTransition overlap-placement refusals (all pre-id-mint, never 
       .toEqual({ error: 'TransitionParticipantsShareLink', from: a1, to: a2 })
     expect([layerOf(p, a1).t_end_us, layerOf(p, a2).t_start_us]).toEqual([2_000_000, 2_000_000])
     expect(root(p).transitions).toEqual([])
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // #7 → no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #7 → no burn
   })
   it("shared link does NOT block placement 'extend' (nothing moves there) or a pre-overlapped classify", () => {
     const { p, gen, a1, a2 } = twoAdjacent()
@@ -190,13 +190,14 @@ describe('applyAddTransition overlap-placement refusals (all pre-id-mint, never 
     const { p, gen, a1, a2 } = twoAdjacent()
     addMedia(p, 'm', 'Audio', 10_000_000)
     // Sibling starts 300k from the origin; the 1M leftward shift would land it at −700k.
-    const aud = applyAddLayer(p, gen, root(p).tracks[1].id, audioParams('m', 0, 1_000_000), 300_000, 1_300_000) // #7
+    const laneB = applyAddTrack(p, gen, null) // #7
+    const aud = applyAddLayer(p, gen, laneB, audioParams('m', 0, 1_000_000), 300_000, 1_300_000) // #8
     root(p).links.push({ id: 'g', members: [a2, aud].sort() })
     expect(expectCmdErr(() => applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE)))
       .toEqual({ error: 'ValidationFailed', detail: { rule: 'NegativeLayerStart', layer: aud, t_start: -700_000 } })
     expect([layerOf(p, a2).t_start_us, layerOf(p, aud).t_start_us]).toEqual([2_000_000, 300_000]) // untouched
     expect(root(p).transitions).toEqual([])
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 5_000_000, 6_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #8 → no burn
+    expect(applyAddLayer(p, gen, laneB, color(), 5_000_000, 6_000_000)).toBe('00000000-0000-0000-0000-000000000009') // #9 → no burn
   })
 })
 
@@ -204,7 +205,7 @@ describe('applyAddTransition overlap placement: geometry consequences', () => {
   it('no implicit ripple: the vacated span stays a gap — no other layer moves', () => {
     const { p, gen, a1, a2 } = twoAdjacent()
     const c = applyAddLayer(p, gen, root(p).tracks[0].id, color(), 4_000_000, 6_000_000) // downstream, unlinked
-    const d = applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 3_000_000) // other lane
+    const d = applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 3_000_000) // other lane
     addT(p, gen, a1, a2, 1_000_000)
     expect([layerOf(p, c).t_start_us, layerOf(p, c).t_end_us]).toEqual([4_000_000, 6_000_000]) // unmoved
     expect([layerOf(p, d).t_start_us, layerOf(p, d).t_end_us]).toEqual([0, 3_000_000]) // unmoved
@@ -235,7 +236,7 @@ describe("applyAddTransition tail-handle pre-check (placement 'extend' only)", (
       .toEqual({ error: 'TransitionInsufficientHandle', layer: a1, available_us: 500_000 })
     expect([layerOf(p, a1).t_end_us, srcOutOf(p, a1)]).toEqual([2_000_000, 2_000_000]) // untouched
     expect(root(p).transitions).toEqual([])
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // #8, not #8 → no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #8, not #8 → no burn
   })
   it('overlap placement never handle-checks: the same zero-handle geometry succeeds by moving B (no source material touched)', () => {
     const { p, gen, a1, a2 } = videoThenColor(2_000_000) // handle = 0
@@ -272,13 +273,13 @@ describe("applyAddTransition tail-handle pre-check (placement 'extend' only)", (
 describe('applyAddTransition audio rejection', () => {
   it('Audio from-layer → TransitionUnsupportedLayerKind naming it; NO id burned', () => {
     const gen = seededGen()
-    const p = blankProject(gen, 't') // #1 A #2 B #3 project
+    const p = blankProject(gen, 't') // #1 A-roll, #2 discarded, #3 project, #4 root
     addMedia(p, 'm', 'Audio', 10_000_000)
     const a1 = applyAddLayer(p, gen, root(p).tracks[0].id, audioParams('m', 0, 2_000_000), 0, 2_000_000) // #5
     const a2 = applyAddLayer(p, gen, root(p).tracks[0].id, audioParams('m', 2_000_000, 4_000_000), 2_000_000, 4_000_000) // #6
     expect(expectCmdErr(() => applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE)))
       .toEqual({ error: 'TransitionUnsupportedLayerKind', layer: a1, kind: 'Audio' })
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000007') // #7 → no burn
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000)).toBe('00000000-0000-0000-0000-000000000008') // #7 → no burn
   })
   it('Audio to-layer → TransitionUnsupportedLayerKind names the to layer', () => {
     const gen = seededGen()
@@ -460,7 +461,7 @@ const RATES: Array<[number, number]> = [
  *  `spanFrames` long — so every endpoint starts canonical. */
 function adjacentAt(num: number, den: number, cutFrame: number, spanFrames: number): { p: Project; gen: IdGen; a1: string; a2: string; cutUs: number } {
   const gen = seededGen()
-  const p = blankProject(gen, 't') // #1 A #2 B #3 project
+  const p = blankProject(gen, 't') // #1 A-roll, #2 discarded, #3 project, #4 root
   root(p).fps = { num, den }
   const at = (f: number) => timeUsAtFrame(f, num, den)
   const cutUs = at(cutFrame)
@@ -603,8 +604,8 @@ describe('transition durations enter the composition frame grid', () => {
       }
     }
     expect([layerOf(p, a1).t_end_us, root(p).transitions.length]).toEqual([before, 0])
-    // #8, not #8+ → neither rejection minted an id
-    expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, timeUsAtFrame(30, num, den))).toBe('00000000-0000-0000-0000-000000000007')
+    // #8, not #8+ → neither rejection minted an id (lane mint #7, probe layer #8)
+    expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, timeUsAtFrame(30, num, den))).toBe('00000000-0000-0000-0000-000000000008')
   })
 
   it('30 fps half-frame boundary: 16666 µs is rejected, 16667 µs becomes exactly 1 frame (B moves left one frame)', () => {
@@ -691,9 +692,10 @@ describe('link siblings follow the incoming layer', () => {
   function withSlippedSibling() {
     const base = twoAdjacent()
     addMedia(base.p, 'm', 'Audio', 10_000_000)
-    const aud = applyAddLayer(base.p, base.gen, root(base.p).tracks[1].id, audioParams('m', 0, 2_000_000), 2_000_500, 4_000_500)
+    const laneB = applyAddTrack(base.p, base.gen, null)
+    const aud = applyAddLayer(base.p, base.gen, laneB, audioParams('m', 0, 2_000_000), 2_000_500, 4_000_500)
     root(base.p).links.push({ id: 'g', members: [base.a2, aud].sort() })
-    return { ...base, aud }
+    return { ...base, aud, laneB }
   }
   const offsetOf = (p: Project, aud: string, a2: string) => layerOf(p, aud).t_start_us - layerOf(p, a2).t_start_us
 
@@ -726,35 +728,36 @@ describe('link siblings follow the incoming layer', () => {
 })
 
 describe('overlap add: sibling lane bounce (ADR 0042)', () => {
-  /** twoAdjacent + an audio sibling of a2 on @B at [2M,4M] + a NON-moving audio
+  /** twoAdjacent + an audio sibling of a2 on a spawned lane at [2M,4M] + a NON-moving audio
    *  blocker on the same lane at [1M,2M] — the sibling's 1M leftward shift lands
    *  it on [1M,3M], over the blocker. */
   function withBlockedSibling() {
     const base = twoAdjacent()
     addMedia(base.p, 'm', 'Audio', 10_000_000)
-    const blocker = applyAddLayer(base.p, base.gen, root(base.p).tracks[1].id, audioParams('m', 0, 1_000_000), 1_000_000, 2_000_000) // #7
-    const aud = applyAddLayer(base.p, base.gen, root(base.p).tracks[1].id, audioParams('m', 0, 2_000_000), 2_000_000, 4_000_000) // #8
+    const laneB = applyAddTrack(base.p, base.gen, null) // #7
+    const blocker = applyAddLayer(base.p, base.gen, laneB, audioParams('m', 0, 1_000_000), 1_000_000, 2_000_000) // #8
+    const aud = applyAddLayer(base.p, base.gen, laneB, audioParams('m', 0, 2_000_000), 2_000_000, 4_000_000) // #9
     root(base.p).links.push({ id: 'g', members: [base.a2, aud].sort() })
-    return { ...base, blocker, aud }
+    return { ...base, blocker, aud, laneB }
   }
 
   it('a shifted sibling colliding on its lane bounces to an existing free overlay lane (spawned: false)', () => {
-    const { p, gen, a1, a2, blocker, aud } = withBlockedSibling()
-    const freeLane = applyAddTrack(p, gen, null) // #8 — role-less, empty
-    const { bounces } = applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE) // #9
-    expect(bounces).toEqual([{ layer: aud, from_track: root(p).tracks[1].id, to_track: freeLane, spawned: false }])
+    const { p, gen, a1, a2, blocker, aud, laneB } = withBlockedSibling()
+    const freeLane = applyAddTrack(p, gen, null) // role-less, empty
+    const { bounces } = applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE)
+    expect(bounces).toEqual([{ layer: aud, from_track: laneB, to_track: freeLane, spawned: false }])
     expect(root(p).tracks.find((t) => t.id === freeLane)!.layers.map((l) => l.id)).toEqual([aud])
     expect([layerOf(p, aud).t_start_us, layerOf(p, aud).t_end_us]).toEqual([1_000_000, 3_000_000]) // shifted span kept
     expect([layerOf(p, blocker).t_start_us, layerOf(p, blocker).t_end_us]).toEqual([1_000_000, 2_000_000]) // untouched
-    expect(root(p).tracks[1].layers.map((l) => l.id)).toEqual([blocker]) // vacated lane keeps its blocker
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers.map((l) => l.id)).toEqual([blocker]) // vacated lane keeps its blocker
   })
 
   it('no free lane → the bounce SPAWNS one (spawned: true); reserved lanes are never candidates', () => {
-    const { p, gen, a1, a2, aud } = withBlockedSibling() // only the reserved A/B rolls exist
+    const { p, gen, a1, a2, aud, laneB } = withBlockedSibling() // only the reserved A-roll plus the sibling lane exist
     const trackCountBefore = root(p).tracks.length
     const { bounces } = applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE)
     expect(bounces).toHaveLength(1)
-    expect(bounces[0]).toMatchObject({ layer: aud, from_track: root(p).tracks[1].id, spawned: true })
+    expect(bounces[0]).toMatchObject({ layer: aud, from_track: laneB, spawned: true })
     expect(root(p).tracks.length).toBe(trackCountBefore + 1)
     const spawnedTrack = root(p).tracks.find((t) => t.id === bounces[0].to_track)!
     expect([spawnedTrack.role, spawnedTrack.transient]).toEqual([null, true])
@@ -798,8 +801,9 @@ describe('applyRemoveTransition restore-collision pre-check', () => {
     layerOf(p, a1).t_end_us = 3_000_000 // e = 0, m = 1M
     const tid = addT(p, gen, a1, a2, 1_000_000)
     addMedia(p, 'm', 'Audio', 10_000_000)
-    const aud = applyAddLayer(p, gen, root(p).tracks[1].id, audioParams('m', 0, 2_000_000), 2_000_000, 4_000_000)
-    const blocker = applyAddLayer(p, gen, root(p).tracks[1].id, audioParams('m', 0, 500_000), 4_500_000, 5_000_000)
+    const laneB = applyAddTrack(p, gen, null)
+    const aud = applyAddLayer(p, gen, laneB, audioParams('m', 0, 2_000_000), 2_000_000, 4_000_000)
+    const blocker = applyAddLayer(p, gen, laneB, audioParams('m', 0, 500_000), 4_500_000, 5_000_000)
     root(p).links.push({ id: 'g', members: [a2, aud].sort() })
     expect(expectCmdErr(() => applyRemoveTransition(p, tid)))
       .toEqual({ error: 'TransitionRestoreCollision', layer: aud })
@@ -878,12 +882,13 @@ describe('update_transition through the actor: backstop + chained reconcile', ()
 
   it("a link sibling pushed across t = 0 by B's leftward move is refused ATOMICALLY (NegativeLayerStart)", () => {
     const { actor, ids: [a, b] } = actorWith([[0, 2_000_000], [2_000_000, 4_000_000]])
-    // Audio sibling near the origin on the B-roll, linked with B. The add is
+    // Audio sibling near the origin on a spawned lane, linked with B. The add is
     // pinned to 'extend' so nothing moves at add time — the update's growth is
     // what pushes the set left (the ADD-time zero-cross has its own pre-mint
     // refusal, covered in the overlap-placement refusal suite above).
     expect(actor.dispatch('add_media', { id: 'm-aud', kind: 'Audio', duration_us: 10_000_000, with_audio: true }).ok).toBe(true)
-    const aud = (actor.dispatch('add_layer', { track: root(actor.snapshot()).tracks[1].id, kind: 'audio', media: 'm-aud', src_in_us: 0, src_out_us: 1_000_000, t_start_us: 300_000, t_end_us: 1_300_000 }) as { ok: true; value: string }).value
+    const laneB = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
+    const aud = (actor.dispatch('add_layer', { track: laneB, kind: 'audio', media: 'm-aud', src_in_us: 0, src_out_us: 1_000_000, t_start_us: 300_000, t_end_us: 1_300_000 }) as { ok: true; value: string }).value
     expect(actor.dispatch('links_create', { layers: [b, aud], label: null, reassign: false }).ok).toBe(true)
     const t1 = (actor.dispatch('add_transition', { from: a, to: b, duration_us: 1_000_000, placement: 'extend' }) as { ok: true; value: string }).value
     const before = actor.snapshot()
@@ -899,11 +904,11 @@ describe('update_transition through the actor: backstop + chained reconcile', ()
 
   it('an overlap add whose sibling bounces emits ONE TransitionPlacementBounce status row and still returns the transition id', () => {
     const { actor, logged, ids: [a, b] } = actorWith([[0, 2_000_000], [2_000_000, 4_000_000]])
-    const bRoll = root(actor.snapshot()).tracks[1].id
+    const laneB = (actor.dispatch('add_track', { label: null }) as { ok: true; value: string }).value
     expect(actor.dispatch('add_media', { id: 'm-aud', kind: 'Audio', duration_us: 10_000_000, with_audio: true }).ok).toBe(true)
-    // Sibling of B at [2M,4M] on the B-roll audio lane; a non-moving blocker at [1M,2M].
-    const blocker = (actor.dispatch('add_layer', { track: bRoll, kind: 'audio', media: 'm-aud', src_in_us: 0, src_out_us: 1_000_000, t_start_us: 1_000_000, t_end_us: 2_000_000 }) as { ok: true; value: string }).value
-    const aud = (actor.dispatch('add_layer', { track: bRoll, kind: 'audio', media: 'm-aud', src_in_us: 0, src_out_us: 2_000_000, t_start_us: 2_000_000, t_end_us: 4_000_000 }) as { ok: true; value: string }).value
+    // Sibling of B at [2M,4M] on the spawned audio lane; a non-moving blocker at [1M,2M].
+    const blocker = (actor.dispatch('add_layer', { track: laneB, kind: 'audio', media: 'm-aud', src_in_us: 0, src_out_us: 1_000_000, t_start_us: 1_000_000, t_end_us: 2_000_000 }) as { ok: true; value: string }).value
+    const aud = (actor.dispatch('add_layer', { track: laneB, kind: 'audio', media: 'm-aud', src_in_us: 0, src_out_us: 2_000_000, t_start_us: 2_000_000, t_end_us: 4_000_000 }) as { ok: true; value: string }).value
     expect(actor.dispatch('links_create', { layers: [b, aud], label: null, reassign: false }).ok).toBe(true)
     const r = actor.dispatch('add_transition', { from: a, to: b, duration_us: 1_000_000 })
     expect(r.ok).toBe(true)
@@ -914,17 +919,17 @@ describe('update_transition through the actor: backstop + chained reconcile', ()
     expect(logged[0].level).toBe('info')
     expect(logged[0].category).toEqual({ kind: 'Project' })
     expect(logged[0].message).toContain(aud)
-    expect(logged[0].details).toMatchObject({ kind: 'TransitionPlacementBounce', layer: aud, from_track: bRoll, spawned: true })
+    expect(logged[0].details).toMatchObject({ kind: 'TransitionPlacementBounce', layer: aud, from_track: laneB, spawned: true })
     // And the bounce itself landed: aud on the spawned lane, blocker untouched.
     const spawnedId = (logged[0].details as { to_track: string }).to_track
     const spawned = root(actor.snapshot()).tracks.find((t) => t.id === spawnedId)!
     expect(spawned.layers.map((l) => l.id)).toEqual([aud])
-    expect(root(actor.snapshot()).tracks.find((t) => t.id === bRoll)!.layers.map((l) => l.id)).toEqual([blocker])
+    expect(root(actor.snapshot()).tracks.find((t) => t.id === laneB)!.layers.map((l) => l.id)).toEqual([blocker])
     // ONE undo restores the whole placement — shift, bounce, spawned lane and all.
     expect(actor.dispatch('undo', {}).ok).toBe(true)
     expect(root(actor.snapshot()).transitions).toEqual([])
     expect(root(actor.snapshot()).tracks.some((t) => t.id === spawnedId)).toBe(false)
-    expect(root(actor.snapshot()).tracks.find((t) => t.id === bRoll)!.layers.map((l) => l.id)).toEqual([blocker, aud])
+    expect(root(actor.snapshot()).tracks.find((t) => t.id === laneB)!.layers.map((l) => l.id)).toEqual([blocker, aud])
   })
 
   it('an overlap add refused for a shared link burns NO op_id and surfaces the structured error through dispatch', () => {
@@ -959,8 +964,8 @@ describe('locked home lane refuses every transition op (TrackLocked)', () => {
       expectCmd(() => applyAddTransition(p, gen, a1, a2, 1_000_000, CROSSFADE, placement), 'TrackLocked')
       expect([layerOf(p, a1).t_end_us, layerOf(p, a2).t_start_us], placement).toEqual([2_000_000, 2_000_000])
       expect(root(p).transitions, placement).toEqual([])
-      expect(applyAddLayer(p, gen, root(p).tracks[1].id, color(), 0, 1_000_000), placement)
-        .toBe('00000000-0000-0000-0000-000000000007') // #8, not #8 → no burn
+      expect(applyAddLayer(p, gen, applyAddTrack(p, gen, null), color(), 0, 1_000_000), placement)
+        .toBe('00000000-0000-0000-0000-000000000008') // #8 → no burn
     }
   })
   it('update refuses the WHOLE patch — a kind-only change is no exception (locked means untouchable)', () => {

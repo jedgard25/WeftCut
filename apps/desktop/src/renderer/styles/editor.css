@@ -2141,6 +2141,24 @@
   border: 1px solid color-mix(in srgb, var(--keyframe) 40%, transparent);
 }
 
+/* Hover-reveal track headers. The single-lane timeline reads clean: the gutter
+   column goes transparent and its cells fade out until the pointer reaches it
+   (or keyboard focus does). Hidden cells take no pointer events, so a press on
+   the idle gutter bubbles to the timeline root and deselects, the same as a
+   press on empty lane background. The ruler corner keeps its own background
+   and never fades — it anchors the panel, not a lane. */
+.timeline-headers .timeline-header-fade {
+  transition: opacity 160ms ease;
+}
+.timeline-headers:not(:hover):not(:focus-within) {
+  background-color: transparent;
+  border-color: transparent;
+}
+.timeline-headers:not(:hover):not(:focus-within) .timeline-header-fade {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Read-only envelope context (kind/track/group) inside a prop Field row. */
 .prop-readonly {
   color: var(--muted-foreground);

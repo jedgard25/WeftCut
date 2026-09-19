@@ -20,7 +20,7 @@ vi.mock("@/bridge/events", () => ({
   }),
 }));
 
-import { useProjectStore, wireProjectStore } from "./projectStore";
+import { useProjectStore, wireProjectStore, groupAvPassthrough } from "./projectStore";
 import { compositionFixture, ROOT_ID, summaryFixture } from "../testing/summaryFixture";
 import type { LayerSummary, TrackSummary } from "../ipc";
 
@@ -205,5 +205,88 @@ describe("indices span every composition", () => {
     expect(useProjectStore.getState().mediaRefCounts).not.toBe(counts);
     useProjectStore.getState().apply(null);
     expect(useProjectStore.getState().mediaRefCounts.size).toBe(0);
+  });
+});
+
+describe("groupAvPassthrough", () => {
+  const stat = <T,>(value: T) => ({ mode: "Static" as const, value });
+  const video = (id: string, t0: number, t1: number, src0 = 0, src1 = 4_000_000, mediaId = "m-v"): LayerSummary => ({
+    id, label: null, t_start_us: t0, t_end_us: t1, kind: "VideoClip", color_hint: "#000000",
+    enabled: true, locked: false, effects: [],
+    params: {
+      kind: "VideoClip", media_id: mediaId, media_label: mediaId,
+      src_in_us: src0, src_out_us: src1,
+      x: stat(0), y: stat(0), scale_x: stat(1), scale_y: stat(1), scale_linked: true,
+      rotation_deg: stat(0), opacity: stat(1), anchor_x: stat(0.5), anchor_y: stat(0.5),
+      speed: 1, flip_h: false, flip_v: false, fade_in_us: 0, fade_out_us: 0,
+    },
+  });
+  const audio = (id: string, t0: number, t1: number, src0 = 0, src1 = 4_000_000, mediaId = "m-a"): LayerSummary => ({
+    id, label: null, t_start_us: t0, t_end_us: t1, kind: "Audio", color_hint: "#000000",
+    enabled: true, locked: false, effects: [],
+    params: {
+      kind: "Audio", media_id: mediaId, media_label: mediaId,
+      src_in_us: src0, src_out_us: src1,
+      gain_db: stat(0), pan: stat(0), fade_in_us: 0, fade_out_us: 0, mute: false, role: "dialogue",
+    },
+  });
+  const text = (id: string): LayerSummary => ({
+    id, label: null, t_start_us: 0, t_end_us: 4_000_000, kind: "Text", color_hint: "#000000",
+    enabled: true, locked: false, effects: [],
+    params: { kind: "Text" } as LayerSummary["params"],
+  });
+  const lane = (id: string, layers: LayerSummary[]): TrackSummary => ({
+    id, kind: "Video", label: null, enabled: true, locked: false, muted: false, solo: false,
+    role: null, transient: true, layers,
+  });
+  const comp = (layers: LayerSummary[][], duration = 4_000_000) =>
+    compositionFixture({ id: "comp-g1", duration_us: duration, tracks: layers.map((ls, i) => lane(`t-${i}`, ls)) });
+
+  it("passes one video covering the window straight through", () => {
+    expect(groupAvPassthrough(comp([[video("v", 0, 4_000_000)]]), 0, 4_000_000)).toEqual({
+      video: { layerId: "v", mediaId: "m-v", srcInUs: 0, srcOutUs: 4_000_000 },
+      audio: null,
+    });
+  });
+
+  it("passes video plus audio, each mapped", () => {
+    expect(
+      groupAvPassthrough(comp([[video("v", 0, 4_000_000)], [audio("a", 0, 4_000_000)]]), 0, 4_000_000),
+    ).toEqual({
+      video: { layerId: "v", mediaId: "m-v", srcInUs: 0, srcOutUs: 4_000_000 },
+      audio: { layerId: "a", mediaId: "m-a", srcInUs: 0, srcOutUs: 4_000_000 },
+    });
+  });
+
+  it("offsets the media range when the Group window is trimmed", () => {
+    // Inner clip runs [0, 4s) of media [500k, 4.5M); the Group shows [1s, 3s).
+    const c = comp([[video("v", 0, 4_000_000, 500_000, 4_500_000)]]);
+    expect(groupAvPassthrough(c, 1_000_000, 3_000_000)).toEqual({
+      video: { layerId: "v", mediaId: "m-v", srcInUs: 1_500_000, srcOutUs: 3_500_000 },
+      audio: null,
+    });
+  });
+
+  it("passes an audio-only Group as waveform alone", () => {
+    expect(groupAvPassthrough(comp([[audio("a", 0, 4_000_000)]]), 0, 4_000_000)).toEqual({
+      video: null,
+      audio: { layerId: "a", mediaId: "m-a", srcInUs: 0, srcOutUs: 4_000_000 },
+    });
+  });
+
+  it("falls back for two videos, a title, partial cover, gaps and empties", () => {
+    const two = comp([[video("v1", 0, 2_000_000), video("v2", 2_000_000, 4_000_000)]]);
+    expect(groupAvPassthrough(two, 0, 4_000_000)).toBeNull();
+    const titled = comp([[video("v", 0, 4_000_000)], [text("t")]]);
+    expect(groupAvPassthrough(titled, 0, 4_000_000)).toBeNull();
+    // Inner clip covers only the first half: the window overhangs it.
+    const partial = comp([[video("v", 0, 2_000_000, 0, 2_000_000)]]);
+    expect(groupAvPassthrough(partial, 0, 4_000_000)).toBeNull();
+    // Audio shorter than the window is the same refusal on the audio side.
+    const shortAudio = comp([[video("v", 0, 4_000_000)], [audio("a", 0, 2_000_000, 0, 2_000_000)]]);
+    expect(groupAvPassthrough(shortAudio, 0, 4_000_000)).toBeNull();
+    expect(groupAvPassthrough(comp([[]]), 0, 4_000_000)).toBeNull();
+    expect(groupAvPassthrough(null, 0, 4_000_000)).toBeNull();
+    expect(groupAvPassthrough(comp([[video("v", 0, 4_000_000)]]), 2_000_000, 2_000_000)).toBeNull();
   });
 });

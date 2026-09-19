@@ -742,6 +742,8 @@ const enUS = {
     copy_selected: "Copy selected clip",
     paste_at_playhead: "Paste clip at playhead",
     split_at_playhead: "Split at playhead",
+    collapse_left_to_playhead: "Collapse to playhead (keep right)",
+    collapse_right_to_playhead: "Collapse to playhead (keep left)",
     toggle_log: "Toggle activity log",
     focus_log_search: "Focus activity-log search",
     toggle_display_mode: "Toggle A/B Roll / All Tracks",
@@ -984,7 +986,7 @@ const enUS = {
   timeline: {
     empty_placeholder: "timeline (import a clip or pick a motif to populate)",
     empty_ab_roll:
-      "No A/B-roll content here. Drop a clip on $t(tracks.roles.a-roll) or $t(tracks.roles.b-roll), or press {{key}} to switch to All Tracks.",
+      "No A/B-roll clips visible. Press {{key}} to show all tracks.",
     resize_track_hint: "Drag to resize this track",
     track_eye_hint: "Hide this track's output (affects export)",
     track_lock_hint: "Lock this track against edits",
@@ -1085,8 +1087,7 @@ const enUS = {
   },
   // Derived track names (`lib/trackName.ts`): what a lane is called when the
   // user has not named it. Kebab role keys so the lookup is the wire value
-  // itself. Nested into `timeline.empty_ab_roll` with `$t(…)` so the hint names
-  // lanes the way their headers do instead of quoting one language.
+  // itself.
   tracks: {
     roles: {
       "a-roll": "A roll",

@@ -48,8 +48,10 @@ const COMPLEX: ReadonlySet<string> = new Set([
 const PROPERTY_DESCRIPTION_CAP = 260
 /** The whole catalog, compact JSON, as the wire carries it. The first pass
  *  under this gate landed at ~92 KB (from ~127 KB) without touching the tool set;
- *  lowering it further is the merge / on-demand-toolset work, not more trimming. */
-const CATALOG_BYTE_BUDGET = 94_000
+ *  lowering it further is the merge / on-demand-toolset work, not more trimming.
+ *  Bumped for `add_track.position` (spawn above/below); recalibrate, don't trim
+ *  real fields to fit it. */
+const CATALOG_BYTE_BUDGET = 94_500
 
 function compact(v: unknown): string { return JSON.stringify(v) }
 

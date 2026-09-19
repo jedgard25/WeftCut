@@ -14,6 +14,21 @@ const thumbCache = new Map<string, CacheEntry>();
 const thumbListeners = new Map<string, Set<() => void>>();
 let jobListenerInstalled = false;
 
+/// Poster cache bound. Each `ready` entry holds a base64 JPEG data URL for the
+/// renderer's whole lifetime; without a cap this grows with every media ever
+/// displayed. Evicting a READY entry only costs a refetch if that poster is
+/// shown again, so it is safe; pending/not_ready entries are left alone so an
+/// in-flight fetch is never orphaned.
+const THUMB_CACHE_MAX = 300;
+
+function evictThumbCache(): void {
+  if (thumbCache.size <= THUMB_CACHE_MAX) return;
+  for (const [id, entry] of thumbCache) {
+    if (thumbCache.size <= THUMB_CACHE_MAX) break;
+    if (entry.state === "ready" || entry.state === "error") thumbCache.delete(id);
+  }
+}
+
 function fireListeners(mediaId: string) {
   thumbListeners.get(mediaId)?.forEach((cb) => cb());
 }
@@ -31,6 +46,7 @@ async function ensureThumbnail(mediaId: string) {
   try {
     const dataUrl = await getMediaThumbnail(mediaId);
     thumbCache.set(mediaId, { state: "ready", dataUrl });
+    evictThumbCache();
   } catch (e) {
     const message = typeof e === "string" ? e : String(e);
     if (message.includes("not_ready")) {
@@ -93,6 +109,9 @@ export function useMediaPosterSrc(
     void ensureThumbnail(mediaId);
     return () => {
       listeners?.delete(listener);
+      // Drop the now-empty Set too — otherwise one empty Set per media id ever
+      // rendered is retained for the process lifetime.
+      if (listeners && listeners.size === 0) thumbListeners.delete(mediaId);
     };
   }, [mediaId, resolvedKind]);
 

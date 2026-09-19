@@ -22,11 +22,17 @@ import {
 } from "./ipc";
 import { initEval } from "./eval";
 import { isMac } from "./platform";
+import { installPerformanceMeasureGuard } from "./performanceMeasureGuard";
 import "./i18n";
 // Tailwind entry first; styles.css stays unlayered so its legacy rules win
 // over Tailwind's layered output wherever both match (see app.css header).
 import "./app.css";
 import "./styles.css";
+
+// Before the first React commit: stop React 19's dev-build User Timing detail
+// from crashing the renderer when a component's changed props are too large to
+// structured-clone. See performanceMeasureGuard.ts.
+if (import.meta.env.DEV) installPerformanceMeasureGuard();
 
 const isPerfHudWindow = new URLSearchParams(window.location.search).get("perfHud") === "1";
 const showSplashDebugControl =

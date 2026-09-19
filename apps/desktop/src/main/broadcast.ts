@@ -14,6 +14,12 @@ interface BroadcastTarget {
 export function broadcastEvent(windows: BroadcastTarget[], event: string, payload?: unknown): void {
   for (const w of windows) {
     if (w.isDestroyed()) continue
-    w.webContents.send('evt:' + event, payload)
+    try {
+      w.webContents.send('evt:' + event, payload)
+    } catch {
+      // Renderer crashed/reloading: `isDestroyed()` is false while the render
+      // frame is already disposed, so `send` throws. Drop the broadcast rather
+      // than let it become an uncaught main-process error.
+    }
   }
 }

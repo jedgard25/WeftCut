@@ -37,11 +37,11 @@ export function compositionRefCount(p: Project, compositionId: Uuid): number {
 
 /** Pre-compose (spec § Pre-compose, steps 1–5): move `layerIds` — one or more
  *  layers of ONE composition P — into a new composition C that copies P's
- *  settings and the reserved A/B skeleton, and place C back in P as one Group
+ *  settings and the reserved single-A-roll skeleton, and place C back in P as one Group
  *  layer at the set's earliest start. Members shift by `-t0` on their own
  *  lattice (keyframes are layer-local, so a whole-layer shift leaves them alone
  *  — same as `applyMoveLayer`). P's tracks that held members map bottom-up onto
- *  C's A roll, B roll, then fresh transient lanes, so relative z-order survives.
+ *  C's A roll, then fresh transient lanes, so relative z-order survives.
  *
  *  Links, transitions and the markers anchored to a member follow the set — see
  *  `moveLinksTransitionsAndMarkers`. A free marker stays with the parent.

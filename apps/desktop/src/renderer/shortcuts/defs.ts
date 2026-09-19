@@ -22,6 +22,8 @@ export type ActionId =
   | "copySelected"
   | "pasteAtPlayhead"
   | "splitAtPlayhead"
+  | "collapseLeftToPlayhead"
+  | "collapseRightToPlayhead"
   | "importMedia"
   | "export"
   | "selectTool"
@@ -180,6 +182,13 @@ export const ACTION_DEFS: Record<ActionId, ActionDef> = {
   // this key. `scope` matches `deleteSelected` — with the media pool focused,
   // Ctrl+B is not an edit to the timeline.
   splitAtPlayhead: { defaultKeys: ["Mod+B"],               labelKey: "actions.split_at_playhead", fireWhenEditing: false, scope: TIMELINE_SELECTION },
+  // Trim to the playhead and close what the cut vacated — one `apply_cut_list`
+  // commit per straddling clip (`commands/collapseToPlayhead.ts`). FCP's keys
+  // for the same pair; `fireWhenEditing: false` and the timeline scope for the
+  // split's reasons (no platform meaning is attached to either chord in a text
+  // field here, and Ctrl+B's "bold" lesson still applies).
+  collapseLeftToPlayhead: { defaultKeys: ["Mod+["],       labelKey: "actions.collapse_left_to_playhead", fireWhenEditing: false, scope: TIMELINE_SELECTION },
+  collapseRightToPlayhead: { defaultKeys: ["Mod+]"],      labelKey: "actions.collapse_right_to_playhead", fireWhenEditing: false, scope: TIMELINE_SELECTION },
   importMedia:     { defaultKeys: ["Mod+I"],               labelKey: "actions.import_media" },
   export:          { defaultKeys: ["Mod+E"],               labelKey: "actions.export" },
   // Modal timeline tools, one key per tool (`toolStore.ts`): `V` arms

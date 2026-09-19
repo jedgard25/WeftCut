@@ -1423,11 +1423,13 @@ export async function moveLayer(
 export async function moveLayersToNewTrack(
   layerIds: string[],
   anchor?: { layerId: string; tStartUs: number } | null,
+  position?: "top" | "bottom" | null,
 ): Promise<string> {
   return invoke<string>("move_layers_to_new_track", {
     layerIds,
     anchorLayerId: anchor?.layerId ?? null,
     anchorTStartUs: anchor?.tStartUs ?? null,
+    position: position ?? null,
   });
 }
 
@@ -1467,6 +1469,16 @@ export async function splitLayerLinked(
     atTUs,
     escapeLink,
   });
+}
+
+/// Keep the named ranges of a layer, discard the rest and ripple the holes
+/// closed — one commit. `keep` is timeline-absolute spans on the layer's
+/// clock; the actor validates shape, bounds, grid and the ripple's refusals.
+export async function applyCutList(
+  layerId: string,
+  keep: Array<{ t_start_us: number; t_end_us: number }>,
+): Promise<{ surviving_layer_ids: string[]; removed: string[]; removed_us: number }> {
+  return invoke("apply_cut_list", { layerId, keep });
 }
 
 /** `docs/features.md#links` — bundle ≥2 layer ids into a link. */

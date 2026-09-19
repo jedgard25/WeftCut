@@ -319,16 +319,16 @@ describe('parseProject text box defaults', () => {
   function boxlessTextWire(): Wire {
     const g = seededGen()
     const p = blankProject(g, 'legacy')
-    applyAddLayer(p, g, root(p).tracks[1].id, textParamsDefault('caption', root(p)), 0, 1_000_000)
+    applyAddLayer(p, g, root(p).tracks[0].id, textParamsDefault('caption', root(p)), 0, 1_000_000)
     const wire = serializeProject(p) as Wire
-    const params = wroot(wire).tracks[1].layers[0].params as Record<string, unknown>
+    const params = wroot(wire).tracks[0].layers[0].params as Record<string, unknown>
     for (const k of ['box_w', 'box_h', 'valign', 'line_height', 'letter_spacing']) delete params[k]
     return wire
   }
 
   it('turns an absent box into an explicit null, and fills valign/leading/tracking', () => {
     const wire = boxlessTextWire()
-    const params = root(parseProject(wire, silent)).tracks[1].layers[0].params as Extract<LayerParams, { kind: 'Text' }>
+    const params = root(parseProject(wire, silent)).tracks[0].layers[0].params as Extract<LayerParams, { kind: 'Text' }>
     expect(params.box_w).toBeNull()
     expect(params.box_h).toBeNull()
     expect([params.valign, params.line_height, params.letter_spacing]).toEqual(['Middle', 0, 0])
@@ -336,8 +336,8 @@ describe('parseProject text box defaults', () => {
 
   it('leaves an authored box exactly as written', () => {
     const wire = boxlessTextWire()
-    Object.assign(wroot(wire).tracks[1].layers[0].params as Record<string, unknown>, { box_w: 1600, box_h: 200, valign: 'Bottom', line_height: 72, letter_spacing: 3 })
-    const params = root(parseProject(wire, silent)).tracks[1].layers[0].params as Extract<LayerParams, { kind: 'Text' }>
+    Object.assign(wroot(wire).tracks[0].layers[0].params as Record<string, unknown>, { box_w: 1600, box_h: 200, valign: 'Bottom', line_height: 72, letter_spacing: 3 })
+    const params = root(parseProject(wire, silent)).tracks[0].layers[0].params as Extract<LayerParams, { kind: 'Text' }>
     expect([params.box_w, params.box_h, params.valign, params.line_height, params.letter_spacing]).toEqual([1600, 200, 'Bottom', 72, 3])
   })
 
