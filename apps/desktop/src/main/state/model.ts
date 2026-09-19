@@ -252,6 +252,10 @@ export interface ProjectSettings {
   history_capacity: number; auto_pair_audio_on_import: boolean
   prefer_proxies: boolean
   proxy_overrides: Record<string, boolean>
+  /** When false, the automatic import/open fan-out does NOT build the preview
+   *  (quick) proxy. Export masters are unaffected — a source whose export needs
+   *  one still gets it on demand. Default true. */
+  generate_preview_proxies: boolean
   /** The reviewed detection parameters, or `null` for "whatever the detector
    *  defaults to". Null rather than a pair of numbers so no threshold literal
    *  lives in TypeScript at all: the defaults are Rust's
@@ -323,7 +327,7 @@ export function* eachLayer(p: Pick<Project, 'compositions'>): Iterable<{ composi
 export function defaultSettings(): ProjectSettings {
   return { preview_width: 1280, preview_height: 720, autosave_interval_secs: 60,
     history_capacity: 200, auto_pair_audio_on_import: true,
-    prefer_proxies: false, proxy_overrides: {}, shot_review: null, pause_review: null }
+    prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, shot_review: null, pause_review: null }
 }
 
 /** Mirror of Rust `Project::new_blank`. Id order: A-roll, B-roll, project_id,

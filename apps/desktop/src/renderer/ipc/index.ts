@@ -1797,6 +1797,9 @@ export interface ProjectSettingsView {
   correction_script?: string;
   prefer_proxies: boolean;
   proxy_overrides: Record<string, boolean>;
+  /// When false, the import/open fan-out skips building the preview (quick)
+  /// proxy; export masters are unaffected. Default true.
+  generate_preview_proxies: boolean;
   /// `null` on a project nobody has tuned — read as "whatever the detector
   /// defaults to", which is what keeps every threshold literal in Rust.
   shot_review: ShotReviewSettings | null;
@@ -1807,6 +1810,7 @@ export interface ProjectSettingsView {
 export interface ProjectSettingsPatch {
   correction_script?: string;
   prefer_proxies?: boolean;
+  generate_preview_proxies?: boolean;
   proxy_override?: { media_id: string; value: boolean | null };
   /// `null` clears the tuning and restores the detection defaults. Refused
   /// whole if `sensitivity` is outside [0, 1] or `min_shot_us` is not a

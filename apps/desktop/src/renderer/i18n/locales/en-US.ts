@@ -1782,6 +1782,9 @@ const enUS = {
     prefer_proxies: "Prefer proxies for preview",
     prefer_proxies_hint:
       "Play the lightweight 720p proxy in the preview for clips that have one, for smoother scrubbing. Export still uses the original.",
+    generate_preview_proxies: "Generate preview proxies",
+    generate_preview_proxies_hint:
+      "Build the lightweight 720p preview proxy for clips that need one. Turn off to skip the background transcode entirely — preview then decodes the original. Export is unaffected.",
     decode_unsupported_generate_proxy: "Generate proxy",
     keybindings_blurb:
       "Manage your keyboard shortcut configuration table.",

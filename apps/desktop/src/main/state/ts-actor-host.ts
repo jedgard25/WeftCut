@@ -242,7 +242,7 @@ export function createTsActorHost(deps: TsActorHostDeps): TsActorHost {
   const hybridDeps: HybridDeps = {
     actor,
     compute: deps.compute,
-    enqueueDerivatives: async (items) => { await deps.napi.enqueueJobsForMedia(JSON.stringify(items)) },
+    enqueueDerivatives: async (items) => { await deps.napi.enqueueJobsForMedia(JSON.stringify(items), actor.snapshot().settings.generate_preview_proxies) },
     enqueueWorkspaceCopy: deps.enqueueWorkspaceCopy,
     workspaceDir: deps.workspaceDir,
     readFile: deps.readFile,

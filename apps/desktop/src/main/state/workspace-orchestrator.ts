@@ -29,7 +29,7 @@ export interface WorkspaceNapi {
   /** jobs::enqueue_for_media per media item (open-time derivative re-fan-out +
    *  stale-proxy invalidation). mediaItemsJson = JSON array of serialized
    *  MediaItem. Async napi binding → Promise; the factory fire-and-forgets it. */
-  enqueueJobsForMedia(mediaItemsJson: string): Promise<void> | void
+  enqueueJobsForMedia(mediaItemsJson: string, generatePreviewProxies: boolean): Promise<void> | void
 }
 
 /** Filesystem shell, injected so the orchestrator stays unit-testable. */
@@ -216,7 +216,7 @@ export interface NewWorkspaceArgs {
 export function makeEnqueueDerivatives(
   napi: Pick<WorkspaceNapi, 'enqueueJobsForMedia'>,
 ): (project: Project) => void {
-  return (project) => { void napi.enqueueJobsForMedia(JSON.stringify(Object.values((serializeProject(project) as { media_pool: Record<string, unknown> }).media_pool))) }
+  return (project) => { void napi.enqueueJobsForMedia(JSON.stringify(Object.values((serializeProject(project) as { media_pool: Record<string, unknown> }).media_pool)), project.settings.generate_preview_proxies) }
 }
 
 /** project_new_workspace. Validate → blank project with

@@ -41,7 +41,7 @@ import {
   useTailSnapStrengthPx,
   useTimelineWheelAxis,
 } from "./appSettingsStore";
-import { setPreferProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
+import { setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
 import {
   FPS_OPTIONS,
   RESOLUTION_PRESETS,
@@ -328,6 +328,7 @@ export function SettingsPanel({
               <section className="settings-section">
                 <h3>{t("settings.playback_heading")}</h3>
                 <PreferProxiesToggle onError={setError} />
+                <GeneratePreviewProxiesToggle onError={setError} />
               </section>
             </div>
           )}
@@ -623,6 +624,44 @@ function PreferProxiesToggle({
         </span>
         <span className="settings-toggle-hint">
           {t("settings.prefer_proxies_hint")}
+        </span>
+      </span>
+    </label>
+  );
+}
+
+/// Per-project toggle (`Project.settings.generate_preview_proxies`) — stops the
+/// import/open fan-out from building the preview (quick) proxy at all. Export
+/// masters are unaffected: a source whose export needs one still gets it on
+/// demand. Use this when a clip previews fine from the original and the proxy
+/// transcode is unwanted background load.
+function GeneratePreviewProxiesToggle({
+  onError,
+}: {
+  onError: (msg: string) => void;
+}) {
+  const { t } = useTranslation();
+  const enabled = useProxyPrefStore((s) => s.generatePreviewProxies);
+
+  return (
+    <label className="settings-toggle-row">
+      <AppSwitch
+        checked={enabled}
+        onCheckedChange={async (next) => {
+          onError("");
+          try {
+            await setGeneratePreviewProxies(next);
+          } catch (err) {
+            onError(String(err));
+          }
+        }}
+      />
+      <span>
+        <span className="settings-toggle-label">
+          {t("settings.generate_preview_proxies")}
+        </span>
+        <span className="settings-toggle-hint">
+          {t("settings.generate_preview_proxies_hint")}
         </span>
       </span>
     </label>

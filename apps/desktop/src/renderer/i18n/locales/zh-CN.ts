@@ -1541,6 +1541,9 @@ const zhCN: Resources = {
     prefer_proxies: "预览优先使用代理",
     prefer_proxies_hint:
       "对已生成代理的片段，在预览中播放轻量的 720p 代理以获得更流畅的拖拽体验；导出仍使用原始文件。",
+    generate_preview_proxies: "生成预览代理",
+    generate_preview_proxies_hint:
+      "为需要的片段生成轻量的 720p 预览代理。关闭后将完全跳过后台转码，预览直接解码原始文件；导出不受影响。",
     decode_unsupported_generate_proxy: "生成代理",
     keybindings_blurb:
       "管理你的快捷键配置表。",

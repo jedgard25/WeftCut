@@ -12,14 +12,18 @@ import { useProjectStore } from "./projectStore";
 
 interface ProxyPrefState {
   preferProxies: boolean;
+  /// When false the import/open fan-out skips building the preview (quick)
+  /// proxy. Mirrors `ProjectSettings.generate_preview_proxies`.
+  generatePreviewProxies: boolean;
   overrides: Record<string, boolean>;
-  hydrate: (v: { preferProxies: boolean; overrides: Record<string, boolean> }) => void;
+  hydrate: (v: { preferProxies: boolean; generatePreviewProxies: boolean; overrides: Record<string, boolean> }) => void;
 }
 
 export const useProxyPrefStore = create<ProxyPrefState>((set) => ({
   preferProxies: false,
+  generatePreviewProxies: true,
   overrides: {},
-  hydrate: (v) => set({ preferProxies: v.preferProxies, overrides: v.overrides }),
+  hydrate: (v) => set({ preferProxies: v.preferProxies, generatePreviewProxies: v.generatePreviewProxies, overrides: v.overrides }),
 }));
 
 /** Effective per-clip intent: a per-clip override wins over the global toggle. */
@@ -31,6 +35,11 @@ export function proxyIntent(mediaId: string): boolean {
 export async function setPreferProxies(v: boolean): Promise<void> {
   await updateProjectSettings({ prefer_proxies: v });
   useProxyPrefStore.setState({ preferProxies: v });
+}
+
+export async function setGeneratePreviewProxies(v: boolean): Promise<void> {
+  await updateProjectSettings({ generate_preview_proxies: v });
+  useProxyPrefStore.setState({ generatePreviewProxies: v });
 }
 
 export async function setProxyOverride(mediaId: string, value: boolean | null): Promise<void> {
@@ -46,7 +55,7 @@ export async function setProxyOverride(mediaId: string, value: boolean | null): 
 async function rehydrate(): Promise<void> {
   try {
     const v = await getProjectSettings();
-    useProxyPrefStore.getState().hydrate({ preferProxies: v.prefer_proxies, overrides: v.proxy_overrides });
+    useProxyPrefStore.getState().hydrate({ preferProxies: v.prefer_proxies, generatePreviewProxies: v.generate_preview_proxies, overrides: v.proxy_overrides });
   } catch {
     // No project loaded yet — keep defaults.
   }

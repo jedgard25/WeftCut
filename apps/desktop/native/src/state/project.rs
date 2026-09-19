@@ -150,6 +150,11 @@ pub struct ProjectSettings {
     /// `shot_review` is declared here.
     #[serde(default)]
     pub pause_review: Option<PauseReviewSettings>,
+    /// When `false`, the automatic import/open fan-out does NOT build the
+    /// preview (quick) proxy. Export masters are unaffected: a source whose
+    /// export needs one still gets it on demand. Default `true`.
+    #[serde(default = "default_generate_preview_proxies")]
+    pub generate_preview_proxies: bool,
 }
 
 /// Twin of TS `ShotReviewSettings`: the threshold and minimum shot length a
@@ -175,6 +180,10 @@ pub struct PauseReviewSettings {
 }
 
 fn default_auto_pair_audio_on_import() -> bool {
+    true
+}
+
+fn default_generate_preview_proxies() -> bool {
     true
 }
 
@@ -219,6 +228,7 @@ impl Default for ProjectSettings {
             proxy_overrides: Default::default(),
             shot_review: None,
             pause_review: None,
+            generate_preview_proxies: true,
         }
     }
 }

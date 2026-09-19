@@ -357,7 +357,11 @@ impl Backend {
     /// actor's pool values).
     #[napi]
     #[cfg(feature = "jobs")]
-    pub async fn enqueue_jobs_for_media(&self, media_items_json: String) -> napi::Result<()> {
+    pub async fn enqueue_jobs_for_media(
+        &self,
+        media_items_json: String,
+        generate_preview_proxies: bool,
+    ) -> napi::Result<()> {
         use crate::jobs::proxy::PROXY_FORMAT_VERSION;
         let items: Vec<crate::state::MediaItem> = serde_json::from_str(&media_items_json)
             .map_err(|e| Error::from_reason(format!("parse media list: {e}")))?;
@@ -389,6 +393,7 @@ impl Backend {
                 self.log_slot.clone(),
                 self.cache.clone(),
                 item,
+                generate_preview_proxies,
             );
         }
         Ok(())

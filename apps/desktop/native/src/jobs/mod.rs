@@ -371,6 +371,7 @@ pub fn enqueue_for_media(
     log_slot: LogBusSlot,
     cache: CacheLayout,
     media: MediaItem,
+    generate_preview_proxies: bool,
 ) {
     match media.kind {
         MediaKind::Video => {
@@ -378,7 +379,7 @@ pub fn enqueue_for_media(
             // their decorations re-fanned; everything else (re-)runs the routing
             // decision — see `proxy_decision::route_needs_decision`.
             if proxy_decision::route_needs_decision(&media.decode_route) {
-                spawn_proxy_decision(events, log_slot, cache, media);
+                spawn_proxy_decision(events, log_slot, cache, media, generate_preview_proxies);
             } else {
                 spawn_decorations(events, log_slot, cache, media);
             }
@@ -514,6 +515,7 @@ fn spawn_proxy_decision(
     log_slot: LogBusSlot,
     cache: CacheLayout,
     media: MediaItem,
+    generate_preview_proxies: bool,
 ) {
     tokio::spawn(async move {
         let media_id = media.id;
@@ -642,17 +644,32 @@ fn spawn_proxy_decision(
                     },
                 );
                 // Thumbnails + waveform off the original; preview proxy in the
-                // background WITHOUT chaining a full proxy.
+                // background WITHOUT chaining a full proxy — unless the project
+                // turned preview proxies off, in which case export already reads
+                // the original and there is nothing to build.
                 spawn_decorations(
                     events.clone(),
                     log_slot.clone(),
                     cache.clone(),
                     media.clone(),
                 );
-                spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
+                if generate_preview_proxies {
+                    spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
+                } else {
+                    info!("preview proxies disabled; skipping quick proxy for {media_id}");
+                }
             }
             proxy_decision::ProxyJob::QuickThenFull => {
-                spawn_quick_proxy(events, log_slot, cache, media, true, source_gop_secs);
+                if generate_preview_proxies {
+                    spawn_quick_proxy(events, log_slot, cache, media, true, source_gop_secs);
+                } else {
+                    // No preview proxy: go straight to the export master, which
+                    // spawns the decorations off it when it lands.
+                    info!(
+                        "preview proxies disabled; building the export master directly for {media_id}"
+                    );
+                    spawn_proxy(events, log_slot, cache, media);
+                }
             }
         }
     });
@@ -1251,7 +1268,7 @@ mod tests {
 
         let sink = Arc::new(VecEventSink::new());
         let events: Arc<dyn EventSink> = sink.clone();
-        spawn_proxy_decision(events, crate::logs::LogBusSlot::new(), cache.clone(), media);
+        spawn_proxy_decision(events, crate::logs::LogBusSlot::new(), cache.clone(), media, true);
 
         // The adopt commit is the first thing the spawned task does; poll for it.
         let mut adopted = None;
