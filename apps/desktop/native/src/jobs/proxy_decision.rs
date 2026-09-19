@@ -145,6 +145,12 @@ pub fn route_needs_decision(route: &DecodeRoute) -> bool {
             full_proxy: Some(p),
             ..
         } => !p.is_file(),
+        // A persisted DirectExport quick proxy that still resolves is a decided,
+        // ready route: reopen re-fans decorations only, with no re-decision
+        // (which would re-probe the source GOP) and no rebuild.
+        DecodeRoute::DirectExport {
+            quick_proxy: Some(p),
+        } => !p.is_file(),
         _ => true,
     }
 }
@@ -555,6 +561,23 @@ mod tests {
             quick_proxy: None,
             full_proxy: Some("/no/such/file.mp4".into()),
             format_version: 0,
+        }));
+    }
+
+    #[test]
+    fn persisted_direct_export_quick_proxy_skips_decision_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = dir.path().join("clip.quick-q5.mp4");
+        std::fs::write(&proxy, b"proxy").unwrap();
+        // A landed quick proxy is a ready preview source: reopen must not
+        // re-decide (which would re-probe the source GOP) or rebuild it.
+        assert!(!route_needs_decision(&DecodeRoute::DirectExport {
+            quick_proxy: Some(proxy.clone()),
+        }));
+        // Gone from disk → re-decide so the job layer rebuilds it.
+        std::fs::remove_file(&proxy).unwrap();
+        assert!(route_needs_decision(&DecodeRoute::DirectExport {
+            quick_proxy: Some(proxy),
         }));
     }
 }

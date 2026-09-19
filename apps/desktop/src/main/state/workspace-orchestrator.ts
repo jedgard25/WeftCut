@@ -103,7 +103,7 @@ export async function openProject(deps: OrchestratorDeps, dir: string): Promise<
   // the doomed pre-open bus (or nowhere at all on a fresh launch) and silently
   // vanishes — the same trap `OrchestratorDeps.onRelink` documents. Object
   // identity cannot carry the report instead: `reconcileMediaPaths` and
-  // `clearSessionQuickProxies` both spread into fresh objects, so a WeakMap keyed on
+  // `reconcileQuickProxies` both spread into fresh objects, so a WeakMap keyed on
   // the parsed project is already dead by the time `replaceState` runs.
   let gridRepairs: readonly GridRepair[] = []
   // The schema gate inside already refuses in the workspace vocabulary; what is
@@ -113,15 +113,20 @@ export async function openProject(deps: OrchestratorDeps, dir: string): Promise<
   // left to say, so it rides along as `detail` rather than being discarded.
   let loaded: ReturnType<typeof loadProjectFromJson>
   try {
-    loaded = loadProjectFromJson(text, { dir, join, onGridRepair: (r) => { gridRepairs = r } })
+    loaded = loadProjectFromJson(text, {
+      dir,
+      join,
+      quickProxyExists: (p) => fs.exists(p),
+      onGridRepair: (r) => { gridRepairs = r },
+    })
   } catch (e) {
     if (isWorkspaceFailure(e)) throw e
     throw new WorkspaceFailure({ error: 'ProjectFileUnreadable', detail: String(e) })
   }
   let project = loaded.project
-  const { quickProxiesToDelete } = loaded
-  // Best-effort: never fail the open on a leftover proxy we couldn't remove.
-  for (const p of quickProxiesToDelete) { try { fs.rm(p) } catch { /* ignore */ } }
+  const { staleQuickProxies } = loaded
+  // Best-effort: never fail the open on a stale proxy we couldn't remove.
+  for (const p of staleQuickProxies) { try { fs.rm(p) } catch { /* ignore */ } }
 
   // A schema upgrade happened in memory only; project.json still holds the old
   // bytes until the first edit's autosave overwrites it. Preserve them NOW —
