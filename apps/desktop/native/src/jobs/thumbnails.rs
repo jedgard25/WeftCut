@@ -1,5 +1,6 @@
-//! Thumbnail extraction: one ffmpeg invocation per media item pulls
-//! `THUMB_COUNT` evenly-spaced frames, scaled to `THUMB_WIDTH` (aspect kept).
+//! Thumbnail extraction: one ffmpeg invocation per poster seeks to a
+//! `THUMB_COUNT`-even bucket midpoint and grabs a single frame, scaled to
+//! `THUMB_WIDTH` (aspect kept).
 //!
 //! Cache layout: `<cache>/thumbnails/<file_hash>/000.jpg ..`; a set counts as
 //! cached only when every JPG is present and non-empty.
@@ -7,19 +8,17 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use crate::ffmpeg::{ffmpeg_is_installed, ffmpeg_path};
+use crate::ffmpeg::ffmpeg_is_installed;
 use anyhow::{anyhow, Context, Result};
-use tokio::process::Command;
-
-use crate::process::NoConsoleWindow;
 
 use crate::cache::{cached_ok, CacheLayout};
+use crate::jobs::hwaccel;
 use crate::state::MediaItem;
 
 const THUMB_COUNT: usize = 10;
 const THUMB_WIDTH: u32 = 320;
-/// Below this, the fps filter pushes too high and ffmpeg refuses (or emits
-/// fewer than N frames). Skip thumbnail generation for these.
+/// Below this, the per-poster buckets collapse onto the same frame. Skip
+/// thumbnail generation for these.
 const MIN_DURATION_US: i64 = 100_000;
 
 pub async fn run(cache: &CacheLayout, media: &MediaItem) -> Result<PathBuf> {
@@ -60,66 +59,82 @@ pub async fn run(cache: &CacheLayout, media: &MediaItem) -> Result<PathBuf> {
         .with_context(|| format!("create thumbnails tmp dir {}", tmp_dir.display()))?;
 
     let duration_s = duration_us as f64 / 1_000_000.0;
-    let fps = THUMB_COUNT as f64 / duration_s;
 
-    let pattern = tmp_dir.join("%03d.jpg");
+    // `-ss` at or past the last frame makes ffmpeg hand the mjpeg encoder an
+    // EOF frame it refuses ("Non full-range YUV is non-standard, set
+    // strict_std_compliance…"), so clamp every seek one frame inside the
+    // source — mirrors filmstrip's TAIL_SLACK_US. Falls back to 100 ms when
+    // the probe carried no fps.
+    let tail_slack_s = media
+        .metadata
+        .video
+        .as_ref()
+        .filter(|v| v.fps_num > 0 && v.fps_den > 0)
+        .map(|v| v.fps_den as f64 / v.fps_num as f64)
+        .unwrap_or(0.1);
+    let max_seek_s = (duration_s - tail_slack_s).max(0.0);
 
-    // -an drops audio (we only want frames). -q:v 5 = mid-quality JPG, ~30 KB
-    // per thumbnail. The fps filter rounds, so `-frames:v` is what caps the set
-    // at exactly `THUMB_COUNT`; -fps_mode passthrough so the fps filter's
-    // output isn't second-guessed.
-    let status = Command::new(ffmpeg_path())
-        .no_console_window()
-        // Reap on future-drop so no orphan keeps writing the temp dir; see
-        // hwaccel.rs.
-        .kill_on_drop(true)
-        .args(["-y", "-hide_banner", "-nostats", "-loglevel", "error", "-i"])
-        .arg(&media.path_abs)
-        .args([
-            "-an",
-            "-vf",
-            &format!("fps={fps:.6},scale={THUMB_WIDTH}:-2"),
-            "-frames:v",
-            &THUMB_COUNT.to_string(),
-            "-q:v",
-            "5",
-            "-fps_mode",
-            "passthrough",
-        ])
-        .arg(&pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    // One seek-and-grab per poster. `-ss` BEFORE `-i` is the fast seek (see
+    // jobs/frame.rs): ffmpeg jumps to the nearest keyframe and walks to the
+    // timestamp. The previous shape fed a single `fps=THUMB_COUNT/duration`
+    // filter, which is NOT a seek — it decodes the whole source from t=0 and
+    // discards all but THUMB_COUNT frames (minutes of every-core CPU on a long
+    // 4K source). `output_with_hw_decode_fallback` also hardware-decodes when
+    // the platform offers it, with a software retry. -an drops audio; -q:v 5
+    // is a mid-quality JPG; -update 1 + -f image2 writes one file per seek.
+    for i in 0..THUMB_COUNT {
+        // Sample the middle of each of the THUMB_COUNT even buckets, so the
+        // set spans the clip without landing on a boundary frame, then clamp
+        // inside the source so the tail bucket can't seek past the last frame.
+        let t_seconds = (duration_s * (i as f64 + 0.5) / THUMB_COUNT as f64).min(max_seek_s);
+        let out_path = tmp_dir.join(format!("{i:03}.jpg"));
+
+        let output = hwaccel::output_with_hw_decode_fallback("thumbnails", |use_hw, cmd| {
+            cmd.args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"]);
+            if use_hw {
+                hwaccel::push_hwaccel_args(cmd);
+            }
+            cmd.args(["-ss", &format!("{t_seconds}")])
+                .arg("-i")
+                .arg(&media.path_abs)
+                .args([
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    &format!("scale={THUMB_WIDTH}:-2"),
+                    "-q:v",
+                    "5",
+                    "-update",
+                    "1",
+                    "-f",
+                    "image2",
+                ])
+                .arg(&out_path)
+                .stdin(Stdio::null());
+        })
         .await
         .context("spawn ffmpeg for thumbnails")?;
 
-    if !status.success() {
-        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
-        anyhow::bail!("ffmpeg exited with {status} for thumbnail extraction");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+            anyhow::bail!(
+                "ffmpeg exited with {} for thumbnail {i}: {}",
+                output.status,
+                stderr.trim()
+            );
+        }
     }
 
-    // Verify ffmpeg actually produced N non-empty thumbnails before promoting.
+    // Verify every poster landed non-empty before promoting.
     for i in 0..THUMB_COUNT {
-        let p = tmp_dir.join(format!("{:03}.jpg", i + 1));
+        let p = tmp_dir.join(format!("{i:03}.jpg"));
         if !cached_ok(&p) {
             let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
             anyhow::bail!(
                 "ffmpeg produced incomplete thumbnail set at {}",
                 tmp_dir.display()
             );
-        }
-    }
-
-    // ffmpeg's %03d pattern is 1-indexed; rename to 0-indexed for stable
-    // public layout.
-    for i in 0..THUMB_COUNT {
-        let from = tmp_dir.join(format!("{:03}.jpg", i + 1));
-        let to = tmp_dir.join(format!("{:03}.jpg", i));
-        if from != to {
-            tokio::fs::rename(&from, &to)
-                .await
-                .with_context(|| format!("rename {} -> {}", from.display(), to.display()))?;
         }
     }
 
@@ -143,6 +158,7 @@ mod tests {
     use chrono::Utc;
     use std::process::Command as StdCommand;
     use tempfile::TempDir;
+    use tokio::process::Command;
 
     use crate::state::{new_id, DecodeRoute, MediaKind, MediaMetadata};
 
