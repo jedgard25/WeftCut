@@ -55,8 +55,9 @@ const BUILDS = {
   // shared but --enable-gpl. So the mac leg builds FFmpeg n8.1 from the pinned
   // release tarball: LGPL-clean by construction (--enable-shared, no
   // --enable-gpl/--enable-nonfree), single-arch (host), zero non-system deps
-  // (configure autodetect picks up Apple frameworks only), so the staged
-  // dylibs are as self-contained as BtbN's. The hard sha256 pin is the
+  // (Apple frameworks only — xlib/libxcb are disabled explicitly, since a
+  // Homebrew-equipped build host would otherwise autodetect and bake them in),
+  // so the staged dylibs are as self-contained as BtbN's. The hard sha256 pin is the
   // integrity gate (ffmpeg.org publishes only a GPG .asc), mirroring the
   // LIBVA .deb pins below.
   mac: {
@@ -323,10 +324,19 @@ function buildMacFromSource(cfg, dest, manifestPath) {
     // LGPL-clean by construction: --enable-shared without --enable-gpl /
     // --enable-nonfree; x264/x265 (GPL) stay off. --disable-ffplay keeps the
     // build independent of an SDL2 that may or may not be installed.
+    // --disable-xlib/--disable-libxcb keep the staged dylibs free of X11: if
+    // the build host has Homebrew's libx11/libxcb (GitHub's macos-latest
+    // runners do), configure autodetects them and bakes ABSOLUTE
+    // /opt/homebrew/opt/... install names into libavdevice/libswscale. Those
+    // refs survive rewriteMacInstallNames (which only rewrites refs under
+    // libDir), so the shipped addon then fails to dlopen on any machine
+    // without those formulae — the "Standard ffmpeg unavailable" trap. X11 is
+    // useless to a bundled decoder, so drop it at the source.
     const configureArgs = [
       `--prefix=${prefix}`,
       '--enable-shared', '--disable-static',
       '--disable-debug', '--disable-doc', '--disable-ffplay',
+      '--disable-xlib', '--disable-libxcb',
     ]
     execSync(`./configure ${configureArgs.join(' ')}`, { cwd: src, stdio: 'inherit' })
     execSync(`make -j${cpus().length}`, { cwd: src, stdio: 'inherit' })
