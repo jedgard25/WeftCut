@@ -42,6 +42,25 @@ pub fn push_hwaccel_args(cmd: &mut Command) {
     }
 }
 
+/// Native ffmpeg `-c:v` hardware H.264 encoder for the current OS, if any.
+///
+/// Used for LOCAL, preview-only derivatives (the quick proxy), where encode
+/// speed and power draw matter more than bit-exact portability. macOS gets
+/// VideoToolbox — an OS framework present on every Mac. Windows/Linux return
+/// `None`: NVENC/VAAPI are not universally present, and a failed hardware
+/// attempt followed by a software retry on every proxy build is worse than the
+/// predictable libx264 path.
+pub fn preferred_hw_encoder() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        Some("h264_videotoolbox")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Run an ffmpeg transcode command, trying hardware decode first when
 /// available. `build` receives `use_hw=true` for the first attempt.
 pub async fn output_with_hw_decode_fallback<F>(label: &str, mut build: F) -> Result<Output>

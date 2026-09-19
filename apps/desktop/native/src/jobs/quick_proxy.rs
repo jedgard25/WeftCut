@@ -13,6 +13,8 @@ use tokio::process::Command;
 
 use crate::process::NoConsoleWindow;
 
+use tracing::warn;
+
 use crate::cache::{cached_ok, claim_temp, discard_temp, promote_temp_retry, CacheLayout};
 use crate::jobs::hwaccel;
 use crate::state::MediaItem;
@@ -124,52 +126,27 @@ async fn run_fast_transcode(media: &MediaItem, tmp: &Path) -> Result<()> {
     let input = media.path_abs.clone();
 
     let color_args = crate::jobs::proxy::source_color_args(media);
-    let output = hwaccel::output_with_hw_decode_fallback("quick proxy", |hw, cmd| {
-        cmd.args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"]);
-        if hw {
-            hwaccel::push_hwaccel_args(cmd);
-        }
-        cmd.arg("-i").arg(&input).args([
-            "-vf",
-            &scale_filter,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-crf",
-            "30",
-            "-profile:v",
-            "high",
-            "-level:v",
-            "4.2",
-            "-g",
-            &gop,
-            "-keyint_min",
-            &gop,
-            "-bf",
-            "0",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-movflags",
-            "+faststart+write_colr",
-            "-f",
-            "mp4",
-        ]);
-        // Source color tags → VUI AND (with +write_colr) the mp4 colr atom;
-        // see `proxy::source_color_args`.
-        cmd.args(&color_args);
-        cmd.arg(tmp)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-    })
-    .await
-    .context("quick proxy transcode")?;
 
+    // Prefer the platform hardware encoder (VideoToolbox on macOS). This proxy
+    // is local and preview-only, so portability across machines is not a
+    // concern — speed and power are, and VideoToolbox encodes several times
+    // faster than libx264 without pinning a core. libx264 stays the fallback
+    // (and the only encoder on platforms that advertise none).
+    if let Some(encoder) = hwaccel::preferred_hw_encoder() {
+        let output =
+            run_quick_proxy_encode(encoder, &input, tmp, &scale_filter, &gop, &color_args).await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "quick proxy: {encoder} encode failed, retrying with libx264: {}",
+            stderr.trim()
+        );
+    }
+
+    let output =
+        run_quick_proxy_encode("libx264", &input, tmp, &scale_filter, &gop, &color_args).await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!(
@@ -179,6 +156,50 @@ async fn run_fast_transcode(media: &MediaItem, tmp: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// One quick-proxy encode attempt with `encoder` (`h264_videotoolbox` or
+/// `libx264`). `-y` overwrites `tmp`, so a failed hardware attempt can be
+/// retried with the software encoder against the same path.
+async fn run_quick_proxy_encode(
+    encoder: &str,
+    input: &Path,
+    tmp: &Path,
+    scale_filter: &str,
+    gop: &str,
+    color_args: &[String],
+) -> Result<std::process::Output> {
+    hwaccel::output_with_hw_decode_fallback("quick proxy", |hw, cmd| {
+        cmd.args(["-y", "-hide_banner", "-nostats", "-loglevel", "error"]);
+        if hw {
+            hwaccel::push_hwaccel_args(cmd);
+        }
+        cmd.arg("-i")
+            .arg(input)
+            .args(["-vf", scale_filter, "-c:v", encoder]);
+        if encoder == "libx264" {
+            // Software: ultrafast + CRF matches the historical recipe.
+            cmd.args(["-preset", "ultrafast", "-crf", "30"]);
+        } else {
+            // VideoToolbox is rate-controlled, not CRF: a plain 720p target
+            // bitrate (`-q:v` is opaque and drifts with the OS encoder).
+            cmd.args(["-b:v", "2M"]);
+        }
+        cmd.args([
+            "-profile:v", "high", "-level:v", "4.2", "-g", gop, "-keyint_min", gop, "-bf", "0",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags",
+            "+faststart+write_colr", "-f", "mp4",
+        ]);
+        // Source color tags → VUI AND (with +write_colr) the mp4 colr atom;
+        // see `proxy::source_color_args`.
+        cmd.args(color_args);
+        cmd.arg(tmp)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+    })
+    .await
+    .context("quick proxy transcode")
 }
 
 #[cfg(test)]
