@@ -1148,6 +1148,12 @@ pub(super) struct TranscribeClipArgs {
     /// `word_timing` reports what you got.
     #[serde(default)]
     pub word_timestamps: Option<bool>,
+    /// `"engine"` (default: the engine's own segments) or `"sentence"`
+    /// (re-segmented into sentences — merged across sub-pause gaps and terminal
+    /// punctuation, word spans kept — the caption-ready shape for
+    /// `apply_transcripts`). The cache always stores engine segments.
+    #[serde(default)]
+    pub segment: Option<String>,
     /// Injected by the TS MCP host (sole state owner) — see DetectPausesArgs.
     /// `skip_serializing` keeps the slice out of the tool's log details.
     #[serde(default, skip_serializing)]
@@ -1438,22 +1444,74 @@ pub(super) async fn transcribe_clip(
             .find(|b| b.as_str() == tag)
     });
 
-    let (used_backend, transcriber) = {
+    let (used_backend, transcriber, model_id) = {
         let cfg = b.speech_config.lock().expect("speech_config poisoned");
         match explicit.or(preferred) {
-            Some(b) => (
-                b,
-                // Strict-resolution failures are the caller's/config's to fix
-                // (wrong choice or missing key/binary/model) → invalid_request,
-                // not internal_error.
-                speech::resolve_transcriber_exact(b, &cfg)
-                    .map_err(|e| McpToolError::invalid_request(e.to_string(), None))?,
-            ),
-            None => speech::resolve_transcriber(preferred, &cfg).ok_or_else(|| {
-                McpToolError::invalid_request(speech::NO_TRANSCRIBER_CONFIGURED, None)
-            })?,
+            Some(b) => {
+                let id = speech::model_identity(b, cfg.get(b.as_str()));
+                (
+                    b,
+                    // Strict-resolution failures are the caller's/config's to fix
+                    // (wrong choice or missing key/binary/model) → invalid_request,
+                    // not internal_error.
+                    speech::resolve_transcriber_exact(b, &cfg)
+                        .map_err(|e| McpToolError::invalid_request(e.to_string(), None))?,
+                    id,
+                )
+            }
+            None => {
+                let (b, t) = speech::resolve_transcriber(preferred, &cfg).ok_or_else(|| {
+                    McpToolError::invalid_request(speech::NO_TRANSCRIBER_CONFIGURED, None)
+                })?;
+                // resolve_transcriber returns (backend, transcriber); re-derive
+                // the identity from the same config it just read.
+                let id = speech::model_identity(b, cfg.get(b.as_str()));
+                (b, t, id)
+            }
         }
     };
+
+    let want_words = args.word_timestamps.unwrap_or(true);
+    let sentence = match args.segment.as_deref() {
+        None | Some("engine") => false,
+        Some("sentence") => true,
+        Some(other) => {
+            return Err(McpToolError::invalid_params(
+                format!("unknown segment {other:?}; expected \"engine\" or \"sentence\""),
+                None,
+            ));
+        }
+    };
+
+    // Durable-transcript fast path: a window this source already covered under
+    // this exact key is served from the sidecar with no audio extract and no
+    // engine spawn — the re-transcribe-per-session waste ends here. The stored
+    // segments are source-absolute; the shift below places them on the
+    // CURRENT layer mapping, so the answer survives timeline edits the way a
+    // fresh transcription would.
+    let key = speech::transcript_cache_key(
+        &resolved.source_hash,
+        used_backend.as_str(),
+        &model_id,
+        args.language.as_deref(),
+        want_words,
+    );
+    let dest = b.cache.transcript(&key);
+    crate::cache::touch_if_stale(&dest);
+    if crate::cache::cached_ok(&dest) {
+        if let Some(cached) = read_transcript_cache(&dest).await? {
+            if cached.covers(resolved.source_in_us, resolved.source_out_us) {
+                let mut transcript = speech::Transcript {
+                    segments: cached.segments_in(resolved.source_in_us, resolved.source_out_us),
+                    language: cached.language.clone(),
+                    word_timing: cached.word_timing.unwrap_or(speech::WordTiming::None),
+                };
+                // Source-absolute → timeline-absolute on the current mapping.
+                transcript.shift(resolved.timeline_start_us - resolved.source_in_us);
+                return transcript_tool_result(used_backend.as_str(), &mut transcript, sentence);
+            }
+        }
+    }
 
     let audio_path = speech::audio_extract::extract_audio_window(
         &b.cache,
@@ -1468,8 +1526,8 @@ pub(super) async fn transcribe_clip(
     let raw = transcriber
         .transcribe(speech::TranscribeRequest {
             audio_path,
-            language: args.language,
-            want_word_timing: args.word_timestamps.unwrap_or(true),
+            language: args.language.clone(),
+            want_word_timing: want_words,
         })
         .await
         .map_err(map_speech_error)?;
@@ -1477,17 +1535,97 @@ pub(super) async fn transcribe_clip(
     // Normalize the backend's raw style → one Transcript, then place the
     // audio-slice-relative times on the timeline.
     let mut transcript = speech::parse_raw(raw).map_err(map_speech_error)?;
-    transcript.shift(resolved.timeline_start_us);
 
+    // Write-through: the same transcript in SOURCE-absolute time merges into
+    // the sidecar `media://{id}/transcript` reads. A best-effort write — a
+    // cache failure must not fail a transcription that already succeeded.
+    {
+        let mut source_abs = transcript.clone();
+        source_abs.shift(resolved.source_in_us);
+        let mut cache = read_transcript_cache(&dest).await?.unwrap_or_default();
+        cache.merge_window(
+            resolved.source_in_us,
+            resolved.source_out_us,
+            source_abs.segments,
+            transcript.language.clone(),
+            transcript.word_timing,
+        );
+        if let Err(e) = write_transcript_atomic(&dest, &cache).await {
+            tracing::warn!("transcript cache write {}: {e:#}", dest.display());
+        }
+    }
+
+    transcript.shift(resolved.timeline_start_us);
+    transcript_tool_result(used_backend.as_str(), &mut transcript, sentence)
+}
+
+/// Shape a timeline-absolute [`speech::Transcript`] as the `transcribe_clip`
+/// envelope both cache-hit and freshly-transcribed paths return, applying the
+/// sentence view when requested and rendering the SRT from the final segments.
+#[cfg(feature = "speech")]
+fn transcript_tool_result(
+    backend: &str,
+    transcript: &mut speech::Transcript,
+    sentence: bool,
+) -> Result<ToolResult, McpToolError> {
+    if sentence {
+        transcript.segments = transcript.sentences();
+    }
     let srt = transcript.render_srt();
     let result = TranscribeClipResult {
-        backend: used_backend.as_str(),
+        backend,
         segments: &transcript.segments,
         language: transcript.language.as_deref(),
         word_timing: transcript.word_timing,
         srt,
     };
     ToolResult::json(&result)
+}
+
+/// Read a transcript sidecar, returning `None` when it is missing or
+/// unreadable (a corrupt entry is a miss, not a failure — the next transcribe
+/// recomputes and overwrites it). Errors only on internal I/O shape problems
+/// via `McpToolError`, matching the description reader's contract.
+#[cfg(feature = "speech")]
+async fn read_transcript_cache(
+    dest: &std::path::Path,
+) -> Result<Option<speech::TranscriptCache>, McpToolError> {
+    let bytes = match tokio::fs::read(dest).await {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
+    match serde_json::from_slice::<speech::TranscriptCache>(&bytes) {
+        Ok(c) => Ok(Some(c)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Persist a `TranscriptCache` JSON atomically (temp → promote), mirroring
+/// `write_description_atomic`.
+#[cfg(feature = "speech")]
+async fn write_transcript_atomic(
+    dest: &std::path::Path,
+    cache: &speech::TranscriptCache,
+) -> Result<(), anyhow::Error> {
+    use crate::cache::{cached_ok, discard_temp, promote_temp, temp_path};
+    use anyhow::Context;
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("ensure {}", parent.display()))?;
+    }
+    let body = serde_json::to_vec_pretty(cache).context("serialize transcript cache")?;
+    let tmp = temp_path(dest);
+    let _ = tokio::fs::remove_file(&tmp).await;
+    tokio::fs::write(&tmp, &body)
+        .await
+        .with_context(|| format!("write {}", tmp.display()))?;
+    if !cached_ok(&tmp) {
+        discard_temp(dest);
+        anyhow::bail!("transcript cache is empty after write");
+    }
+    promote_temp(dest)?;
+    Ok(())
 }
 
 // ============================================================

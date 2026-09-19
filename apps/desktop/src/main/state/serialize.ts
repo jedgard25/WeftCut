@@ -1,5 +1,5 @@
 import { SCHEMA_VERSION, defaultSettings, type Animated, type Link, type Project } from './model'
-import { frameGrid, gridForLayerKind, snapOnGrid, snapUpOnGrid, type Grid } from './snap'
+import { frameGrid, gridForLayerKind, isCanonicalOnGrid, snapOnGrid, snapUpOnGrid, type Grid } from './snap'
 import { scaleTracksTwins } from './mutations/scaleLink'
 import { positionProblem } from '../../shared/position'
 
@@ -87,6 +87,17 @@ function repairGrid(o: Record<string, unknown>): GridRepair[] {
     if (next !== cur) { holder[field] = next; repairs.push({ entity, id, field, from: cur, to: next }) }
     return next
   }
+  /** Linked-audio snap: EITHER lattice (samples or frames) counts as canonical,
+   *  so a value already on one stays; only a value on neither snaps (to the
+   *  primary `grid`, i.e. samples) and reports. Mirrors validate's exception. */
+  const snapFieldEither = (entity: GridRepair['entity'], id: string | null, holder: Record<string, unknown>, field: string, primary: Grid, secondary: Grid): number | null => {
+    const cur = holder[field]
+    if (typeof cur !== 'number' || !Number.isFinite(cur)) return null
+    if (isCanonicalOnGrid(cur, primary) || isCanonicalOnGrid(cur, secondary)) return cur
+    const next = snapOnGrid(cur, primary)
+    if (next !== cur) { holder[field] = next; repairs.push({ entity, id, field, from: cur, to: next }) }
+    return next
+  }
   /** Bring a layer that starts before zero back into representable time — the other
    *  half of the `NegativeLayerStart` rule (repair on load, reject on edit). A
    *  negative start is a BOUNDS defect, not a grid one (`-1_000_000` is frame -30 at
@@ -153,6 +164,26 @@ function repairGrid(o: Record<string, unknown>): GridRepair[] {
     const compGrid = frameGrid({ num, den })
     const compId = typeof comp.id === 'string' ? comp.id : null
 
+    // Link-aware audio grid: an Audio layer in a link holding a frame-grid
+    // member lives on the FRAME grid (linked splits cut both at one instant),
+    // so repair snaps it there — keeping frame-coincident pairs coincident
+    // across a save/reload instead of drifting the audio back to samples.
+    const wireKindById = new Map<string, string>()
+    for (const track of (comp.tracks as Array<{ layers?: unknown }> | undefined) ?? []) {
+      for (const l of (track?.layers as Array<Record<string, unknown>> | undefined) ?? []) {
+        if (l !== null && typeof l === 'object' && typeof l.id === 'string') {
+          const k = (l.params as { kind?: unknown } | undefined)?.kind
+          if (typeof k === 'string') wireKindById.set(l.id, k)
+        }
+      }
+    }
+    const wireAudioMayBeFrame = new Set<string>()
+    for (const g of ((comp as Record<string, unknown>).links as Array<{ members?: unknown }> | undefined) ?? []) {
+      const members = Array.isArray(g?.members) ? (g.members as unknown[]).filter((m): m is string => typeof m === 'string') : []
+      if (!members.some((m) => wireKindById.get(m) !== 'Audio')) continue
+      for (const m of members) if (wireKindById.get(m) === 'Audio') wireAudioMayBeFrame.add(m)
+    }
+
     // Layer endpoints first: transition durations are re-derived from the repaired
     // geometry below, so they must read the final values.
     const geometry = new Map<string, { start: number; end: number }>()
@@ -170,10 +201,23 @@ function repairGrid(o: Record<string, unknown>): GridRepair[] {
         if (layer === null || typeof layer !== 'object') continue
         const id = typeof layer.id === 'string' ? layer.id : null
         const kind = (layer.params as { kind?: unknown } | undefined)?.kind
-        const grid = gridForLayerKind(typeof kind === 'string' ? kind : '', { num, den })
+        const kindStr = typeof kind === 'string' ? kind : ''
+        const linkedAudio = kindStr === 'Audio' && id !== null && wireAudioMayBeFrame.has(id)
+        // Linked-audio exception mirrors validate: EITHER lattice counts as
+        // canonical — frame for coincident cuts, samples for slipped offsets —
+        // so repair preserves whichever the layer is already on and only snaps
+        // what is on neither (to samples, the finer lattice).
+        const grid = gridForLayerKind(kindStr, { num, den })
         parkAt = repairNegativeStart(id, layer, grid, parkAt)
-        const start = snapField('Layer', id, layer, 't_start_us', grid)
-        let end = snapField('Layer', id, layer, 't_end_us', grid)
+        let start: number | null
+        let end: number | null
+        if (linkedAudio) {
+          start = snapFieldEither('Layer', id, layer, 't_start_us', grid, compGrid)
+          end = snapFieldEither('Layer', id, layer, 't_end_us', grid, compGrid)
+        } else {
+          start = snapField('Layer', id, layer, 't_start_us', grid)
+          end = snapField('Layer', id, layer, 't_end_us', grid)
+        }
         if (start !== null && end !== null && end <= start) end = widenToOneQuantum('Layer', id, layer, 't_end_us', start, grid)
         if (id !== null && start !== null && end !== null) geometry.set(id, { start, end })
       }

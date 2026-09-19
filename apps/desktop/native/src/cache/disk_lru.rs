@@ -14,7 +14,8 @@
 //! Nothing else under `Cache/` is swept — the rule is cheap-to-regenerate
 //! only. Every other dir is either expensive to rebuild (`proxies/`, the
 //! canonical `audio/{hash}.conform` PCM, `shots/`, `shot-stats/`), re-pays an
-//! API cost on eviction (`voiceover/`, `transcribe-audio/`, `descriptions/`),
+//! API cost on eviction (`voiceover/`, `transcribe-audio/`, `descriptions/`,
+//! `transcripts/`),
 //! or too small to be worth the risk (`frames/`, `inline-subs/`).
 //!
 //! `audio/` is the one dir swept in part: its `{hash}.fx-{sig}.conform`

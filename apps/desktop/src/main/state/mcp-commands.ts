@@ -476,6 +476,27 @@ export function parseRestackPosition(v: unknown): 'above' | 'below' {
   return v
 }
 
+/** apply_cut_list's keep ranges — wire-shape only (array, integer spans, an
+ *  optional label). Bounds, overlaps and grid live with the layer in the
+ *  actor (`cutList.ts`), which names them against the span they miss. */
+import type { KeepRange } from './mutations/cutList'
+export function parseKeepRanges(v: unknown): KeepRange[] {
+  if (!Array.isArray(v) || v.length === 0)
+    throw new McpArgError('keep_ranges names no span — name at least one kept { t_start_us, t_end_us, label? } range', 'keep_ranges')
+  return v.map((raw, i) => {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
+      throw new McpArgError(`keep_ranges[${i}] must be a { t_start_us, t_end_us, label? } object`, 'keep_ranges')
+    const r = raw as Record<string, unknown>
+    for (const f of ['t_start_us', 't_end_us'] as const) {
+      if (typeof r[f] !== 'number' || !Number.isInteger(r[f]))
+        throw new McpArgError(`keep_ranges[${i}].${f} must be timeline microseconds, an integer`, 'keep_ranges')
+    }
+    if (r.label !== undefined && r.label !== null && typeof r.label !== 'string')
+      throw new McpArgError(`keep_ranges[${i}].label must be a string, or omit it to leave the survivor unnamed`, 'keep_ranges')
+    return { t_start_us: r.t_start_us as number, t_end_us: r.t_end_us as number, label: (r.label as string | null | undefined) ?? null }
+  })
+}
+
 // ── ToolResult shapers (wire.rs:81-93) ──
 export function toolText(s: string): ToolResultJson { return { content: [{ type: 'text', text: s }] } }
 export function toolEmpty(): ToolResultJson { return { content: [] } }
@@ -552,6 +573,7 @@ export function shapeDryRunResponse(
     | { kind: 'AddLayer'; layer_id: string }
     | { kind: 'SplitLayer'; left_id: string; right_id: string }
     | { kind: 'AddTransition'; transition_id: string; bounces: Array<{ layer: string; from_track: string; to_track: string; spawned: boolean }> }
+    | { kind: 'ApplyCutList'; surviving_layer_ids: string[]; removed: number; removed_us: number }
     | { kind: 'Void' } } | { ok: false; error: CommandError }>,
 ): ToolResultJson {
   let haltedAt: number | null = null
@@ -561,6 +583,7 @@ export function shapeDryRunResponse(
       const output = o.kind === 'AddLayer' ? { kind: 'add_layer', layer_id: o.layer_id }
         : o.kind === 'SplitLayer' ? { kind: 'split_layer', left_id: o.left_id, right_id: o.right_id }
         : o.kind === 'AddTransition' ? { kind: 'add_transition', transition_id: o.transition_id, bounces: o.bounces }
+        : o.kind === 'ApplyCutList' ? { kind: 'apply_cut_list', surviving_layer_ids: o.surviving_layer_ids, removed: o.removed, removed_us: o.removed_us }
         : { kind: 'void' }
       return { index, status: 'ok', output }
     }
@@ -898,7 +921,7 @@ const ANIM_TRACK_SCHEMA = animTrackSchema(TRACK_VALUE_SCHEMA, ['number', 'object
 /** The `project://*` views `read_project` serves — one per state-view resource
  *  the TS host answers (`resource-views.ts`), so the two never disagree on what
  *  an agent can read. The Rust-compute resources are not here. */
-export const READ_PROJECT_VIEWS = ['current', 'composition', 'compositions', 'media', 'tracks', 'layer', 'markers', 'history'] as const
+export const READ_PROJECT_VIEWS = ['current', 'composition', 'compositions', 'media', 'tracks', 'timeline', 'layer', 'markers', 'history'] as const
 export type ReadProjectView = (typeof READ_PROJECT_VIEWS)[number]
 
 // ── Single-source MCP tool table ─────────────────────────────────────────────
@@ -1560,7 +1583,7 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
       return p
     } },
   { name: 'dry_run', exec: 'dedicated',
-    description: "Run a sequence of edit operations against a clone of the project WITHOUT committing — check overlaps and invariants before touching real state. Validates after each op exactly as `commit()` does and HALTS at the first error. Returns `{ results: [{ index, status, output? | error? }], halted_at: number | null }`. Supported ops: `add_color_layer`, `add_video_layer`, `add_audio_layer`, `add_text_layer`, `update_layer`, `update_layer_params`, `move_layer`, `split_layer`, `delete_layers` (lift only — `ripple: true` is refused), `add_transition` (the transition kind rides as `transition_kind`, since `kind` names the op). Motifs, caption import, media import and undo/redo are not dry-runnable.",
+    description: "Run a sequence of edit operations against a clone of the project WITHOUT committing — check overlaps and invariants before touching real state. Validates each op as `commit()` does, HALTING at the first error. Returns `{ results: [{ index, status, output? | error? }], halted_at: number | null }`. Supported ops: `add_color_layer`, `add_video_layer`, `add_audio_layer`, `add_text_layer`, `update_layer`, `update_layer_params`, `move_layer`, `split_layer`, `delete_layers` (lift only), `apply_cut_list` (ripple rehearsed), `add_transition` (the transition kind rides as `transition_kind`, since `kind` names the op). Motifs, captions, media import and undo/redo are not dry-runnable.",
     inputSchema: { type: 'object', properties: { operations: {
       type: 'array',
       items: { type: 'object', description: "{ kind: <one of the supported tool names>, ...that tool's args }. For add_transition the transition kind rides as `transition_kind` (plus optional `placement`)." },
@@ -1587,7 +1610,7 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
       composition_id: parseCompositionIdOpt(a.composition_id),
     }) },
   { name: 'create_checkpoint', exec: 'dedicated',
-    description: "Create a named checkpoint of the current state and return its id. Checkpoints survive later commits (unlike the redo tail) and persist in the project file; the agent panel shows each as a row with a Restore button. Use it at logical batch boundaries.",
+    description: "Create a named checkpoint of the current state and return its id. Checkpoints survive later commits (unlike the redo tail) but are session-only — they are not persisted in the project file and do not survive a relaunch or crash; the agent panel shows each as a row with a Restore button. Use it at logical batch boundaries.",
     inputSchema: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] },
     parseDedicated: (a) => ({ label: parseStr(a.label, 'label') }) },
   { name: 'list_checkpoints', exec: 'dedicated',
@@ -1625,18 +1648,40 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
       pad_us: { type: ['integer', 'null'], description: 'Microseconds of each pause KEPT on each side. Default 100000; 0 erases each pause whole. Must satisfy 2 * pad_us < min_pause_us.' },
     }, required: ['layer_id'] },
     parseDedicated: (a) => ({ layer: parseUuid(a.layer_id, 'layer_id'), threshold_amp: parseNumOpt(a.threshold_amp, 'threshold_amp'), min_pause_us: parseNumOpt(a.min_pause_us, 'min_pause_us'), pad_us: parseNumOpt(a.pad_us, 'pad_us') }) },
+  { name: 'apply_cut_list', exec: 'dedicated',
+    description: "Cut a clip to the kept ranges and CLOSE the gaps in ONE recorded edit. `keep_ranges` are timeline-absolute spans on the layer's clock; the rest is discarded and downstream shifts left on every track. Linked partners follow discarded spans in lockstep; `label` names the survivor. Refuses whole, before any write: empty, out-of-span or overlapping lists, off-grid edges (nearest point named), the ripple's refusals (`RippleInsideHole`, `RippleCollision`, `RippleLinkStraddles`, `RippleLockedLayer` / `TrackLocked`), and a list that keeps nothing (that is `delete_layers`). `dry_run` rehearses, ripple included, committing nothing. Returns `{ surviving_layer_ids, removed, removed_us }`.",
+    inputSchema: { type: 'object', properties: {
+      layer_id: { type: 'string', description: 'The clip to cut — a VideoClip, Audio, or any media-bearing layer. Linked partners follow in lockstep.' },
+      keep_ranges: { type: 'array', description: 'Kept spans in timeline microseconds; at least one, inside the layer, sorted or not, never overlapping.', items: {
+        type: 'object',
+        properties: {
+          t_start_us: { type: 'integer' },
+          t_end_us: { type: 'integer' },
+          label: { type: ['string', 'null'], description: 'Names the surviving segment; omit to leave it unnamed.' },
+        },
+        required: ['t_start_us', 't_end_us'],
+      } },
+      dry_run: { type: ['boolean', 'null'], description: 'Rehearse the exact operation, ripple included, and commit nothing. Default false.' },
+    }, required: ['layer_id', 'keep_ranges'] },
+    parseDedicated: (a) => ({ layer: parseUuid(a.layer_id, 'layer_id'), keep: parseKeepRanges(a.keep_ranges), dry_run: parseBoolOpt(a.dry_run, 'dry_run', false) }) },
   // ── dedicated-exec: reads, for a client without MCP resources ─────────────
   { name: 'read_project', exec: 'dedicated',
-    description: "Read project state as a tool result — the same views the `project://*` resources serve, for a client that cannot read MCP resources (prefer the resources when yours can). `view`: `current` (the whole project), `composition` (root settings), `compositions` (every composition with its `ref_count`), `media`, `tracks` (tracks with layer envelopes), `layer` (one layer in full; needs `id`), `markers`, `history` (recent operations and checkpoints). `tracks` and `markers` take `composition_id` for a Group's composition, the root when omitted. Returns the JSON body as text.",
+    description: "Read project state as a tool result — the same views the `project://*` resources serve, for a client that cannot read MCP resources (prefer the resources when yours can). `view`: `current` (the whole project), `composition` (root settings), `compositions` (every composition with its `ref_count`), `media`, `tracks` (tracks with layer envelopes), `timeline` (compact rows + gaps, windowed by `t_start_us`/`t_end_us`, paged by `offset`/`limit`), `layer` (one layer in full; needs `id`), `markers`, `history` (recent operations and checkpoints). `tracks`, `timeline` and `markers` take `composition_id` for a Group's composition, the root when omitted. Returns the JSON body as text.",
     inputSchema: { type: 'object', properties: {
       view: { type: 'string', enum: [...READ_PROJECT_VIEWS] },
       id: { type: ['string', 'null'], description: 'The layer id, for view `layer`.' },
-      composition_id: { type: ['string', 'null'], description: 'For `tracks` / `markers`: a Group\'s composition; omit for the root.' },
+      composition_id: { type: ['string', 'null'], description: 'For `tracks` / `timeline` / `markers`: a Group\'s composition; omit for the root.' },
+      t_start_us: { type: ['integer', 'null'], description: 'For view `timeline`: window start in composition µs; send with `t_end_us`.' },
+      t_end_us: { type: ['integer', 'null'], description: 'For view `timeline`: window end in composition µs; rows and gaps overlapping `[t_start_us, t_end_us)` are kept.' },
+      offset: { type: ['integer', 'null'], description: 'For view `timeline`: rows to skip (default 0).' },
+      limit: { type: ['integer', 'null'], description: 'For view `timeline`: max rows (default 200, max 1000).' },
     }, required: ['view'] },
     parseDedicated: (a) => {
       const view = parseStr(a.view, 'view')
       if (!READ_PROJECT_VIEWS.includes(view as ReadProjectView)) throw new McpArgError(`view must be one of ${READ_PROJECT_VIEWS.join(', ')}, got '${view}'`, 'view')
-      return { view, id: view === 'layer' ? parseUuid(a.id, 'id') : null, composition_id: parseCompositionIdOpt(a.composition_id) }
+      return { view, id: view === 'layer' ? parseUuid(a.id, 'id') : null, composition_id: parseCompositionIdOpt(a.composition_id),
+        t_start_us: parseNumOpt(a.t_start_us, 't_start_us') ?? null, t_end_us: parseNumOpt(a.t_end_us, 't_end_us') ?? null,
+        offset: parseNumOpt(a.offset, 'offset') ?? null, limit: parseNumOpt(a.limit, 'limit') ?? null }
     } },
 ]
 

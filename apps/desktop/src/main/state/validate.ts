@@ -421,6 +421,21 @@ function validateLayerParams(p: Project, layer: Layer): void {
 
 function validateTrack(p: Project, c: Composition, track: Track, authorized: Map<string, number>, seenLayers: Set<Uuid>, layersHere: Set<Uuid>): void {
   const sorted = [...track.layers].sort((x, y) => x.t_start_us - y.t_start_us)
+  // Kinds by layer id for the link-aware audio rule below.
+  const kindById = new Map<Uuid, string>()
+  for (const t of c.tracks) for (const l of t.layers) kindById.set(l.id, l.params.kind)
+  // Audio layers in a link holding a frame-grid (non-Audio) member may sit on
+  // the FRAME grid: a linked split cuts both members at one frame instant, and
+  // that instant is ≤ half a sample off the audio lattice (same sample index
+  // the mixer reads). Unlinked audio — or audio linked only to audio — stays
+  // on the sample lattice, which is what keeps sample precision meaningful.
+  const audioMayBeFrame = new Set<Uuid>()
+  for (const g of c.links) {
+    const hasFrame = g.members.some((m) => kindById.get(m) !== 'Audio')
+    if (!hasFrame) continue
+    for (const m of g.members) if (kindById.get(m) === 'Audio') audioMayBeFrame.add(m)
+  }
+  const frameGridForAudio = frameGrid(c.fps)
   let prevVisual: Layer | null = null
   let prevAudio: Layer | null = null
   for (const layer of sorted) {
@@ -434,10 +449,15 @@ function validateTrack(p: Project, c: Composition, track: Track, authorized: Map
     // start < end together force it positive.
     if (layer.t_start_us < 0) fail({ rule: 'NegativeLayerStart', layer: layer.id, t_start: layer.t_start_us })
     const grid = layerEndpointGrid(layer.params.kind, c.fps)
-    if (!isCanonicalOnGrid(layer.t_start_us, grid))
-      fail(offGridBoundary(layer.id, 't_start_us', layer.t_start_us, grid))
-    if (!isCanonicalOnGrid(layer.t_end_us, grid))
-      fail(offGridBoundary(layer.id, 't_end_us', layer.t_end_us, grid))
+    if (!isCanonicalOnGrid(layer.t_start_us, grid)) {
+      // Linked-audio exception: on the frame grid counts as canonical too.
+      const linkedFrameOk = layer.params.kind === 'Audio' && audioMayBeFrame.has(layer.id) && isCanonicalOnGrid(layer.t_start_us, frameGridForAudio)
+      if (!linkedFrameOk) fail(offGridBoundary(layer.id, 't_start_us', layer.t_start_us, grid))
+    }
+    if (!isCanonicalOnGrid(layer.t_end_us, grid)) {
+      const linkedFrameOk = layer.params.kind === 'Audio' && audioMayBeFrame.has(layer.id) && isCanonicalOnGrid(layer.t_end_us, frameGridForAudio)
+      if (!linkedFrameOk) fail(offGridBoundary(layer.id, 't_end_us', layer.t_end_us, grid))
+    }
     validateLayerParams(p, layer)
     const cls = layerOverlapClass(layer.params)
     const prev = cls === 'visual' ? prevVisual : prevAudio

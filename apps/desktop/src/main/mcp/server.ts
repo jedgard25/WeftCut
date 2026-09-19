@@ -242,6 +242,7 @@ export async function handleReadResource(
   getTsHost: () => TsActorHost | null,
   uri: string,
   getVlm: VlmProvider = NO_VLM,
+  getPreferredEngine: () => string | null = () => null,
 ): Promise<ServerResult> {
   const tsHost = getTsHost()
   if (tsHost) {
@@ -264,7 +265,7 @@ export async function handleReadResource(
       // the description cache key, so a read that walked the plain availability
       // order would answer out of a view no gesture ever writes.
       preferred: vlm.preferred,
-    })
+    }, getPreferredEngine())
     return unwrap(await backend.mcpReadResource(uri, injection)) as ServerResult
   }
   return unwrap(await backend.mcpReadResource(uri)) as ServerResult
@@ -469,7 +470,7 @@ export function buildMcpServer(backend: Backend, opts: McpServerOptions = {}): S
     return { resources: mergeMcpResources(cat.resources, MOTIF_RESOURCE_DEFS) } as unknown as ServerResult
   }, log, clientInfo))
   server.setRequestHandler(ReadResourceRequestSchema, track('resources/read', async (req: ReadResourceRequest) =>
-    handleReadResource(backend, getTsHost, req.params.uri, getVlm),
+    handleReadResource(backend, getTsHost, req.params.uri, getVlm, getPreferredEngine),
   log, clientInfo))
   server.setRequestHandler(ListPromptsRequestSchema, track('prompts/list', async () => {
     return { prompts: JSON.parse(await backend.mcpListPrompts()) } as unknown as ServerResult

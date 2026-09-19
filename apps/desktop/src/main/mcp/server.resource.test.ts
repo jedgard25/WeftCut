@@ -68,6 +68,28 @@ describe('handleReadResource', () => {
     expect(injected.describe_focus).toBe('shot-type')
     expect(injected.describe_preferred).toBe('byo_endpoint')
   })
+  // media://{id}/transcript is the READ half of the durable-transcript key and
+  // `transcribe_clip` is the write half: the same soft preference has to reach
+  // both, or the read looks under another engine's entry and reports a
+  // transcribed source as untranscribed.
+  it('forwards media://{id}/transcript with the MediaItem and the transcription preference', async () => {
+    const ts = tsHostStub()
+    const spy = vi.fn(async (_u: string, _s?: string) => '{"ok":true,"result":{"contents":[]}}')
+    await handleReadResource(fakeBackend(spy), () => ts, 'media://m1/transcript?format=srt',
+      () => ({ config: {}, preferred: null, language: null, fps: null, focus: null }),
+      () => 'whisper_cpp')
+    const injected = JSON.parse(spy.mock.calls[0][1] as string)
+    expect('media' in injected).toBe(true)
+    expect(injected.transcribe_preferred).toBe('whisper_cpp')
+    expect('vlm_config' in injected).toBe(false)
+  })
+  it('omits the transcription preference when there is none to speak for', async () => {
+    const ts = tsHostStub()
+    const spy = vi.fn(async (_u: string, _s?: string) => '{"ok":true,"result":{"contents":[]}}')
+    await handleReadResource(fakeBackend(spy), () => ts, 'media://m1/transcript')
+    const injected = JSON.parse(spy.mock.calls[0][1] as string)
+    expect('transcribe_preferred' in injected).toBe(false)
+  })
   it('forwards composition://meter with no state injection', async () => {
     const ts = tsHostStub()
     const spy = vi.fn(async (_u: string, _s?: string) => '{"ok":true,"result":{"contents":[]}}')

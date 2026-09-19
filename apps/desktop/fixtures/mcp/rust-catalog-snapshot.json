@@ -204,7 +204,7 @@
     },
     {
       "name": "transcribe_clip",
-      "description": "Transcribe a VideoClip or Audio layer with the configured engine (cloud OpenAI Whisper, or local whisper.cpp / FunASR). Returns `{ backend, segments: [{ t_start_us, t_end_us, text, words: [{ t_start_us, t_end_us, text }] }], language, word_timing, srt }` in timeline-absolute µs. Hand the envelope to `apply_transcripts` to lay captions that keep the word timing (`apply_subtitles` with `srt` works but discards it). `word_timing` is \"exact\" or \"interpolated_from_cue\". Optional `t_start_us`/`t_end_us` narrow the window; `backend` (\"openai\" | \"whisper_cpp\" | \"funasr\") REQUIRES that engine — it errors naming the missing key / binary / model rather than substituting, so a local choice never uploads; omitted, the user's preferred engine then availability. `word_timestamps` (default true) asks for exact per-word times where the engine can (OpenAI is SRT-only). A VideoClip with speed != 1.0 is refused. Errors name the cause: no engine, the provider cap (~13 min for cloud Whisper), rate limits, auth.",
+      "description": "Transcribe a VideoClip or Audio layer with the configured engine (cloud OpenAI Whisper, or local whisper.cpp / FunASR). Returns `{ backend, segments: [{ t_start_us, t_end_us, text, words: [{ t_start_us, t_end_us, text }] }], language, word_timing, srt }` in timeline-absolute µs. Hand the envelope to `apply_transcripts` to lay captions that keep the word timing (`apply_subtitles` with `srt` works but discards it). `word_timing` is \"exact\" or \"interpolated_from_cue\". Optional `t_start_us`/`t_end_us` narrow the window; `backend` (\"openai\" | \"whisper_cpp\" | \"funasr\") REQUIRES that engine — it errors naming the missing key / binary / model rather than substituting, so a local choice never uploads; omitted, the user's preferred engine then availability. `word_timestamps` (default true) asks for exact per-word times where the engine can (OpenAI is SRT-only). `segment` (default \"engine\") for sentences; persists per source: `media://{id}/transcript`. A VideoClip with speed != 1.0 is refused. Errors name the cause: no engine, the provider cap (~13 min for cloud Whisper), rate limits, auth.",
       "inputSchema": {
         "properties": {
           "backend": {
@@ -224,6 +224,13 @@
           "layer_id": {
             "description": "Target VideoClip or Audio layer id.",
             "type": "string"
+          },
+          "segment": {
+            "description": "`\"engine\"` (default: the engine's own segments) or `\"sentence\"`\n(re-segmented into sentences — merged across sub-pause gaps and terminal\npunctuation, word spans kept — the caption-ready shape for\n`apply_transcripts`). The cache always stores engine segments.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "t_end_us": {
             "description": "Optional transcription window end in timeline microseconds.\nDefaults to the layer's `t_end_us`. Must lie within the layer.",
@@ -377,6 +384,12 @@
       "uri": "project://tracks",
       "name": "Tracks",
       "description": "Tracks with layer envelopes. Read project://layers/{id} for full layer detail.",
+      "mimeType": "application/json"
+    },
+    {
+      "uri": "project://timeline",
+      "name": "Timeline",
+      "description": "Compact flat layer rows with a gap list. Takes ?composition=<id>, ?t_start_us=&t_end_us= (window, overlap), ?offset=&limit= (default 200, max 1000). Read project://layers/{id} for full layer detail.",
       "mimeType": "application/json"
     },
     {

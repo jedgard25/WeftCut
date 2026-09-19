@@ -229,10 +229,12 @@ describe('audio grid — the 48 kHz mix lattice', () => {
     // the test above) — that difference is the whole fix.
   })
 
-  it('a legacy frame-aligned audio layer IS repaired onto the sample lattice on load (repair, never reject)', () => {
-    // The other direction: a legacy project holds its audio on frame boundaries,
-    // which at 29.97 are not sample boundaries. They must OPEN — repaired by
-    // ≤ half a sample (~10 µs, inaudible) — not be rejected.
+  it('a linked frame-aligned audio layer reopens with ZERO repairs (coincident cut, not legacy)', () => {
+    // Linked audio may sit on the FRAME grid: a linked split cuts both members
+    // at one frame instant, and that instant is ≤ half a sample off the audio
+    // lattice (the same sample index the mixer reads). Frame-aligned linked
+    // audio is therefore valid — preserved on load, never repaired — while
+    // unlinked frame-aligned audio is still rejected by validate.
     const { actor, audioLayer } = pairedFixture()
     const wire = JSON.parse(serializeProjectToJson(actor.snapshot())) as Record<string, unknown> & {
       compositions: Record<string, { tracks: Array<{ layers: Array<Record<string, unknown>> }> }>
@@ -241,20 +243,40 @@ describe('audio grid — the 48 kHz mix lattice', () => {
     for (const track of wire.compositions[wire.root_id].tracks) {
       for (const l of track.layers) {
         if (l.id !== audioLayer) continue
-        l.t_start_us = frame(V_START_FRAME()) // legacy: frame-aligned audio
+        l.t_start_us = frame(V_START_FRAME()) // coincident with the picture: legal
         l.t_end_us = frame(V_MOVE_FRAME())
       }
     }
     const reported: GridRepair[][] = []
     const reopened = parseProject(wire, { onGridRepair: (r) => reported.push([...r]) })
     const audio = findLayer(reopened, audioLayer)
-    expect(reported.length).toBe(1)
-    expect(audio.t_start_us).toBe(snapFrameRound(frame(V_START_FRAME()), AUDIO_GRID.num, AUDIO_GRID.den))
-    expect(Math.abs(audio.t_start_us - frame(V_START_FRAME()))).toBeLessThan(sampleSpanUs(0))
-    // Idempotent: the repaired project reopens clean.
+    expect(reported).toEqual([])
+    expect(audio.t_start_us).toBe(frame(V_START_FRAME()))
+    expect(audio.t_end_us).toBe(frame(V_MOVE_FRAME()))
+    // Idempotent: the preserved project reopens clean.
     const second: GridRepair[][] = []
     parseProject(JSON.parse(serializeProjectToJson(reopened)), { onGridRepair: (r) => second.push([...r]) })
     expect(second).toEqual([])
+  })
+
+  it('a linked audio endpoint on NEITHER lattice is repaired onto samples on load', () => {
+    const { actor, audioLayer } = pairedFixture()
+    const wire = JSON.parse(serializeProjectToJson(actor.snapshot())) as Record<string, unknown> & {
+      compositions: Record<string, { tracks: Array<{ layers: Array<Record<string, unknown>> }> }>
+      root_id: string
+    }
+    for (const track of wire.compositions[wire.root_id].tracks) {
+      for (const l of track.layers) {
+        if (l.id !== audioLayer) continue
+        // 1 µs off both lattices (frame() + 1 is on neither at 29.97).
+        l.t_start_us = frame(V_START_FRAME()) + 1
+      }
+    }
+    const reported: GridRepair[][] = []
+    const reopened = parseProject(wire, { onGridRepair: (r) => reported.push([...r]) })
+    const audio = findLayer(reopened, audioLayer)
+    expect(reported.length).toBe(1)
+    expect(audio.t_start_us).toBe(snapFrameRound(frame(V_START_FRAME()) + 1, AUDIO_GRID.num, AUDIO_GRID.den))
   })
 
   it('composition.duration_us stays on the FRAME grid even when audio reaches furthest', () => {

@@ -21,6 +21,7 @@ import { DecodeClock } from "./decodeClock";
 import { FrameRing } from "./FrameRing";
 import { handleDecodeError } from "./decoderFallback";
 import { openMediaInput, type OpenedMedia } from "./mediaInput";
+import { shouldDropPrefixOutput } from "./outputFilter";
 import { PacketPump, type PumpDeps } from "./PacketPump";
 import { FfmpegSource, type FfmpegSourceInit } from "./FfmpegSource";
 import type { SourceHandleInit } from "./session";
@@ -268,8 +269,24 @@ export class SourceHandle {
         // optimizes `createImageBitmap(VideoFrame)` to keep pixels on
         // the GPU side; we pay a per-frame conversion but stop
         // holding the decoder's buffers across many ticks.
+        // Prefix-frame fast path (outputFilter.ts): a GOP-prefix frame
+        // that ends before the current target can never paint — the ring
+        // would stale-drop it on arrival. Close it BEFORE the
+        // `createImageBitmap` snapshot so a seek over a long GOP does not
+        // pay a full-res bitmap alloc + upload per discarded frame (at 4K
+        // ~33 MB each, pinning HW-pool slots behind the conversion
+        // backlog). Unknown-duration outputs are never dropped (the
+        // covering frame itself often carries none).
         const ptsUs = this.media.decodeClock.sourceUs(frame.timestamp);
         const durationUs = frame.duration ?? 0;
+        const targetUs = this.pump?.currentTargetUs() ?? null;
+        if (
+          targetUs !== null &&
+          shouldDropPrefixOutput(ptsUs, durationUs, targetUs)
+        ) {
+          frame.close();
+          return;
+        }
         const epoch = this.conversionEpoch;
         this.conversionsInFlight += 1;
         if (this.conversionsInFlight > this.peakConversionsInWindow) {

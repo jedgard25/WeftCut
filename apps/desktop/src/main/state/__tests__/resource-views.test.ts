@@ -155,6 +155,161 @@ describe('buildResourceInjection', () => {
     const actor = mkActor()
     expect(buildResourceInjection('composition://meter', actor.snapshot())).toBe('{}')
   })
+
+  // The transcript reader resolves its cache key from the backend the request
+  // was transcribed with — the READ half of the durable-transcript contract,
+  // so the preference the `transcribe_clip` path injects as `preferred_backend`
+  // has to ride in here too. `'auto'` is the same absence as on the describe
+  // view (the setting's way of saying "no preference").
+  it('injects the transcription preference for media://{id}/transcript, and only it', () => {
+    const actor = mkActor()
+    const snap = { ...actor.snapshot(), media_pool: { m1: mediaItemTemplate('m1', 'Video', 1_000_000) } } as never
+    const withPref = JSON.parse(buildResourceInjection('media://m1/transcript?format=srt', snap, {}, {}, 'whisper_cpp'))
+    expect(withPref.media.id).toBe('m1')
+    expect(withPref.transcribe_preferred).toBe('whisper_cpp')
+    expect('vlm_config' in withPref).toBe(false)
+    const bare = JSON.parse(buildResourceInjection('media://m1/transcript', snap))
+    expect('transcribe_preferred' in bare).toBe(false)
+    const auto = JSON.parse(buildResourceInjection('media://m1/transcript', snap, {}, {}, 'auto'))
+    expect('transcribe_preferred' in auto).toBe(false)
+  })
+})
+
+describe('project://timeline', () => {
+  const BLACK = { r: 0, g: 0, b: 0, a: 255 }
+  function actorWithClips() {
+    const gen = uuidV7Gen()
+    const base = blankProject(gen, 'tl')
+    const audioId = gen()
+    base.media_pool = { [audioId]: mediaItemTemplate(audioId, 'Audio', 10_000_000, true) } as never
+    return { actor: createActor({ initial: base, idGen: gen, clock: () => '<TS>' }), audioId }
+  }
+  function addColor(actor: ReturnType<typeof mkActor>, track: string, s: number, e: number) {
+    const r = actor.mcpCall('add_color_layer', JSON.stringify({ track_id: track, color: BLACK, t_start_us: s, t_end_us: e }))
+    expect(r.ok).toBe(true)
+  }
+  function body(out: ReturnType<typeof serveProjectResource>) {
+    return JSON.parse(text(out)) as {
+      composition: string; total_rows: number; offset: number; limit: number
+      rows: Array<{ id: string; track_id: string; label: string | null; kind: string; role: string | null; t_start_us: number; t_end_us: number }>
+      gaps: Array<{ track_id: string; s: number; e: number }>
+    }
+  }
+
+  it('serves an empty envelope on a blank project', () => {
+    const actor = mkActor()
+    const b = body(serveProjectResource('project://timeline', actor))
+    expect(b.composition).toBe(root(actor.snapshot()).id)
+    expect(b).toMatchObject({ total_rows: 0, offset: 0, limit: 200, rows: [], gaps: [] })
+  })
+
+  it('returns flat compact rows in track order with the gap list', () => {
+    const actor = mkActor()
+    const track = root(actor.snapshot()).tracks[0].id
+    addColor(actor, track, 1_000_000, 2_000_000)
+    addColor(actor, track, 4_000_000, 5_000_000)
+    const b = body(serveProjectResource('project://timeline', actor))
+    expect(b.total_rows).toBe(2)
+    expect(b.rows.map((r) => [r.t_start_us, r.t_end_us])).toEqual([[1_000_000, 2_000_000], [4_000_000, 5_000_000]])
+    for (const r of b.rows) {
+      expect(r).toMatchObject({ track_id: track, label: null, kind: 'Color', role: root(actor.snapshot()).tracks[0].role })
+      expect(Object.keys(r).sort()).toEqual(['id', 'kind', 'label', 'role', 't_end_us', 't_start_us', 'track_id'])
+    }
+    // Leading gap + middle gap; nothing past the last layer.
+    expect(b.gaps).toEqual([
+      { track_id: track, s: 0, e: 1_000_000 },
+      { track_id: track, s: 2_000_000, e: 4_000_000 },
+    ])
+  })
+
+  it('merges abutting spans and union-overlaps into no gap', () => {
+    const actor = mkActor()
+    const track = root(actor.snapshot()).tracks[0].id
+    addColor(actor, track, 0, 1_000_000)
+    addColor(actor, track, 1_000_000, 2_000_000)
+    expect(body(serveProjectResource('project://timeline', actor)).gaps).toEqual([])
+  })
+
+  it('falls back from track role to the Audio layer role, else null', () => {
+    const { actor, audioId } = actorWithClips()
+    // Reserved skeleton track carries a role stamp; a fresh track carries none.
+    const stamped = root(actor.snapshot()).tracks[0]
+    expect(stamped.role).not.toBeNull()
+    const r = actor.mcpCall('add_track', JSON.stringify({}))
+    expect(r.ok).toBe(true)
+    const fresh = root(actor.snapshot()).tracks.at(-1)!
+    expect(fresh.role).toBeNull()
+    const aud = actor.mcpCall('add_audio_layer', JSON.stringify({
+      track_id: fresh.id, media_id: audioId, src_in_us: 0, src_out_us: 2_000_000,
+      t_start_us: 0, t_end_us: 2_000_000, role: 'voiceover',
+    }))
+    expect(aud.ok).toBe(true)
+    addColor(actor, stamped.id, 0, 1_000_000)
+    const b = body(serveProjectResource('project://timeline', actor))
+    expect(b.rows.find((x) => x.kind === 'Audio')!.role).toBe('voiceover')
+    expect(b.rows.find((x) => x.kind === 'Color')!.role).toBe(stamped.role)
+    addColor(actor, fresh.id, 3_000_000, 4_000_000)
+    expect(body(serveProjectResource('project://timeline', actor)).rows.find((x) => x.kind === 'Color' && x.t_start_us === 3_000_000)!.role).toBeNull()
+  })
+
+  it('windows rows by overlap and clips gaps to the window', () => {
+    const actor = mkActor()
+    const track = root(actor.snapshot()).tracks[0].id
+    addColor(actor, track, 1_000_000, 2_000_000)
+    addColor(actor, track, 4_000_000, 5_000_000)
+    const b = body(serveProjectResource('project://timeline?t_start_us=1500000&t_end_us=4500000', actor))
+    expect(b.total_rows).toBe(2)
+    // [1.5s, 2s) is covered by the first layer — not a gap; the leading gap
+    // [0, 1s) misses the window entirely.
+    expect(b.gaps).toEqual([{ track_id: track, s: 2_000_000, e: 4_000_000 }])
+    const empty = body(serveProjectResource('project://timeline?t_start_us=2000000&t_end_us=4000000', actor))
+    expect(empty).toMatchObject({ total_rows: 0, rows: [] })
+    expect(empty.gaps).toEqual([{ track_id: track, s: 2_000_000, e: 4_000_000 }])
+    // A gap straddling the window edge is clipped to it.
+    expect(body(serveProjectResource('project://timeline?t_start_us=2500000&t_end_us=10000000', actor)).gaps)
+      .toEqual([{ track_id: track, s: 2_500_000, e: 4_000_000 }])
+  })
+
+  it('pages rows with offset/limit and reports the windowed total', () => {
+    const actor = mkActor()
+    const track = root(actor.snapshot()).tracks[0].id
+    addColor(actor, track, 0, 1_000_000)
+    addColor(actor, track, 2_000_000, 3_000_000)
+    addColor(actor, track, 4_000_000, 5_000_000)
+    const b = body(serveProjectResource('project://timeline?offset=1&limit=1', actor))
+    expect(b).toMatchObject({ total_rows: 3, offset: 1, limit: 1 })
+    expect(b.rows.map((r) => r.t_start_us)).toEqual([2_000_000])
+    // Gaps are never paged.
+    expect(b.gaps).toHaveLength(2)
+  })
+
+  it('scopes to a composition and refuses bad queries', () => {
+    const gen = uuidV7Gen()
+    const { p, groupId } = groupedProject(gen, 'r')
+    const actor = createActor({ initial: p, idGen: gen })
+    expect(body(serveProjectResource(`project://timeline?composition=${groupId}`, actor)).composition).toBe(groupId)
+    for (const uri of [
+      'project://timeline?composition=ghost',
+      'project://timeline?limit=0',
+      'project://timeline?limit=1001',
+      'project://timeline?offset=-1',
+      'project://timeline?t_start_us=5',
+      'project://timeline?t_start_us=5&t_end_us=5',
+      'project://timeline?t_start_us=9&t_end_us=5',
+      'project://timeline?limit=many',
+    ]) expect(() => serveProjectResource(uri, actor)).toThrow(/not found|timeline/)
+  })
+
+  it('read_project view timeline matches the resource', () => {
+    const actor = mkActor()
+    const track = root(actor.snapshot()).tracks[0].id
+    addColor(actor, track, 0, 1_000_000)
+    const viaTool = actor.mcpCall('read_project', JSON.stringify({ view: 'timeline', t_start_us: 0, t_end_us: 500_000, limit: 10 }))
+    expect(viaTool.ok).toBe(true)
+    if (!viaTool.ok) throw new Error('unreachable')
+    const toolText = (viaTool.result as { content: Array<{ text: string }> }).content[0].text
+    expect(JSON.parse(toolText)).toEqual(JSON.parse(text(serveProjectResource('project://timeline?t_start_us=0&t_end_us=500000&limit=10', actor))))
+  })
 })
 
 describe('serveProjectResource across compositions', () => {

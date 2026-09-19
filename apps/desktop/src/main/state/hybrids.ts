@@ -577,17 +577,12 @@ export function pauseCores(
 /** The cores as the split can actually take them when the subject travels with a
  *  picture.
  *
- *  `split_layer_multi` re-snaps every spanning link member on ITS OWN grid: the
- *  Audio subject on the 48 kHz lattice, a linked VideoClip on the frame grid. A
- *  boundary that lands between frames is therefore cut in two places up to half a
- *  frame apart, and the picture piece of a KEPT segment then overlaps the next
- *  hole by that half frame — enough for the fan-out to doom it and for the
- *  ripple planner to refuse the whole edit (`RippleInsideHole` over a hole that
- *  has swallowed the clip). Snapping the interior boundaries onto the
- *  composition's frame grid FIRST puts both members' cuts on one instant: a frame
- *  boundary is a sample boundary at every integer rate, and at 29.97 / 59.94 the
- *  residue is ~10 µs, which the fan-out's half-frame slack absorbs. The head and
- *  tail boundaries are the subject's own edges and are left alone.
+ *  Linked splits cut every member at ONE frame instant (`split.ts`
+ *  `gridForSplit`), so the interior core boundaries are landed on the
+ *  composition's frame grid FIRST — otherwise a boundary between frames would
+ *  cut picture and sound in two places and the ripple would refuse the pair it
+ *  just made. The head and tail boundaries are the subject's own edges and are
+ *  left alone.
  *
  *  Only when a frame-grid member shares the link: an unlinked Audio clip keeps
  *  its sample precision, because nothing else has to be cut where it is cut.

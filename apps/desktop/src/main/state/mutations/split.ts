@@ -1,9 +1,9 @@
 // apps/desktop/src/main/state/mutations/split.ts
-import type { Animated, Keyframe, Project, Uuid } from '../model'
+import type { Animated, Keyframe, Composition, Project, Uuid } from '../model'
 import type { IdGen } from '../ids'
-import { gridForLayerKind, snapOnGrid } from '../snap'
+import { frameGrid, gridForLayerKind, snapOnGrid, type Grid } from '../snap'
 import { CommandFailure } from '../errors'
-import { cloneLayer, hasSourceWindow, locateLayerIn, requireLayer } from './helpers'
+import { cloneLayer, hasSourceWindow, requireLayer } from './helpers'
 import { linkSiblingsExcluding, checkLinkLock, indexLinks } from './links'
 import { forEachAnimatedF64, forEachAnimatedRgba, retainKeyframes, shiftKeyframes, firstKeyframeValue, lastKeyframeValue, collapseToStatic } from './animated'
 
@@ -18,14 +18,69 @@ function splitTrackHalf<T>(a: Animated<T>, splitOffset: number, right: boolean):
   if (a.mode === 'Keyframed' && (a.value as Keyframe<T>[]).length === 0 && boundary !== null) collapseToStatic(a, boundary)
 }
 
+/** Whether `layerId` sits in a link holding a frame-grid (non-Audio) member.
+ *
+ *  A linked A/V pair is cut at ONE instant on the frame grid — the video's
+ *  precision dominates, and the audio cut lands on the same frame (≤ half a
+ *  sample off its own lattice, the same sample index the mixer reads). Cutting
+ *  each member on its own lattice instead leaves the two cuts up to half a
+ *  frame apart at NTSC rates, and the ripple then refuses the pair it just
+ *  made (`RippleInsideHole` over a hole that swallowed the clip). An unlinked
+ *  Audio layer, or one linked only to other Audio, keeps sample precision. */
+export function linkHasFrameMember(c: Composition, layerId: Uuid): boolean {
+  const link = c.links.find((g) => g.members.includes(layerId))
+  if (!link) return false
+  // Early-exit on the first picture member: a link's kinds never change under
+  // splits (a right half inherits its kind), and an A/V link's first member in
+  // id order is usually the picture, so this is typically one lookup.
+  // `kinds` avoids re-walking tracks per member (a 300-cut remove_pauses fans
+  // out over a thousand-member link — O(m·n) locate-per-member blocks main).
+  const kinds = kindMapOf(c)
+  for (const m of link.members) {
+    const k = kinds.get(m)
+    if (k === undefined) continue
+    if (k !== 'Audio') return true
+  }
+  return false
+}
+
+/** Layer id → params kind for one composition, built in one walk. The split
+ *  fan-out and the discard fan-out both test every link sibling per cut; a
+ *  per-member `locateLayerIn` scan turns a 300-cut remove_pauses into minutes
+ *  on main (Bug 3). One map per call keeps each call O(tracks + members). */
+export function kindMapOf(c: Composition): Map<Uuid, string> {
+  const m = new Map<Uuid, string>()
+  for (const t of c.tracks) for (const l of t.layers) m.set(l.id, l.params.kind)
+  return m
+}
+
+/** Layer id → layer for one composition, built in one walk. Same scaling
+ *  rationale as `kindMapOf`: the spanning test below must not scan tracks per
+ *  sibling. */
+function layerMapOf(c: Composition): Map<Uuid, { t_start_us: number; t_end_us: number }> {
+  const m = new Map<Uuid, { t_start_us: number; t_end_us: number }>()
+  for (const t of c.tracks) for (const l of t.layers) m.set(l.id, l)
+  return m
+}
+
+/** THE grid a split of `layerId` resolves on: the frame grid when the link
+ *  holds a frame-grid member, else the layer's own grid. Single seam with
+ *  `applySplitLayer` and the `split_layer_multi` skip check in `actor.ts`. */
+export function gridForSplit(c: Composition, layerId: Uuid, kind: string): Grid {
+  if (linkHasFrameMember(c, layerId)) return frameGrid(c.fps)
+  return gridForLayerKind(kind, c.fps)
+}
+
 /** Single-layer split (link-unaware). Returns {left,right};
- *  left reuses the original id, right gets a fresh one and is inserted at li+1. */
-function splitSingleLayer(p: Project, idGen: IdGen, id: Uuid, atTUsRaw: number): { left: Uuid; right: Uuid } {
-  const { comp: c, track, layer: original, layerIndex: li } = requireLayer(p, id)
-  // The cut resolves on THIS layer's grid, not the composition's — so a linked A/V
-  // split cuts the audio on the nearest sample boundary while the video cuts on the
-  // frame boundary (spec R2-D6). Locate first: the grid depends on `params.kind`.
-  const atTUs = snapOnGrid(atTUsRaw, gridForLayerKind(original.params.kind, c.fps))
+ *  left reuses the original id, right gets a fresh one and is inserted at li+1.
+ *
+ *  `atTUs` arrives PRE-SNAPPED by the caller (`applySplitLayer` owns the grid:
+ *  frame when the link holds a picture member, else the layer's own) so every
+ *  member of one link fan-out lands on the same instant. No re-snap here — a
+ *  second snap on the member's own lattice is exactly the drift that used to
+ *  put video and audio up to half a frame apart. */
+function splitSingleLayer(p: Project, idGen: IdGen, id: Uuid, atTUs: number): { left: Uuid; right: Uuid } {
+  const { track, layer: original, layerIndex: li } = requireLayer(p, id)
   if (atTUs <= original.t_start_us || atTUs >= original.t_end_us) throw new CommandFailure({ error: 'SplitOutsideLayer', layer: id, at_t: atTUs })
   const splitOffset = atTUs - original.t_start_us
 
@@ -65,16 +120,19 @@ export function applySplitLayer(p: Project, idGen: IdGen, id: Uuid, atTUsRaw: nu
   const c = target.comp
   if (target.track.locked) throw new CommandFailure({ error: 'TrackLocked', track: target.track.id })
   const tgt = target.layer
-  // Snapped on the TARGET's grid for the pre-flight + containment tests; each
-  // spanning sibling then re-snaps `atTUs` on its own grid inside splitSingleLayer.
-  const atTUs = snapOnGrid(atTUsRaw, gridForLayerKind(tgt.params.kind, c.fps))
+  // ONE instant for the whole link: the frame grid when a picture member rides
+  // along, else the target's own grid. Every spanning sibling is cut at this
+  // same `atTUs` — no per-member re-snap — so a linked pair never drifts apart.
+  const atTUs = snapOnGrid(atTUsRaw, escapeLink ? gridForLayerKind(tgt.params.kind, c.fps) : gridForSplit(c, id, tgt.params.kind))
   if (atTUs <= tgt.t_start_us || atTUs >= tgt.t_end_us) throw new CommandFailure({ error: 'SplitOutsideLayer', layer: id, at_t: atTUs })
 
   // Spanning siblings: members whose interval strictly contains atTUs (sorted order).
   // linkSiblingsExcluding returns SORTED members — id-allocation order matches Rust OrdSet.
+  // Lookups ride one layer map, not one track scan per sibling (see kindMapOf).
+  const layerMap = layerMapOf(c)
   const spanning: Uuid[] = escapeLink ? [] : linkSiblingsExcluding(c, id).filter((s) => {
-    const sl = locateLayerIn(c, s); if (!sl) return false
-    return sl.layer.t_start_us < atTUs && atTUs < sl.layer.t_end_us
+    const sl = layerMap.get(s); if (!sl) return false
+    return sl.t_start_us < atTUs && atTUs < sl.t_end_us
   })
   if (!escapeLink) checkLinkLock(c, id, [id, ...spanning])
 

@@ -56,7 +56,10 @@ const WARMUP_MIN_LOOKAHEAD_US = 150_000;
 /// the clock anyway. Without a cap, a wedged or never-ready source
 /// would block playback indefinitely; with the cap, the worst case is
 /// a brief initial-frame stutter rather than a frozen play button.
-const WARMUP_MAX_WAIT_MS = 250;
+/// Sized for feel over caution: the priming grace (see
+/// `Compositor.notePlayPriming`) keeps the wait interval from scoring
+/// as dropped frames, so waiting longer only freezes the button.
+const WARMUP_MAX_WAIT_MS = 150;
 
 export class PlaybackEngine {
   private clock = new SyntheticClock();
@@ -211,8 +214,15 @@ export class PlaybackEngine {
     this.lastEmittedUs = tUs;
     this.emitTime(tUs);
     // Schedule the precise decoder seek + final paint after the
-    // debounce window.
-    this.scrubCoalescer.requestSeek(tUs);
+    // debounce window. The FIRST seek of a fresh sequence fires
+    // immediately (same task) so a click to a new time starts the
+    // decode without the debounce delay; drag-continuation seeks
+    // still coalesce through the ordinary debounced path.
+    if (this.scrubCoalescer.isIdle) {
+      this.scrubCoalescer.requestSeekImmediate(tUs);
+    } else {
+      this.scrubCoalescer.requestSeek(tUs);
+    }
   }
 
   onTimeUpdate(cb: TimeListener): () => void {
@@ -246,10 +256,24 @@ export class PlaybackEngine {
   /// position), so the canvas shows the start frame frozen during
   /// warm-up rather than stuttering through partial outputs.
   ///
+  /// Fast path: when the ring already holds the lookahead (a settled
+  /// seek, a warm decoder), the clock releases in this same task with
+  /// no rAF hop — pressing play after clicking to a new time feels
+  /// instant. Only a cold ring pays the poll + deadline.
+  ///
   /// `clock.positionUs()` is re-read every poll iteration so a `seek()`
   /// arriving mid-warm-up retargets the lookahead check at the new
   /// position instead of clearing the gate against the stale one.
   private scheduleClockStart(): void {
+    const tUs = this.clock.positionUs();
+    if (this.compositor.hasLookaheadAt(tUs, WARMUP_MIN_LOOKAHEAD_US)) {
+      this.releaseClock("lookahead-ready");
+      return;
+    }
+    // Slow path: the decoder is priming from a cold ring. Arm the
+    // priming grace so the rebuild interval doesn't score as dropped
+    // frames (same suppression an in-play seek gets).
+    this.compositor.notePlayPriming();
     const deadline = performance.now() + WARMUP_MAX_WAIT_MS;
     const tryStart = (): void => {
       this.warmupHandle = null;
@@ -262,23 +286,27 @@ export class PlaybackEngine {
       );
       const deadlineHit = performance.now() >= deadline;
       if (lookaheadReady || deadlineHit) {
-        // Stamp warmup duration + reason for the HUD before
-        // releasing the clock. `warmupStartMs` is null if `pause()`
-        // raced in mid-warmup; skip the record in that case.
-        if (this.warmupStartMs !== null) {
-          const elapsed = performance.now() - this.warmupStartMs;
-          this.lastWarmupMs = elapsed;
-          if (elapsed > this.maxWarmupMs) this.maxWarmupMs = elapsed;
-          this.lastWarmupReason = lookaheadReady ? "lookahead-ready" : "deadline-hit";
-          this.warmupStartMs = null;
-        }
-        this.compositor.setMasterPlayState(true);
-        this.clock.play();
+        this.releaseClock(lookaheadReady ? "lookahead-ready" : "deadline-hit");
         return;
       }
       this.warmupHandle = requestAnimationFrame(tryStart);
     };
     tryStart();
+  }
+
+  /// Stamp warmup duration + reason for the HUD and release the clock +
+  /// master-play state. Skips the record when `pause()` raced in
+  /// mid-warmup (`warmupStartMs` null — "didn't actually warm up").
+  private releaseClock(reason: WarmupReason): void {
+    if (this.warmupStartMs !== null) {
+      const elapsed = performance.now() - this.warmupStartMs;
+      this.lastWarmupMs = elapsed;
+      if (elapsed > this.maxWarmupMs) this.maxWarmupMs = elapsed;
+      this.lastWarmupReason = reason;
+      this.warmupStartMs = null;
+    }
+    this.compositor.setMasterPlayState(true);
+    this.clock.play();
   }
 
   /// Effective end-of-timeline used for auto-pause and the

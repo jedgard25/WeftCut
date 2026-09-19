@@ -24,6 +24,7 @@ const URI_PROJECT: &str = "project://current";
 const URI_COMPOSITION: &str = "project://composition";
 const URI_MEDIA: &str = "project://media";
 const URI_TRACKS: &str = "project://tracks";
+const URI_TIMELINE: &str = "project://timeline";
 const URI_MARKERS: &str = "project://markers";
 const URI_COMPOSITIONS: &str = "project://compositions";
 const URI_HISTORY: &str = "project://history";
@@ -97,6 +98,17 @@ struct ResourceState {
     #[cfg(feature = "speech")]
     #[serde(default)]
     describe_preferred: Option<String>,
+    /// Injected by the TS host for `media://{id}/transcript`: the user's SOFT
+    /// preferred transcription engine, from the same provider `transcribe_clip`'s
+    /// `preferred_backend` comes from. The transcript key carries the backend
+    /// that served the request, so a read that ignored the preference would
+    /// look under another engine's entry and report a transcribed source as
+    /// untranscribed. Absent / `"auto"` → no preference: the reader serves the
+    /// preferred engine's entry when covered, else the first covered entry in
+    /// backend order. A read spawns no engine either way.
+    #[cfg(feature = "speech")]
+    #[serde(default)]
+    transcribe_preferred: Option<String>,
 }
 
 /// The four cache-key inputs the app's UI owns, as one argument.
@@ -139,8 +151,26 @@ pub(crate) async fn read_resource(
 
     // media://* needs the MediaItem the TS host resolved by id (TS owns state).
     // Peeled off ahead of the URI match: thumbnail / frame / waveform return
-    // blobs, /description and /analysis return JSON.
+    // blobs, /description, /analysis and /transcript return JSON or text.
     if let Some(tail) = uri.strip_prefix(PREFIX_MEDIA) {
+        // /transcript — durable-transcript view, needs the injected preference;
+        // see `read_transcript_resource`. Matched on the `/transcript` path
+        // (before or with a query string) so `?format=` etc. stay on the URI.
+        #[cfg(feature = "speech")]
+        if tail
+            .split('?')
+            .next()
+            .is_some_and(|p| p.ends_with("/transcript"))
+        {
+            return read_transcript_resource(
+                b,
+                uri,
+                tail,
+                state.media,
+                state.transcribe_preferred.as_deref(),
+            )
+            .await;
+        }
         // /description — cached VLM view, needs the injected config; see
         // `read_description_resource`.
         #[cfg(feature = "speech")]
@@ -306,6 +336,385 @@ async fn read_media_resource(
         format!("media resources require the jobs feature: {uri}"),
         None,
     ))
+}
+
+/// Serve `media://{id}/transcript` — the durable-transcript view
+/// `transcribe_clip` writes through: the cached engine segments for one source
+/// under one transcript key, windowed / re-segmented / formatted at read time.
+///
+/// Query (all optional): `format=segments|text|srt` (default `segments`),
+/// `segment=sentence|engine` (default `sentence` — the caption-ready view;
+/// engine segments are the stored truth both derive from), `detail=full|compact`
+/// (default `full`; `compact` drops the per-word arrays for context-cheap
+/// reads), `t_start_us` + `t_end_us` (a source-absolute window, overlap;
+/// default the whole coverage), `backend` (a strict engine tag — serve that
+/// engine's entry or 404), `language` (the hint the transcription ran under;
+/// default `auto`, the hint-less key), `words=true|false` (default `true` —
+/// exact vs interpolated provenance is a key axis, so match the flag the
+/// transcription ran with).
+///
+/// Source-absolute throughout: a media resource names no layer, and layers
+/// move — map to the timeline with the layer's current
+/// `t_start_us + (source_us - src_in_us)`. Unlike `media://{id}/analysis`
+/// (always computable) this never transcribes on a miss — transcription costs
+/// an engine spawn or an API call — and 404s naming the backend checked and
+/// the `transcribe_clip` call that fills it. A read spawns no engine either
+/// way, so without an explicit `backend` the reader serves the preferred
+/// engine's entry when it covers the window, else the first covered entry in
+/// backend order: whatever engine transcribed is what the next session finds.
+#[cfg(feature = "speech")]
+async fn read_transcript_resource(
+    b: &Backend,
+    uri: &str,
+    tail: &str,
+    media: Option<crate::state::MediaItem>,
+    preferred_hint: Option<&str>,
+) -> Result<ResourceResult, McpToolError> {
+    use crate::speech;
+
+    // tail = "{id}/transcript[?query]".
+    let (id_part, query) = match tail.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (tail, ""),
+    };
+    let id_part = id_part.strip_suffix("/transcript").ok_or_else(|| {
+        McpToolError::resource_not_found(format!("unknown media sub-resource in: {uri}"), None)
+    })?;
+    let media_id = Uuid::parse_str(id_part).map_err(|_| {
+        McpToolError::resource_not_found(format!("media URI has invalid UUID: {id_part}"), None)
+    })?;
+    let media = media.ok_or_else(|| {
+        McpToolError::resource_not_found(format!("media {media_id} not found"), None)
+    })?;
+    if media.metadata.audio.is_none() {
+        return Err(McpToolError::invalid_request(
+            format!("media {media_id} has no audio stream — media://{{id}}/transcript needs an audio source"),
+            None,
+        ));
+    }
+
+    let q = parse_transcript_query(query)?;
+    let preferred = preferred_hint.and_then(|tag| {
+        speech::SpeechBackend::all()
+            .iter()
+            .copied()
+            .find(|b| b.as_str() == tag)
+    });
+    // Explicit `backend` is strict (the tool's contract); otherwise the
+    // preferred engine first, then backend order — first entry COVERING the
+    // window wins.
+    let mut ordered: Vec<speech::SpeechBackend> = Vec::new();
+    if let Some(x) = q.backend {
+        ordered.push(x);
+    } else {
+        if let Some(p) = preferred {
+            ordered.push(p);
+        }
+        for b in speech::SpeechBackend::all() {
+            if !ordered.contains(b) {
+                ordered.push(*b);
+            }
+        }
+    }
+
+    // Keys up front, under one short lock scope: nothing below awaits while a
+    // guard is held (clippy `await_holding_lock` is lexical, so the scope —
+    // not an explicit `drop` — ends the borrow).
+    let keys: Vec<(speech::SpeechBackend, String)> = {
+        let cfg = b.speech_config.lock().expect("speech_config poisoned");
+        ordered
+            .into_iter()
+            .map(|backend| {
+                let key = speech::transcript_cache_key(
+                    &media.file_hash_blake3,
+                    backend.as_str(),
+                    &speech::model_identity(backend, cfg.get(backend.as_str())),
+                    q.language.as_deref(),
+                    q.want_words,
+                );
+                (backend, key)
+            })
+            .collect()
+    };
+    let mut cached_backends: Vec<String> = Vec::new();
+    for (backend, key) in keys {
+        let path = b.cache.transcript(&key);
+        crate::cache::touch_if_stale(&path);
+        if !crate::cache::cached_ok(&path) {
+            continue;
+        }
+        cached_backends.push(backend.as_str().to_string());
+        let bytes = tokio::fs::read(&path).await.map_err(|e| {
+            McpToolError::internal_error(format!("read {}: {e}", path.display()), None)
+        })?;
+        let cache: speech::TranscriptCache = match serde_json::from_slice(&bytes) {
+            Ok(c) => c,
+            Err(_) => continue, // a corrupt entry is a miss; the next transcribe overwrites it
+        };
+        // Sentence-merge BEFORE windowing: a sentence straddling the window
+        // edge belongs to both sides, and windowing first would cut it.
+        let view = if q.sentence {
+            speech::Transcript {
+                segments: cache.segments.clone(),
+                language: cache.language.clone(),
+                word_timing: cache.word_timing.unwrap_or(speech::WordTiming::None),
+            }
+            .sentences()
+        } else {
+            let mut segs = cache.segments.clone();
+            segs.sort_by_key(|s| s.t_start_us);
+            segs
+        };
+        let (w_start, w_end) = q.window.unwrap_or((i64::MIN, i64::MAX));
+        let mut kept: Vec<speech::Segment> = view
+            .into_iter()
+            .filter(|s| s.t_start_us < w_end && s.t_end_us > w_start)
+            .collect();
+        if kept.is_empty() && q.backend.is_none() {
+            // Covered nothing in this window — another engine's entry might.
+            // (With an explicit `backend` the miss is the answer.)
+            continue;
+        }
+        if q.compact {
+            for s in &mut kept {
+                s.words = Vec::new();
+            }
+        }
+        return render_transcript(uri, &cache, backend, q, kept);
+    }
+
+    if q.backend.is_some() || cached_backends.is_empty() {
+        let scope = match q.backend {
+            Some(x) => format!(" under backend {}", x.as_str()),
+            None => String::new(),
+        };
+        return Err(McpToolError::resource_not_found(
+            format!(
+                "no transcript cached yet for media {media_id}{scope} — call transcribe_clip (it persists on first transcribe)"
+            ),
+            None,
+        ));
+    }
+    Err(McpToolError::resource_not_found(
+        format!(
+            "no transcript covering {} for media {media_id} (cached under {}) — transcribe that range, or widen the window",
+            window_desc(q.window),
+            cached_backends.join(", "),
+        ),
+        None,
+    ))
+}
+
+/// The parsed `media://{id}/transcript` query. Every field optional; invalid
+/// values refuse as `invalid_params` (a read the agent can fix mechanically),
+/// never as silent defaults.
+#[cfg(feature = "speech")]
+struct TranscriptQuery {
+    format: TranscriptFormat,
+    sentence: bool,
+    compact: bool,
+    window: Option<(i64, i64)>,
+    backend: Option<crate::speech::SpeechBackend>,
+    language: Option<String>,
+    want_words: bool,
+}
+
+#[cfg(feature = "speech")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TranscriptFormat {
+    Segments,
+    Text,
+    Srt,
+}
+
+#[cfg(feature = "speech")]
+fn window_desc(window: Option<(i64, i64)>) -> String {
+    match window {
+        Some((s, e)) => format!("[{s}, {e})"),
+        None => "the whole coverage".to_string(),
+    }
+}
+
+#[cfg(feature = "speech")]
+fn parse_transcript_query(query: &str) -> Result<TranscriptQuery, McpToolError> {
+    use crate::speech::SpeechBackend;
+
+    let mut format = TranscriptFormat::Segments;
+    let mut segment: Option<&str> = None;
+    let mut detail: Option<&str> = None;
+    let mut w_start: Option<i64> = None;
+    let mut w_end: Option<i64> = None;
+    let mut backend: Option<SpeechBackend> = None;
+    let mut language: Option<String> = None;
+    let mut want_words = true;
+
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').ok_or_else(|| {
+            McpToolError::invalid_params(
+                format!("transcript query pair without '=': {pair:?}"),
+                None,
+            )
+        })?;
+        match k {
+            "format" => {
+                format = match v {
+                    "segments" => TranscriptFormat::Segments,
+                    "text" => TranscriptFormat::Text,
+                    "srt" => TranscriptFormat::Srt,
+                    _ => {
+                        return Err(McpToolError::invalid_params(
+                            format!("transcript format {v:?}; expected \"segments\", \"text\", or \"srt\""),
+                            None,
+                        ));
+                    }
+                };
+            }
+            "segment" => {
+                segment = Some(v);
+                if !matches!(v, "sentence" | "engine") {
+                    return Err(McpToolError::invalid_params(
+                        format!("transcript segment {v:?}; expected \"sentence\" or \"engine\""),
+                        None,
+                    ));
+                }
+            }
+            "detail" => {
+                detail = Some(v);
+                if !matches!(v, "full" | "compact") {
+                    return Err(McpToolError::invalid_params(
+                        format!("transcript detail {v:?}; expected \"full\" or \"compact\""),
+                        None,
+                    ));
+                }
+            }
+            "t_start_us" => {
+                w_start = Some(v.parse().map_err(|_| {
+                    McpToolError::invalid_params(
+                        format!("transcript t_start_us not an integer: {v:?}"),
+                        None,
+                    )
+                })?);
+            }
+            "t_end_us" => {
+                w_end = Some(v.parse().map_err(|_| {
+                    McpToolError::invalid_params(
+                        format!("transcript t_end_us not an integer: {v:?}"),
+                        None,
+                    )
+                })?);
+            }
+            "backend" => {
+                backend = Some(
+                    SpeechBackend::all().iter().copied().find(|b| b.as_str() == v).ok_or_else(|| {
+                        McpToolError::invalid_params(
+                            format!("unknown backend {v:?}; expected \"openai\", \"whisper_cpp\", or \"funasr\""),
+                            None,
+                        )
+                    })?,
+                );
+            }
+            "language" => language = Some(v.to_string()),
+            "words" => {
+                want_words = match v {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(McpToolError::invalid_params(
+                            format!("transcript words {v:?}; expected \"true\" or \"false\""),
+                            None,
+                        ));
+                    }
+                };
+            }
+            _ => {
+                return Err(McpToolError::invalid_params(
+                    format!("unknown transcript query key {k:?}"),
+                    None,
+                ));
+            }
+        }
+    }
+    if w_start.is_some() != w_end.is_some() {
+        return Err(McpToolError::invalid_params(
+            "transcript t_start_us and t_end_us name a window together — send both or neither"
+                .to_string(),
+            None,
+        ));
+    }
+    let window = match (w_start, w_end) {
+        (Some(s), Some(e)) => {
+            if e <= s {
+                return Err(McpToolError::invalid_params(
+                    format!("transcript t_end_us ({e}) must be greater than t_start_us ({s})"),
+                    None,
+                ));
+            }
+            Some((s, e))
+        }
+        _ => None,
+    };
+    Ok(TranscriptQuery {
+        format,
+        sentence: segment.is_none_or(|s| s == "sentence"),
+        compact: detail.is_some_and(|d| d == "compact"),
+        window,
+        backend,
+        language,
+        want_words,
+    })
+}
+
+/// Render the windowed transcript view in the requested format: `segments`
+/// returns the JSON envelope (`backend`, detected `language`, `word_timing`,
+/// the `segment` view served, the source-absolute `range`, and the segments);
+/// `text` the cue texts line-joined; `srt` the cues renumbered from 1.
+#[cfg(feature = "speech")]
+fn render_transcript(
+    uri: &str,
+    cache: &crate::speech::TranscriptCache,
+    backend: crate::speech::SpeechBackend,
+    q: TranscriptQuery,
+    kept: Vec<crate::speech::Segment>,
+) -> Result<ResourceResult, McpToolError> {
+    use crate::speech;
+    if q.format != TranscriptFormat::Segments {
+        let mime = match q.format {
+            TranscriptFormat::Text => "text/plain",
+            _ => "application/x-subrip",
+        };
+        let text = match q.format {
+            TranscriptFormat::Text => kept
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => speech::render_srt_segments(&kept),
+        };
+        return Ok(ResourceResult {
+            contents: vec![ResourceContent::Text {
+                uri: uri.to_string(),
+                mime_type: Some(mime.to_string()),
+                text,
+            }],
+        });
+    }
+    let range = if kept.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!({
+            "t_start_us": kept.iter().map(|s| s.t_start_us).min(),
+            "t_end_us": kept.iter().map(|s| s.t_end_us).max(),
+        })
+    };
+    let body = serde_json::json!({
+        "backend": backend.as_str(),
+        "language": cache.language,
+        "word_timing": cache.word_timing.unwrap_or(speech::WordTiming::None),
+        "segment": if q.sentence { "sentence" } else { "engine" },
+        "range": range,
+        "segments": kept,
+    });
+    text_resource(uri, &body)
 }
 
 /// Serve `media://{id}/description` — the cached scene-description view the
@@ -557,6 +966,11 @@ const STATIC_RESOURCES: &[ResourceDescriptor] = &[
         description: "Tracks with layer envelopes. Read project://layers/{id} for full layer detail.",
     },
     ResourceDescriptor {
+        uri: URI_TIMELINE,
+        name: "Timeline",
+        description: "Compact flat layer rows with a gap list. Takes ?composition=<id>, ?t_start_us=&t_end_us= (window, overlap), ?offset=&limit= (default 200, max 1000). Read project://layers/{id} for full layer detail.",
+    },
+    ResourceDescriptor {
         uri: URI_MARKERS,
         name: "Markers",
         description: "Timeline markers, sorted by t_us.",
@@ -626,6 +1040,20 @@ mod stateless_tests {
         assert!(bare.describe_focus.is_none());
     }
 
+    /// `transcribe_preferred` rides the same injection as the describe view's
+    /// axes (and `"auto"` is the same absence): the transcript key carries the
+    /// backend that served the request, so a read that dropped the preference
+    /// would look under another engine's entry.
+    #[cfg(feature = "speech")]
+    #[test]
+    fn resource_state_reads_the_injected_transcribe_preference() {
+        let state: ResourceState =
+            serde_json::from_str(r#"{"media":null,"transcribe_preferred":"whisper_cpp"}"#).unwrap();
+        assert_eq!(state.transcribe_preferred.as_deref(), Some("whisper_cpp"));
+        let bare: ResourceState = serde_json::from_str("{}").unwrap();
+        assert!(bare.transcribe_preferred.is_none());
+    }
+
     /// The advertised `project://history` description must teach the window
     /// semantics (`window_start`, `evicted`, absolute `jump_to` indices):
     /// several MCP clients surface only `resources/list` to the model, so a
@@ -677,6 +1105,20 @@ mod stateless_tests {
         };
         let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(body["live"], false);
+    }
+
+    /// project://timeline is advertised here but served by the TS host (the
+    /// sole state owner), like project://tracks: the catalog carries the
+    /// entry so agents discover it, and this reader refuses the read with
+    /// the TS-served message.
+    #[test]
+    fn timeline_is_advertised_but_ts_served() {
+        let defs = static_resources();
+        let d = defs
+            .iter()
+            .find(|r| r.uri == "project://timeline")
+            .expect("project://timeline must be advertised");
+        assert!(d.description.contains("?t_start_us="));
     }
 
     /// project://* state views are TS-served; the Rust reader returns a clear
@@ -759,5 +1201,186 @@ mod stateless_tests {
             m > stale + std::time::Duration::from_secs(30),
             "thumbnail read must refresh a stale poster mtime"
         );
+    }
+
+    /// Fabricate one transcribed source: an `openai` transcript key entry with
+    /// two fragments 100 ms apart, so the default sentence view merges them.
+    #[cfg(feature = "speech")]
+    async fn write_transcript_fixture(b: &Backend, hash: &str) {
+        use crate::speech::{BackendConfig, SpeechBackend};
+        b.speech_config
+            .lock()
+            .expect("speech_config poisoned")
+            .insert("openai".to_string(), BackendConfig::ApiKey("test-key".into()));
+        let cache = serde_json::json!({
+            "covered_ranges": [[0, 2_000_000]],
+            "segments": [
+                {"t_start_us": 0, "t_end_us": 500_000, "text": "hello",
+                 "words": [{"t_start_us": 0, "t_end_us": 500_000, "text": "hello"}]},
+                {"t_start_us": 600_000, "t_end_us": 1_000_000, "text": "world",
+                 "words": [{"t_start_us": 600_000, "t_end_us": 1_000_000, "text": "world"}]},
+            ],
+            "language": "en",
+            "word_timing": "exact",
+        });
+        let key = crate::speech::transcript_cache_key(
+            hash,
+            SpeechBackend::OpenAi.as_str(),
+            &crate::speech::model_identity(
+                SpeechBackend::OpenAi,
+                Some(&BackendConfig::ApiKey("test-key".into())),
+            ),
+            None,
+            true,
+        );
+        let dest = b.cache.transcript(&key);
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, serde_json::to_vec(&cache).unwrap()).unwrap();
+    }
+
+    #[cfg(feature = "speech")]
+    fn transcript_media_item(id: uuid::Uuid, hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "label": null, "path_abs": "/nonexistent", "path_rel": null,
+            "kind": "Video",
+            "metadata": {
+                "duration_us": 2_000_000, "video": null,
+                "audio": {"sample_rate": 48000, "channels": 2, "codec": "aac"},
+                "container_format": null,
+            },
+            "decode_route": { "route": "bypass" }, "waveform_path": null,
+            "conform_path": null, "thumbnails_dir": null,
+            "file_hash_blake3": hash, "file_size": 0, "file_mtime": 0,
+            "imported_at": chrono::Utc::now(),
+        })
+    }
+
+    #[cfg(feature = "speech")]
+    fn transcript_body(r: &ResourceResult) -> serde_json::Value {
+        let text = match &r.contents[0] {
+            ResourceContent::Text { text, .. } => text.clone(),
+            c => panic!("expected text content, got {c:?}"),
+        };
+        serde_json::from_str(&text).unwrap()
+    }
+
+    /// The durable-transcript read: no engine is spawned — a fabricated cache
+    /// entry serves the default sentence view, the engine view, a window, the
+    /// compact detail, and the srt format.
+    #[cfg(feature = "speech")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transcript_resource_serves_the_cached_transcript() {
+        let b = Backend::new_for_test(std::sync::Arc::new(crate::events::VecEventSink::new()));
+        b.init().await.unwrap();
+        let id = uuid::Uuid::now_v7();
+        let hash = format!("transcript-test-{id}");
+        write_transcript_fixture(&b, &hash).await;
+        let state =
+            serde_json::json!({ "media": transcript_media_item(id, &hash) }).to_string();
+
+        let body = transcript_body(
+            &read_resource(&b, &format!("media://{id}/transcript"), &state)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(body["backend"], "openai");
+        assert_eq!(body["segment"], "sentence");
+        assert_eq!(body["language"], "en");
+        assert_eq!(body["word_timing"], "exact");
+        assert_eq!(body["segments"].as_array().unwrap().len(), 1);
+        assert_eq!(body["segments"][0]["text"], "hello world");
+        assert_eq!(body["segments"][0]["words"].as_array().unwrap().len(), 2);
+
+        let engine = transcript_body(
+            &read_resource(&b, &format!("media://{id}/transcript?segment=engine"), &state)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(engine["segment"], "engine");
+        assert_eq!(engine["segments"].as_array().unwrap().len(), 2);
+
+        let windowed = transcript_body(
+            &read_resource(
+                &b,
+                &format!("media://{id}/transcript?t_start_us=700000&t_end_us=2000000"),
+                &state,
+            )
+            .await
+            .unwrap(),
+        );
+        // The sentence straddles the window edge and belongs to both sides:
+        // windowing never cuts it.
+        assert_eq!(windowed["segments"].as_array().unwrap().len(), 1);
+
+        let compact = transcript_body(
+            &read_resource(&b, &format!("media://{id}/transcript?detail=compact"), &state)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(compact["segments"][0]["words"].as_array().unwrap().len(), 0);
+
+        let srt = read_resource(&b, &format!("media://{id}/transcript?format=srt"), &state)
+            .await
+            .unwrap();
+        match &srt.contents[0] {
+            ResourceContent::Text { text, mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("application/x-subrip"));
+                assert!(text.starts_with("1\n00:00:00,000 --> 00:00:01,000\nhello world\n"));
+            }
+            c => panic!("expected text content, got {c:?}"),
+        }
+    }
+
+    /// Before the first transcribe there is nothing to serve: the refusal
+    /// names `transcribe_clip` (the call that fills the cache), not a retry.
+    #[cfg(feature = "speech")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transcript_resource_404s_before_the_first_transcribe() {
+        let b = Backend::new_for_test(std::sync::Arc::new(crate::events::VecEventSink::new()));
+        b.init().await.unwrap();
+        let id = uuid::Uuid::now_v7();
+        let hash = format!("transcript-miss-{id}");
+        let state =
+            serde_json::json!({ "media": transcript_media_item(id, &hash) }).to_string();
+        let err = read_resource(&b, &format!("media://{id}/transcript"), &state)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("transcribe_clip"),
+            "the miss must name the filling call; got: {}",
+            err.message
+        );
+    }
+
+    /// A source with no audio stream is refused outright (transcription could
+    /// never have produced an entry), and a malformed query refuses as
+    /// `invalid_params` rather than a silent default.
+    #[cfg(feature = "speech")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transcript_resource_refuses_audio_less_media_and_bad_queries() {
+        let b = Backend::new_for_test(std::sync::Arc::new(crate::events::VecEventSink::new()));
+        b.init().await.unwrap();
+        let id = uuid::Uuid::now_v7();
+        let mut item = transcript_media_item(id, &format!("transcript-bad-{id}"));
+        item["metadata"]["audio"] = serde_json::Value::Null;
+        let state = serde_json::json!({ "media": item }).to_string();
+        let err = read_resource(&b, &format!("media://{id}/transcript"), &state)
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("no audio stream"), "got: {}", err.message);
+
+        let id2 = uuid::Uuid::now_v7();
+        let hash2 = format!("transcript-bad-{id2}");
+        let state2 =
+            serde_json::json!({ "media": transcript_media_item(id2, &hash2) }).to_string();
+        for uri in [
+            format!("media://{id2}/transcript?format=nope"),
+            format!("media://{id2}/transcript?segment=paragraph"),
+            format!("media://{id2}/transcript?t_start_us=5"),
+            format!("media://{id2}/transcript?backend=nope"),
+        ] {
+            let err = read_resource(&b, &uri, &state2).await.unwrap_err();
+            assert_eq!(err.code, super::super::wire::McpErrorCode::InvalidParams, "{uri}: {}", err.message);
+        }
     }
 }

@@ -13,9 +13,11 @@ what no single tool can: how a session should go.
 
 ## Session etiquette
 
-1. Read `project://current` before your first mutation — never write against a
-   guessed state. If your client cannot read MCP resources, `read_project`
-   returns the same views as a tool result.
+1. Read `project://timeline` before your first mutation — compact rows plus the
+   gap list, windowed by `t_start_us`/`t_end_us` (`project://current` only when
+   you need the whole project). Never write against a guessed state. If your
+   client cannot read MCP resources, `read_project` returns the same views as
+   a tool result.
 2. Call `create_checkpoint` before your first edit, so the user has a one-step
    restore point.
 3. A small change (a handful of tool calls) needs no more ceremony than that:
@@ -52,9 +54,13 @@ descriptions:
   the speech either side keeps its breath (or mark them to review first:
   `detect_pauses` → an anchored region `add_marker` per pause; both packaged
   as the `/cut-pauses` prompt).
-- Captions: `transcribe_clip` → inspect the returned SRT → `apply_transcripts`,
-  passing the envelope's `segments` and `word_timing` through (also
-  `/auto-caption`). `apply_subtitles` is for a subtitle FILE the user already
+- Captions: `transcribe_clip` with `segment` set to `sentence` → inspect the
+  returned SRT → `apply_transcripts`, passing the envelope's `segments` and
+  `word_timing` through (also `/auto-caption`). Sentence segmentation merges
+  choppy engine fragments across sub-pause gaps — never re-merge thresholds
+  yourself. A transcript persists per source: re-read it from the `transcript`
+  media resource instead of re-transcribing it next session.
+  `apply_subtitles` is for a subtitle FILE the user already
   has — routing a transcript through one discards the word timing that
   `correct_caption_text` needs. Correcting names and jargon: put the script or
   notes in `set_project_settings { correction_script }`, then
@@ -65,8 +71,11 @@ descriptions:
   every offset you get back, then `apply_subtitles`.
 - Voiceover: `synthesize_speech` appends a spoken script to the timeline
   (also `/voiceover`).
-- Rough cut: `analyze_clip` or `auto_split_by_shot`, then trim and delete
-  segments — `delete_layers` with `ripple: true` when the gap a cut leaves
+- Rough cut: name the spans to keep and call `apply_cut_list` — one recorded
+  edit that splits, discards, labels and closes the gaps, rehearsable with
+  `dry_run` (use it; a 21-step trim-and-delete cannot be rehearsed).
+  `analyze_clip` or `auto_split_by_shot` first when the boundaries come from
+  shot cuts; `delete_layers` with `ripple: true` when the gap a cut leaves
   should close behind it.
 - Music, sound effects, a separate voice track: `add_audio_layer`. It is the
   only tool that places audio-only media — `add_video_layer` builds a visual

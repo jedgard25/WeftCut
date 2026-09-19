@@ -137,7 +137,15 @@ export class PacketPump {
   /// Latest requested playhead/scrub target (µs). Updated synchronously
   /// by every requestFrameAt; read at the top of each pump pass + each
   /// fill iteration so a mid-flight seek is picked up immediately.
+  /// Also read by the decoder-output filter (`outputFilter.ts`), which
+  /// drops prefix frames that end before this target without snapshotting.
   private targetUs = 0;
+
+  /// The latest requested target. The output filter reads this live so a
+  /// backward seek narrows what counts as droppable on the next output.
+  currentTargetUs(): number {
+    return this.targetUs;
+  }
   /// PTS (µs) of `cursor`. Sentinel until cold start positions the cursor;
   /// never read by `decideReset` while the sentinel holds (the pump
   /// short-circuits cold start via `cursor === null`).

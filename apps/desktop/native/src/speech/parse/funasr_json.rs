@@ -274,7 +274,11 @@ fn emit_cue(cues: &mut Vec<Segment>, run: Vec<Word>) {
 /// the engine's `text` character for character: Chinese runs together, and a
 /// space goes wherever a Latin word abuts anything. Pinned by [`SAMPLE_LONG`],
 /// whose rebuild is asserted equal to the `text` the engine printed beside it.
-fn join_words(words: &[Word]) -> String {
+///
+/// `pub(crate)` because sentence merging (`transcript::Transcript::sentences`)
+/// rebuilds text from words of EVERY backend and must join them by the same
+/// rule — a second spelling of CJK joining is how caption corruptions start.
+pub(crate) fn join_words(words: &[Word]) -> String {
     let mut out = String::new();
     for w in words {
         let piece = w.text.trim();

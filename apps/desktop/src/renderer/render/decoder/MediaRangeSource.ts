@@ -23,9 +23,17 @@ export class MediaRangeSource {
       getSize: () => this.getSize(),
       read: (start, end) => this.read(start, end),
       dispose: () => this.dispose(),
-      // ~a few source seconds resident; network-style prefetch suits weftcut-media:// latency.
-      maxCacheSize: 16 * 1024 * 1024,
-      prefetchProfile: "network",
+      // Resident set for HIGH-bitrate local files: 256 MB holds ~10 s of a
+      // 200 Mbps source plus its sample tables, so a scrub seek's key-packet
+      // lookup + GOP-prefix walk usually hit memory instead of paying a
+      // fetch → protocol-handler → fs round trip per packet. The previous
+      // 16 MB held barely half a second of such a file and thrashed on
+      // every seek. A cap, not a reservation — idle sources hold nothing.
+      maxCacheSize: 256 * 1024 * 1024,
+      // Local disk behind a custom scheme, not a remote server: the
+      // fileSystem prefetch profile reads ahead aggressively instead of
+      // conserving requests like the network profile.
+      prefetchProfile: "fileSystem",
     };
     this.source = new CustomSource(this.options);
   }

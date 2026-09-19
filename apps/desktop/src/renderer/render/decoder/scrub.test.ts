@@ -80,4 +80,69 @@ describe("ScrubCoalescer", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(seen).toEqual([]);
   });
+
+  it("isIdle is true fresh, false while a seek is pending or running", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const c = new ScrubCoalescer({
+      debounceMs: 50,
+      maxWaitMs: 100,
+      onStableSeek: async () => {
+        await gate;
+      },
+    });
+    expect(c.isIdle).toBe(true);
+    c.requestSeek(10);
+    expect(c.isIdle).toBe(false);
+    await vi.advanceTimersByTimeAsync(50); // fire starts, blocks on the gate
+    expect(c.isIdle).toBe(false);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.isIdle).toBe(true);
+  });
+
+  it("requestSeekImmediate fires without waiting for the debounce window", async () => {
+    const seen: number[] = [];
+    const c = new ScrubCoalescer({
+      debounceMs: 50,
+      maxWaitMs: 180,
+      onStableSeek: async (t) => {
+        seen.push(t);
+      },
+    });
+    c.requestSeekImmediate(42);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([42]); // no 50 ms wait
+  });
+
+  it("requestSeekImmediate while a seek runs falls back to the debounced path", async () => {
+    const seen: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let first = true;
+    const c = new ScrubCoalescer({
+      debounceMs: 50,
+      maxWaitMs: 180,
+      onStableSeek: async (t) => {
+        seen.push(t);
+        if (first) {
+          first = false;
+          await gate; // hold the first seek in flight
+        }
+      },
+    });
+    c.requestSeekImmediate(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([1]);
+    c.requestSeekImmediate(2); // in flight → debounced, not re-entered
+    await vi.advanceTimersByTimeAsync(10);
+    expect(seen).toEqual([1]);
+    release();
+    await vi.advanceTimersByTimeAsync(60);
+    expect(seen).toEqual([1, 2]);
+  });
 });

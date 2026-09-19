@@ -15,7 +15,8 @@ import { applyTrimLayer, type LayerEdge } from './mutations/trim'
 import { applyDeleteLayer } from './mutations/delete'
 import { applyRippleDeleteGap, applyRippleDeleteLayers, type RippleDeleteResult, type RippleGapResult } from './mutations/ripple'
 import { applyPasteLayer, applyPasteLayers, pasteLayerInterval } from './mutations/duplicate'
-import { applySplitLayer, parseDiscardSegments } from './mutations/split'
+import { applySplitLayer, parseDiscardSegments, gridForSplit, linkHasFrameMember } from './mutations/split'
+import { validateKeepRanges, planCutList, type KeepRange, type CutListPlan } from './mutations/cutList'
 import { applyLinksCreate, applyLinksDissolve, applyLinksAddMembers, applyLinksRemoveMembers, applyLinksRename, linkSiblingsExcluding } from './mutations/links'
 import { serveProjectResource } from './resource-views'
 import { applyCompositionsDelete, applyGroupsAddMembers, applyGroupsCreate, applyGroupsRename, applyGroupsUngroup, type GroupCreateResult } from './mutations/groups'
@@ -38,7 +39,7 @@ import { applyAddCaptionTrack, applyRestyleCaptions, captionTracks, type Cue, ty
 import { applyRebindMotif, motifLayerParams } from './mutations/motif'
 import { canonicalizeProps, resolveMotifMaxDurUs, resolveMotifTEndUs, MotifPropError } from '../../shared/motifs/catalog'
 import { parseMechanical, prodColorParams, prodTextParams, prodMediaLayer, resolveDurationUs, pickFreeOverlayTrack, demoColor } from './commands'
-import { mapCommandError, MCP_ARG_PARSERS, MCP_RESULT_SHAPERS, toolEmpty, toolText, toolJson, asArray, parseUuid, parseNum, parseNumOpt, parseStr, parseBool, parseRgba, parseRole, parseTransitionKind, parseTransitionKindOpt, parseTransitionPlacement, McpArgError, shapeGetParamTrack, keyframePresent, shapeDryRunResponse, mcpDef, type McpCallResult, type TrackValue } from './mcp-commands'
+import { mapCommandError, MCP_ARG_PARSERS, MCP_RESULT_SHAPERS, toolEmpty, toolText, toolJson, asArray, parseUuid, parseNum, parseNumOpt, parseStr, parseBool, parseRgba, parseRole, parseTransitionKind, parseTransitionKindOpt, parseTransitionPlacement, parseKeepRanges, McpArgError, shapeGetParamTrack, keyframePresent, shapeDryRunResponse, mcpDef, type McpCallResult, type TrackValue } from './mcp-commands'
 import { upsertKeyframe, removeKeyframe, retimeKeyframe, setSegmentEasing, setAuto, setTangent, setContinuity, setExtrapolation } from './keyframeEdits'
 import { readLayerTrack } from './mutations/params'
 import { applySetPosition, applyTranslatePath } from './mutations/position'
@@ -65,6 +66,10 @@ export type DryRunOp =
   | { kind: 'MoveLayer'; id: Uuid; new_track_id: Uuid; new_t_start_us: number; escape_link: boolean }
   | { kind: 'SplitLayer'; id: Uuid; at_t_us: number; escape_link: boolean }
   | { kind: 'TrimLayer'; id: Uuid; edge: LayerEdge; new_t_us: number; escape_link: boolean }
+  // apply_cut_list rehearses its ripple intrinsically: the op IS keep + close,
+  // so unlike the generic `delete_layers` (whose `ripple: true` stays
+  // non-dry-runnable) there is no lift-only restriction here.
+  | { kind: 'ApplyCutList'; layer: Uuid; keep: KeepRange[] }
   // `transition_kind`, not `kind`: the discriminant owns that name.
   | { kind: 'AddTransition'; from: Uuid; to: Uuid; duration_us: number; transition_kind: TransitionKind; placement: 'overlap' | 'extend' }
 export type DryRunOutput =
@@ -74,6 +79,7 @@ export type DryRunOutput =
   // lane moves and lane spawns exactly as the wet command would perform (and
   // log) them — same code path, produce-and-discard.
   | { kind: 'AddTransition'; transition_id: Uuid; bounces: TransitionBounce[] }
+  | { kind: 'ApplyCutList'; surviving_layer_ids: Uuid[]; removed: number; removed_us: number }
   | { kind: 'Void' }
 
 /** Status-log row payload — structurally matches TsActorHostDeps.emitLog so the
@@ -124,6 +130,149 @@ export interface ActorHandle {
    *  Called by the host after motif-store-mutating operations to keep the catalog
    *  current for the content-window clamp in applyUpdateLayerParams. */
   setUserMotifManifests(ms: Manifest[]): void
+}
+
+// ── split_layer_multi engine ──────────────────────────────────────────────
+// Coalesced multi-split + optional discards + optional ripple + optional
+// survivor labels, shared by the `split_layer_multi` dispatch arm (shot-apply
+// hybrids, drop-short) and the `apply_cut_list` dispatch arm (keep-ranges).
+// One function so the two verbs cut, fan out, refuse and close identically;
+// the arms differ only in how they number the cuts and what they record.
+//
+// `ats` are ascending timeline times, pre-snapped by the caller to the
+// link-aware grid (`gridForSplit`); each is re-checked against the CURRENT
+// segment bounds and a non-interior one is SKIPPED (never thrown), so a
+// redundant/collapsed cut merges two nominal segments instead of aborting.
+// `discardIdx` and `labels` ride NOMINAL indices (over `ats.length + 1`
+// segments) through the carrier map, which absorbs exactly those merges:
+// without it every index past a skip would name a neighbour of what the
+// caller counted. A nominal label landing on a discarded carrier is dropped
+// with it; two labels colliding on one merged carrier resolve last-wins.
+interface SplitLayerMultiOpts {
+  layer: Uuid
+  ats: number[]
+  dropShortUs: number | null
+  discardIdx: number[]
+  ripple: boolean
+  labels?: ReadonlyMap<number, string>
+}
+interface SplitLayerMultiResult {
+  /** Ordered target-segment layer ids that survived. */
+  surviving: Uuid[]
+  /** Nominal discarded segments (link fan-out partners share the span and are
+   *  not counted twice). */
+  removed: number
+  removedUs: number
+}
+function applySplitLayerMulti(d: Project, idGen: IdGen, opts: SplitLayerMultiOpts): SplitLayerMultiResult {
+  const { layer, ats, dropShortUs, discardIdx, ripple } = opts
+  let currentId = layer
+  const ids: Uuid[] = []
+  // Which segment actually carries each NOMINAL index — the numbering the
+  // caller counted off the cut list.
+  const carrier: Uuid[] = []
+  for (let i = 0; i < ats.length; i++) {
+    const at = ats[i]
+    // Re-snap on the CURRENT SEGMENT's split grid and skip a cut that no
+    // longer falls strictly inside it — defensive against a redundant cut so
+    // applySplitLayer never rejects mid-batch. The grid is the link-aware
+    // one (`gridForSplit`): frame when a picture member rides along, else
+    // the segment's own — so the skip test agrees with the snap the split
+    // is about to take.
+    const loc = locateLayer(d, currentId)
+    const seg = loc ? loc.layer : null
+    if (!seg) continue
+    const atSnapped = snapOnGrid(parseNum(at, 'at_t_us'), gridForSplit(loc!.comp, currentId, seg.params.kind))
+    if (atSnapped <= seg.t_start_us || atSnapped >= seg.t_end_us) continue
+    const { left, right } = applySplitLayer(d, idGen, currentId, atSnapped, false)
+    while (carrier.length <= i) carrier.push(left)
+    ids.push(left)
+    currentId = right
+  }
+  while (carrier.length <= ats.length) carrier.push(currentId)
+  ids.push(currentId)
+  const discarded = new Set(discardIdx.map((i) => carrier[i]))
+  const labelFor = new Map<Uuid, string>()
+  if (opts.labels) for (const [idx, label] of opts.labels) {
+    const id = carrier[idx]
+    if (id !== undefined) labelFor.set(id, label)
+  }
+  if (dropShortUs === null && discarded.size === 0 && labelFor.size === 0) return { surviving: ids, removed: 0, removedUs: 0 }
+  const kept: Uuid[] = []
+  const targets = new Set(ids)
+  const doomed = new Set<Uuid>()
+  let removedUs = 0
+  for (const id of ids) {
+    const loc = locateLayer(d, id)
+    const seg = loc?.layer ?? null
+    const short = seg !== null && dropShortUs !== null && seg.t_end_us - seg.t_start_us < dropShortUs
+    if (!seg || !(short || discarded.has(id))) { kept.push(id); continue }
+    removedUs += seg.t_end_us - seg.t_start_us
+    // Read the link BEFORE this segment's own delete: a link
+    // auto-dissolves below two members, so a two-member pair would
+    // have no siblings left to read afterwards.
+    // Half a frame of slack on the overlap: a slipped-sync partner
+    // genuinely shares the span and must travel, while a manual
+    // bundle member sitting wholly inside a KEPT segment stays.
+    // (Linked splits cut all members at one instant, so grid drift
+    // no longer laps into holes — the slack is for real slips.)
+    // One layer map per segment, not one track scan per sibling: a
+    // 300-cut remove_pauses fans out over a thousand-member link.
+    const halfFrameUs = (500_000 * loc!.comp.fps.den) / loc!.comp.fps.num
+    const sibMap = new Map<Uuid, { t_start_us: number; t_end_us: number }>()
+    for (const t of loc!.comp.tracks) for (const l of t.layers) sibMap.set(l.id, l)
+    const partners = linkSiblingsExcluding(loc!.comp, id).filter((sid) => {
+      if (targets.has(sid)) return false // never another segment of the target
+      const s = sibMap.get(sid)
+      if (s === undefined) return false
+      const overlapUs = Math.min(s.t_end_us, seg.t_end_us) - Math.max(s.t_start_us, seg.t_start_us)
+      if (overlapUs <= 0) return false
+      return overlapUs * 2 > s.t_end_us - s.t_start_us || overlapUs > halfFrameUs
+    })
+    if (ripple) { doomed.add(id); for (const sid of partners) doomed.add(sid); continue }
+    applyDeleteLayer(d, id)
+    // Defensive re-locate: no partner should overlap two rejected
+    // segments, since a member spanning a cut was split at it — but a
+    // stale id here would throw LayerNotFound and abort the whole
+    // apply, so the list is checked rather than trusted.
+    for (const sid of partners) if (locateLayer(d, sid)) applyDeleteLayer(d, sid)
+  }
+  // Nothing but the ripple branch above fills `doomed`, and it can
+  // still come out empty — `drop_short_us` with no segment under the
+  // floor. The ripple refuses an empty set (nothing to close), so the
+  // splits alone are the whole edit.
+  if (doomed.size > 0) applyRippleDeleteLayers(d, [...doomed])
+  for (const id of kept) {
+    const label = labelFor.get(id)
+    // A label for a carrier the ripple took is dropped with it; a survivor
+    // on a locked track refuses the whole op through applyUpdateLayer's own
+    // checkTrackLock — same as any edit to a locked lane.
+    if (label !== undefined && locateLayer(d, id)) applyUpdateLayer(d, id, { label })
+  }
+  return { surviving: kept, removed: discarded.size, removedUs }
+}
+
+// apply_cut_list's planning over one state snapshot: locate, validate the
+// ranges against the layer, refuse off-grid interior edges with the nearest
+// lattice point, and number the cuts. Shared by the dispatch arm (over the
+// live state) and the dry-run recipe (over the scratch state), so a rehearsal
+// predicts the real call — including its refusals.
+function prepareCutList(p: Project, layerId: Uuid, rawKeep: unknown): CutListPlan {
+  const { layer, comp } = requireLayer(p, layerId)
+  const keeps = validateKeepRanges(layer, rawKeep)
+  const grid = gridForSplit(comp, layerId, layer.params.kind)
+  const framed = linkHasFrameMember(comp, layerId) || layer.params.kind !== 'Audio'
+  const rate = framed ? `the ${comp.fps.num}/${comp.fps.den} composition frame grid` : 'the 48000 Hz audio sample lattice'
+  const snap = (t: number): number => snapOnGrid(t, grid)
+  for (let i = 0; i < keeps.length; i++) {
+    for (const [field, t] of [['t_start_us', keeps[i].t_start_us], ['t_end_us', keeps[i].t_end_us]] as const) {
+      if (t <= layer.t_start_us || t >= layer.t_end_us) continue
+      const s = snap(t)
+      if (s !== t)
+        throw new CommandFailure({ error: 'InvalidArgument', field: `keep_ranges[${i}].${field}`, detail: `${t} is not on ${rate}; nearest is ${s}` })
+    }
+  }
+  return planCutList(layer, keeps, snap)
 }
 
 export function createActor(opts: ActorOptions): ActorHandle {
@@ -774,6 +923,15 @@ export function createActor(opts: ActorOptions): ActorHandle {
             case 'MoveLayer': applyMoveLayer(d, op.id, op.new_track_id, op.new_t_start_us, op.escape_link); break
             case 'SplitLayer': { const s = applySplitLayer(d, idGen, op.id, op.at_t_us, op.escape_link); value = { kind: 'SplitLayer', left_id: s.left, right_id: s.right }; break }
             case 'TrimLayer': applyTrimLayer(d, op.id, op.edge, op.new_t_us, op.escape_link); break
+            // The SAME plan + engine the wet arm runs, so cuts, labels,
+            // link fan-out, ripple moves and every refusal are predicted by
+            // one code path.
+            case 'ApplyCutList': {
+              const plan = prepareCutList(scratch, op.layer, op.keep)
+              const r = applySplitLayerMulti(d, idGen, { layer: op.layer, ats: plan.cuts, dropShortUs: null, discardIdx: plan.discard, ripple: true, labels: plan.labels })
+              value = { kind: 'ApplyCutList', surviving_layer_ids: r.surviving, removed: r.removed, removed_us: r.removedUs }
+              break
+            }
             // The SAME apply the wet arm runs, so moves, bounces, spawns and
             // refusals are predicted by one code path (bounces are primitives —
             // safe to carry out of the discarded draft).
@@ -1020,13 +1178,11 @@ export function createActor(opts: ActorOptions): ActorHandle {
         // Overlap and not exact co-span, so a slipped-sync partner still
         // travels; overlap and not "every member", so a manual bundle member
         // sitting wholly inside a KEPT segment stays. Overlap by MORE than half
-        // a frame (or by most of the piece), not any overlap at all: members on
-        // different grids are cut up to half a frame apart, and a kept
-        // neighbour's piece lapping into a hole by that drift is not part of it
-        // (`remove_pauses` cuts an Audio target whose picture rides the frame
-        // grid). `delete_layers` itself is still local — this is the
-        // shot-apply's own reach, not a link rule
-        // (docs/features.md § Links). A partner on a locked track fails the
+        // a frame (or by most of the piece), not any overlap at all: linked
+        // splits cut all members at one instant, but a slipped-sync partner
+        // genuinely shares the span and must still travel. `delete_layers`
+        // itself is still local — this is the shot-apply's own reach, not a
+        // link rule (docs/features.md § Links). A partner on a locked track fails the
         // whole op through applyDeleteLayer's own checkTrackLock and the commit
         // rolls back atomically, which IS § Links' "locks reject the whole op":
         // no special casing here.
@@ -1063,76 +1219,34 @@ export function createActor(opts: ActorOptions): ActorHandle {
             if (!parsed.ok) return { ok: false, error: { error: 'InvalidArgument', field: 'discard_segments', detail: parsed.detail } }
             discardIdx = parsed.value
           }
-          return { ok: true, value: commit(ripple ? HISTORY_SUMMARY.layerSplitAndRipple : HISTORY_SUMMARY.layerSplitByShots, layerRefs, { kind: 'Coarse' }, (d) => {
-            let currentId = layer
-            const ids: Uuid[] = []
-            // Which segment actually carries each NOMINAL index — the numbering
-            // the caller counted off the cut list. A skipped cut merges two
-            // nominal segments into one real one, and without this map every
-            // index past the skip would name a neighbour of what was unchecked.
-            const carrier: Uuid[] = []
-            for (let i = 0; i < ats.length; i++) {
-              const at = ats[i]
-              // Re-snap on the CURRENT SEGMENT's own grid and skip a cut that no
-              // longer falls strictly inside it — defensive against a redundant cut so
-              // applySplitLayer never rejects mid-batch. The segment must be located
-              // first because the grid depends on its kind (spec R2-D6); shot splits
-              // target video, but this op is reachable for any kind.
-              const loc = locateLayer(d, currentId)
-              const seg = loc ? loc.layer : null
-              if (!seg) continue
-              const atSnapped = snapOnGrid(parseNum(at, 'at_t_us'), gridForLayerKind(seg.params.kind, loc!.comp.fps))
-              if (atSnapped <= seg.t_start_us || atSnapped >= seg.t_end_us) continue
-              const { left, right } = applySplitLayer(d, idGen, currentId, atSnapped, false)
-              while (carrier.length <= i) carrier.push(left)
-              ids.push(left)
-              currentId = right
-            }
-            while (carrier.length <= ats.length) carrier.push(currentId)
-            ids.push(currentId)
-            const discarded = new Set(discardIdx.map((i) => carrier[i]))
-            if (dropShortUs === null && discarded.size === 0) return ids
-            const kept: Uuid[] = []
-            const targets = new Set(ids)
-            const doomed = new Set<Uuid>()
-            for (const id of ids) {
-              const loc = locateLayer(d, id)
-              const seg = loc?.layer ?? null
-              const short = seg !== null && dropShortUs !== null && seg.t_end_us - seg.t_start_us < dropShortUs
-              if (!seg || !(short || discarded.has(id))) { kept.push(id); continue }
-              // Read the link BEFORE this segment's own delete: a link
-              // auto-dissolves below two members, so a two-member pair would
-              // have no siblings left to read afterwards.
-              // Half a frame of slack on the overlap: members on different
-              // grids are cut up to half a frame apart (a sample-lattice cut
-              // rounds onto the frame grid), so the piece of a KEPT neighbour
-              // can lap into this segment by that much without belonging to
-              // it. A piece that is mostly inside still travels however short
-              // it is, and a piece longer than the slack overlap is a partner
-              // that genuinely shares the span (a slipped or longer partner).
-              const halfFrameUs = (500_000 * loc!.comp.fps.den) / loc!.comp.fps.num
-              const partners = linkSiblingsExcluding(loc!.comp, id).filter((sid) => {
-                if (targets.has(sid)) return false // never another segment of the target
-                const s = locateLayer(d, sid)?.layer
-                if (s === undefined) return false
-                const overlapUs = Math.min(s.t_end_us, seg.t_end_us) - Math.max(s.t_start_us, seg.t_start_us)
-                if (overlapUs <= 0) return false
-                return overlapUs * 2 > s.t_end_us - s.t_start_us || overlapUs > halfFrameUs
-              })
-              if (ripple) { doomed.add(id); for (const sid of partners) doomed.add(sid); continue }
-              applyDeleteLayer(d, id)
-              // Defensive re-locate: no partner should overlap two rejected
-              // segments, since a member spanning a cut was split at it — but a
-              // stale id here would throw LayerNotFound and abort the whole
-              // apply, so the list is checked rather than trusted.
-              for (const sid of partners) if (locateLayer(d, sid)) applyDeleteLayer(d, sid)
-            }
-            // Nothing but the ripple branch above fills `doomed`, and it can
-            // still come out empty — `drop_short_us` with no segment under the
-            // floor. The ripple refuses an empty set (nothing to close), so the
-            // splits alone are the whole edit.
-            if (doomed.size > 0) applyRippleDeleteLayers(d, [...doomed])
-            return kept
+          return { ok: true, value: commit(ripple ? HISTORY_SUMMARY.layerSplitAndRipple : HISTORY_SUMMARY.layerSplitByShots, layerRefs, { kind: 'Coarse' }, (d) =>
+            applySplitLayerMulti(d, idGen, { layer, ats, dropShortUs, discardIdx, ripple }).surviving) }
+        }
+        // apply_cut_list — a keep-range rough cut as ONE commit: split `layer`
+        // at every keep edge, discard what no range keeps, ripple the holes
+        // closed, label the survivors. The rough cut is conceptually one edit;
+        // this is the verb that says so — the 21-undo sequence collapses to one
+        // entry, and the exact operation rehearses through `dry_run` (tool flag
+        // and generic op alike) instead of failing live.
+        //
+        // Planning (validate → snap → cuts/discard/labels) is `cutList.ts`;
+        // the commit runs the shared `applySplitLayerMulti` engine, so a cut
+        // list cuts, fans out across links, refuses and closes exactly like the
+        // shot- and pause-apply verbs. Timeline-absolute ranges, like every
+        // other timeline verb (trim/split/move/delete take timeline µs, never
+        // source µs). Always ripples: keeping spans while leaving their holes
+        // open is `delete_layers`, not a cut.
+        //
+        // Off-grid boundaries refuse with the nearest lattice point rather than
+        // snapping silently: a rehearsed-then-committed operation must not move
+        // a cut between the rehearsal and the write (the compute-derived verbs
+        // snap because their inputs are measurements, not asks).
+        case 'apply_cut_list': {
+          const layer = a.layer as Uuid
+          const plan = prepareCutList(current(), layer, a.keep)
+          return { ok: true, value: commit(HISTORY_SUMMARY.layerApplyCutList, (v: { surviving_layer_ids: Uuid[] }) => layerRefs(v.surviving_layer_ids), { kind: 'Coarse' }, (d) => {
+            const r = applySplitLayerMulti(d, idGen, { layer, ats: plan.cuts, dropShortUs: null, discardIdx: plan.discard, ripple: true, labels: plan.labels })
+            return { surviving_layer_ids: r.surviving, removed: r.removed, removed_us: r.removedUs }
           }) }
         }
         // add_markers — coalesced multi-marker drop for shot-boundary
@@ -1626,6 +1740,8 @@ export function createActor(opts: ActorOptions): ActorHandle {
         return { kind: 'MoveLayer', id: parseUuid(spec.layer_id, 'layer_id'), new_track_id: parseUuid(spec.new_track_id, 'new_track_id'), new_t_start_us: parseNum(spec.new_t_start_us, 'new_t_start_us'), escape_link: (spec.escape_link as boolean) ?? false }
       case 'split_layer':
         return { kind: 'SplitLayer', id: parseUuid(spec.layer_id, 'layer_id'), at_t_us: parseNum(spec.at_t_us, 'at_t_us'), escape_link: (spec.escape_link as boolean) ?? false }
+      case 'apply_cut_list':
+        return { kind: 'ApplyCutList', layer: parseUuid(spec.layer_id, 'layer_id'), keep: parseKeepRanges(spec.keep_ranges) }
       case 'delete_layers': {
         if (spec.ripple === true) throw new McpArgError('delete_layers with `ripple: true` is not dry-runnable in v1 — rehearse the lift, or run the ripple for real', 'ripple')
         return { kind: 'DeleteLayers', ids: asArray(spec.layer_ids, 'layer_ids').map((s) => parseUuid(s, 'layer_ids')) }
@@ -1840,6 +1956,18 @@ export function createActor(opts: ActorOptions): ActorHandle {
           // `{left, right}` (left = original layer, right = new) — return it verbatim.
           return { ok: true, result: toolJson(r.value) }
         }
+        case 'apply_cut_list': {
+          const p = mcpDef('apply_cut_list').parseDedicated!(a)
+          const layer = p.layer as Uuid
+          const keep = p.keep as KeepRange[]
+          // Rehearse the exact operation — cuts, labels, link fan-out and the
+          // ripple — against a clone, committing nothing.
+          if ((p.dry_run as boolean) === true)
+            return { ok: true, result: shapeDryRunResponse(dryRun([{ kind: 'ApplyCutList', layer, keep }])) }
+          const r = dispatch('apply_cut_list', { layer, keep })
+          if (!r.ok) return { ok: false, error: mapCommandError(r.error) }
+          return { ok: true, result: toolJson(r.value) }
+        }
         // The reason's presence is gated in the parser (locking needs one,
         // unlocking refuses one), so this arm reads `locked` and nothing else.
         case 'set_history_lock': {
@@ -2014,8 +2142,17 @@ export function createActor(opts: ActorOptions): ActorHandle {
           const p = mcpDef('read_project').parseDedicated!(a)
           const view = p.view as string
           const compositionId = p.composition_id as string | null
-          const scoped = compositionId !== null && (view === 'tracks' || view === 'markers') ? `?composition=${compositionId}` : ''
-          const uri = view === 'layer' ? `project://layers/${p.id as string}` : `project://${view}${scoped}`
+          const scoped = compositionId !== null && (view === 'tracks' || view === 'markers' || view === 'timeline') ? `?composition=${compositionId}` : ''
+          const timelineQuery = view === 'timeline'
+            ? [
+              p.t_start_us !== null && p.t_start_us !== undefined ? `t_start_us=${p.t_start_us as number}` : null,
+              p.t_end_us !== null && p.t_end_us !== undefined ? `t_end_us=${p.t_end_us as number}` : null,
+              p.offset !== null && p.offset !== undefined ? `offset=${p.offset as number}` : null,
+              p.limit !== null && p.limit !== undefined ? `limit=${p.limit as number}` : null,
+            ].filter((s): s is string => s !== null).join('&')
+            : ''
+          const timelineSuffix = timelineQuery === '' ? '' : (scoped === '' ? `?${timelineQuery}` : `&${timelineQuery}`)
+          const uri = view === 'layer' ? `project://layers/${p.id as string}` : `project://${view}${scoped}${view === 'timeline' ? timelineSuffix : ''}`
           try {
             const res = serveProjectResource(uri, { snapshot: current, historyView: (n) => history.view(n) })
             const text = (res as { contents?: Array<{ text?: string }> } | null)?.contents?.[0]?.text

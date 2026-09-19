@@ -52,6 +52,26 @@ export class ScrubCoalescer {
     }
   }
 
+  /// True when no seek is pending or running — the next `requestSeek`
+  /// starts a fresh sequence rather than joining a drag.
+  get isIdle(): boolean {
+    return this.pendingTarget === null && !this.inFlight;
+  }
+
+  /// Fire `tUs` without waiting for the debounce window. Used for the
+  /// FIRST seek of a fresh sequence (a click to a new time): the decoder
+  /// starts in the same task instead of `debounceMs` later. Falls back
+  /// to the ordinary debounced path while a seek is still running, so a
+  /// slow long-GOP decode is never re-entered mid-flight.
+  requestSeekImmediate(tUs: number): void {
+    if (this.inFlight) {
+      this.requestSeek(tUs);
+      return;
+    }
+    this.pendingTarget = tUs;
+    void this.fire();
+  }
+
   cancel(): void {
     this.clearTimers();
     this.pendingTarget = null;

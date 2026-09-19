@@ -293,6 +293,24 @@ impl CacheLayout {
         self.descriptions_dir().join(format!("{key}.json"))
     }
 
+    /// Cached speech transcripts (`speech::transcript::TranscriptCache`).
+    /// A SEPARATE namespace from `descriptions` (video understanding) and
+    /// `transcribe-audio` (the mono WAV slices transcription decodes): the
+    /// value here is the normalized transcript in source-absolute time with
+    /// its covered ranges, served by `transcribe_clip` (write-through) and
+    /// `media://{id}/transcript` (read). The `key` is
+    /// `speech::transcript::transcript_cache_key` (source content hash +
+    /// backend + model + language hint + word-timing flag + version), so a
+    /// source content-hash change auto-invalidates the entry. Excluded from
+    /// the disk-LRU sweep like the other API-costly sidecars.
+    pub fn transcripts_dir(&self) -> PathBuf {
+        self.current_root().join("transcripts")
+    }
+
+    pub fn transcript(&self, key: &str) -> PathBuf {
+        self.transcripts_dir().join(format!("{key}.json"))
+    }
+
     /// Deterministic shot-analysis reports (VSHOT) for the always-on shot layer
     /// (`jobs::shot`). A SEPARATE namespace from `descriptions` — see that
     /// method for why the two layers never share a sidecar. The

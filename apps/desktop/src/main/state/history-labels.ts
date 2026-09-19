@@ -45,6 +45,10 @@ export const HISTORY_SUMMARY = {
   // pause cut's entry. Its own label because "split by shots" would name a
   // detector the edit never ran.
   layerSplitAndRipple: { key: 'history.layer.split_and_ripple', text: 'Split clip and closed the gaps' },
+  // A keep-range cut list applied the same way — one edit, one undo. Its own
+  // label because neither a detector nor a shot count decided the boundaries:
+  // the caller named the spans to keep.
+  layerApplyCutList: { key: 'history.layer.apply_cut_list', text: 'Applied cut list' },
   // A selected gap closed (ADR 0069). Its own group rather than a `layer.*`
   // key: the subject of the edit is the gap, and no layer was deleted.
   gapClose: { key: 'history.gap.close', text: 'Closed gap' },

@@ -570,6 +570,14 @@ export class Compositor {
     this.underrun.noteSeekWhilePlaying();
   }
 
+  /// PlaybackEngine calls this when `play()` must wait for the decoder
+  /// to prime from a cold ring. Same suppression as an in-play seek —
+  /// the priming interval doesn't count as dropped frames — so the
+  /// warm-up deadline can favor feel without punishing the indicator.
+  notePlayPriming(): void {
+    this.underrun.noteSeekWhilePlaying();
+  }
+
   /// Session-end dropped + late counts for the LogBus summary row; at most
   /// once per play session (see `UnderrunTracker.takeSessionSummary`).
   takeUnderrunSessionSummary(): UnderrunSessionSummary {

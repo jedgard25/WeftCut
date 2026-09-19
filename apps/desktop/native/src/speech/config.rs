@@ -98,6 +98,23 @@ pub fn availability(backend: SpeechBackend, cfg: Option<&BackendConfig>) -> Avai
     }
 }
 
+/// Identity of the model a backend would transcribe with, for cache keys: the
+/// local sidecar's model file path, or the cloud model's fixed tag. A swapped
+/// model file (or a provider-side model change under the same tag — accepted
+/// staleness, same as the VLM model label) yields a fresh transcript key, so
+/// transcripts from a smaller model are never served as a larger one's.
+pub fn model_identity(backend: SpeechBackend, cfg: Option<&BackendConfig>) -> String {
+    match cfg {
+        Some(BackendConfig::Local { model, .. }) => model.display().to_string(),
+        // Cloud backends transcribe with one fixed model each; the tag is the
+        // model. (OpenAI's is `whisper-1` — see backends::openai.)
+        _ => match backend {
+            SpeechBackend::OpenAi => "whisper-1".to_string(),
+            _ => backend.as_str().to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

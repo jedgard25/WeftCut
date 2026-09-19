@@ -24,6 +24,96 @@ export function compositionSettings(c: Composition): Record<string, unknown> {
     color_space: c.color_space, background: c.background }
 }
 
+/** One compact timeline row — the layer envelope an agent needs to plan an
+ *  edit, without the params/effects weight of `project://tracks`. `role` is
+ *  the track's role stamp, falling back to the Audio layer's own mixing role
+ *  (dialogue/music/sfx/voiceover), else null. Full detail stays on
+ *  `project://layers/{id}`. */
+export interface TimelineRow {
+  id: string; track_id: string; label: string | null; kind: string; role: string | null
+  t_start_us: number; t_end_us: number
+}
+
+/** One gap on one track — the whole empty span between two layer boundaries
+ *  (or composition 0 and the first layer's start), read off the union of every
+ *  layer's span whatever its class, so a half-empty combined A/V row is not
+ *  one. The space after a track's last layer is not a gap. When the read
+ *  carries a window the gaps are clipped to it. */
+export interface TimelineGap { track_id: string; s: number; e: number }
+
+const TIMELINE_DEFAULT_LIMIT = 200
+const TIMELINE_MAX_LIMIT = 1000
+
+function parseTimelineInt(raw: string | null, field: string): number | null {
+  if (raw === null) return null
+  if (!/^-?\d+$/.test(raw)) resourceNotFound(`project://timeline: ${field} not an integer: '${raw}'`)
+  return Number(raw)
+}
+
+/** Serve `project://timeline` — flat compact rows plus the gap list.
+ *  `?composition=<id>` selects a Group's composition (root when absent).
+ *  `?t_start_us=&t_end_us=` is the primary axis: a window in composition µs,
+ *  keeping rows (and gaps, clipped) that overlap `[t_start_us, t_end_us)`.
+ *  `?offset=&limit=` pages the rows (defaults 0 / 200, max 1000) for
+ *  bulk enumeration; gaps are always complete within the window. */
+export function timelineView(
+  p: Project,
+  query: URLSearchParams,
+): { composition: string; total_rows: number; offset: number; limit: number; rows: TimelineRow[]; gaps: TimelineGap[] } {
+  const c = scopedComposition(p, query.get('composition'))
+  const wStart = parseTimelineInt(query.get('t_start_us'), 't_start_us')
+  const wEnd = parseTimelineInt(query.get('t_end_us'), 't_end_us')
+  if ((wStart === null) !== (wEnd === null))
+    resourceNotFound('project://timeline: t_start_us and t_end_us name a window together — send both or neither')
+  if (wStart !== null && wEnd !== null && wEnd <= wStart)
+    resourceNotFound(`project://timeline: t_end_us (${wEnd}) must be greater than t_start_us (${wStart})`)
+  const offset = parseTimelineInt(query.get('offset'), 'offset') ?? 0
+  const limit = parseTimelineInt(query.get('limit'), 'limit') ?? TIMELINE_DEFAULT_LIMIT
+  if (offset < 0) resourceNotFound(`project://timeline: offset (${offset}) must be >= 0`)
+  if (limit <= 0 || limit > TIMELINE_MAX_LIMIT)
+    resourceNotFound(`project://timeline: limit (${limit}) must be within 1..${TIMELINE_MAX_LIMIT}`)
+
+  const inWindow = (s: number, e: number): boolean =>
+    wStart === null || wEnd === null || (s < wEnd && e > wStart)
+  const clip = (s: number, e: number): [number, number] =>
+    wStart === null || wEnd === null ? [s, e] : [Math.max(s, wStart), Math.min(e, wEnd)]
+
+  const rows: TimelineRow[] = []
+  const gaps: TimelineGap[] = []
+  for (const track of c.tracks) {
+    // Layers are stored sorted by t_start_us; the union walk below relies on it.
+    const sorted = [...track.layers].sort((a, b) => a.t_start_us - b.t_start_us)
+    for (const layer of sorted) {
+      if (!inWindow(layer.t_start_us, layer.t_end_us)) continue
+      rows.push({
+        id: layer.id, track_id: track.id, label: layer.label, kind: layer.params.kind,
+        role: track.role ?? (layer.params.kind === 'Audio' ? layer.params.role : null),
+        t_start_us: layer.t_start_us, t_end_us: layer.t_end_us,
+      })
+    }
+    // Union of every layer's span, whatever its class; gaps are the complement
+    // within [0, last end). Abutting spans (next start == run end) are not gaps.
+    let runEnd: number | null = null
+    for (const layer of sorted) {
+      if (runEnd === null) {
+        if (layer.t_start_us > 0) {
+          const [s, e] = clip(0, layer.t_start_us)
+          if (s < e) gaps.push({ track_id: track.id, s, e })
+        }
+        runEnd = layer.t_end_us
+      } else if (layer.t_start_us > runEnd) {
+        const [s, e] = clip(runEnd, layer.t_start_us)
+        if (s < e) gaps.push({ track_id: track.id, s, e })
+        runEnd = layer.t_end_us
+      } else {
+        runEnd = Math.max(runEnd, layer.t_end_us)
+      }
+    }
+  }
+  const total_rows = rows.length
+  return { composition: c.id, total_rows, offset, limit, rows: rows.slice(offset, offset + limit), gaps }
+}
+
 /** Throw the SDK-shaped not-found error (code -32601), mirroring Rust's
  *  `McpToolError::resource_not_found`. */
 function resourceNotFound(message: string): never {
@@ -82,6 +172,7 @@ export function serveProjectResource(
     case 'project://compositions': return textResource(uri, compositionListing(actor.snapshot()))
     case 'project://media': return textResource(uri, actor.snapshot().media_pool)
     case 'project://tracks': return textResource(uri, scopedComposition(actor.snapshot(), composition).tracks)
+    case 'project://timeline': return textResource(uri, timelineView(actor.snapshot(), new URLSearchParams(q === -1 ? '' : uri.slice(q + 1))))
     case 'project://markers': return textResource(uri, scopedComposition(actor.snapshot(), composition).markers)
     case 'project://history': return textResource(uri, actor.historyView(100))
     default: return null
@@ -115,10 +206,14 @@ export function buildResourceInjection(
   snapshot: Project,
   vlmConfig: Record<string, unknown> = {},
   view: DescribeView = {},
+  transcribePreferred: string | null = null,
 ): string {
   if (uri === 'project://compiled') return JSON.stringify({ project: serializeProject(snapshot) })
   if (uri.startsWith(PREFIX_MEDIA)) {
-    const id = uri.slice(PREFIX_MEDIA.length).split('/')[0] ?? ''
+    const rest = uri.slice(PREFIX_MEDIA.length)
+    const slash = rest.indexOf('/')
+    const id = slash === -1 ? rest : rest.slice(0, slash)
+    const sub = slash === -1 ? '' : rest.slice(slash + 1).split('?')[0]
     const media = snapshot.media_pool[id] ?? null
     // media://{id}/description additionally needs the merged VLM backend config
     // (stateless, ADR 0024) so the cached-view reader can resolve the backend +
@@ -127,7 +222,7 @@ export function buildResourceInjection(
     // always-computable media reads (/thumbnail, /frame, /waveform, and the
     // shot-layer /analysis view) are self-contained — they need only the
     // resolved MediaItem, no injected config.
-    if (uri.endsWith('/description')) {
+    if (sub === 'description') {
       // Each axis omitted when there is no UI to speak for, so Rust's own
       // default decides — the `detectPauses` rule, stated once here rather
       // than once per axis. `'auto'` is such an absence: it is the setting's way
@@ -141,6 +236,19 @@ export function buildResourceInjection(
         ...(view.focus ? { describe_focus: view.focus } : {}),
         ...(view.preferred && view.preferred !== 'auto'
           ? { describe_preferred: view.preferred }
+          : {}),
+      })
+    }
+    // media://{id}/transcript needs the same preference the `transcribe_clip`
+    // tool path injects as `preferred_backend`: the transcript key carries the
+    // backend that served the request, so a read that dropped it would look
+    // under another engine's entry. The speech config itself lives on the
+    // backend (unlike the stateless VLM config), so only the hint rides in.
+    if (sub === 'transcript') {
+      return JSON.stringify({
+        media,
+        ...(transcribePreferred && transcribePreferred !== 'auto'
+          ? { transcribe_preferred: transcribePreferred }
           : {}),
       })
     }

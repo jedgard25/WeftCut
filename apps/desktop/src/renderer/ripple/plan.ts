@@ -25,7 +25,7 @@
 /// across, a lock that would have to move — with no second vocabulary.
 ///
 /// ADR 0062.
-import { layerOverlapClass, shiftOnGrids, type OverlapClass } from '../grid'
+import { frameGrid, gridForLayerKind, layerOverlapClass, snapOnGrid, type OverlapClass } from '../grid'
 import type { CommandError, Rational, TimeUs, Uuid } from '../../shared/commandErrors'
 import { isGapOn } from './gap'
 
@@ -249,14 +249,24 @@ function planClosing(view: RippleView, index: Map<Uuid, Placed>, doomed: Readonl
   }
 
   // 7 — a layer's delta is the SUM of the holes entirely to its left, and the
-  // landing is ONE `shiftOnGrids` call per distinct delta rather than one snap per
-  // hole applied right to left. Summing is not merely cheaper, it is the
+  // landing is ONE snap of the total per mover rather than one snap per hole
+  // applied right to left. Summing is not merely cheaper, it is the
   // formulation step 4 already committed to: two touching holes merged into one
   // must land everything downstream exactly where the two separate holes would
   // have, and only a single snap of the total does that — re-snapping after each
   // hole rounds twice and the merged and unmerged answers drift apart. Each mover
-  // still snaps on ITS OWN lattice inside `shiftOnGrids`, so a sample-lattice
+  // snaps on its LINK-AWARE lattice — the frame grid when its link holds a
+  // picture member (linked splits cut both at one frame instant, so the landing
+  // must stay on that instant to abut), else its own — so a sample-lattice
   // deletion lands audio exactly and visual movers on the nearest frame.
+  const kindById = new Map<Uuid, string>()
+  for (const t of view.tracks) for (const l of t.layers) kindById.set(l.id, l.kind)
+  const moverMayBeFrame = new Set<Uuid>()
+  for (const link of view.links) {
+    if (!link.members.some((m) => kindById.get(m) !== 'Audio')) continue
+    for (const m of link.members) if (kindById.get(m) === 'Audio') moverMayBeFrame.add(m)
+  }
+  const frameGridForMovers = frameGrid(view.fps)
   const deltaOf = new Map<Uuid, number>()
   const byDelta = new Map<number, Placed[]>()
   for (const r of remaining) {
@@ -270,12 +280,13 @@ function planClosing(view: RippleView, index: Map<Uuid, Placed>, doomed: Readonl
   }
   const landings = new Map<Uuid, { tStartUs: number; tEndUs: number }>()
   for (const [delta, members] of byDelta) {
-    const shifted = shiftOnGrids(
-      members.map((m) => ({ id: m.layer.id, kind: m.layer.kind, tStartUs: m.layer.t_start_us, tEndUs: m.layer.t_end_us })),
-      -delta,
-      view.fps,
-    )
-    for (const [id, at] of shifted) landings.set(id, at)
+    for (const m of members) {
+      const g = moverMayBeFrame.has(m.layer.id) ? frameGridForMovers : gridForLayerKind(m.layer.kind, view.fps)
+      landings.set(m.layer.id, {
+        tStartUs: snapOnGrid(m.layer.t_start_us - delta, g),
+        tEndUs: snapOnGrid(m.layer.t_end_us - delta, g),
+      })
+    }
   }
 
   // 8 — the lenient lock reading: only a layer that would actually shift blocks,

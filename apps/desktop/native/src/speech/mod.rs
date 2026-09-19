@@ -31,7 +31,7 @@ pub mod transcriber;
 pub mod transcript;
 
 pub use backend::{Capabilities, Locality, SpeechBackend, DEFAULT_ORDER};
-pub use config::{availability, Availability, BackendConfig};
+pub use config::{availability, model_identity, Availability, BackendConfig};
 pub use error::SpeechError;
 // `parse_raw` is the tool-layer chokepoint; `Segment`/`WordTiming` name the
 // `transcribe_clip` result envelope. The rest of the transcript/parse
@@ -40,7 +40,9 @@ pub use error::SpeechError;
 pub use parse::parse_raw;
 pub use synthesizer::{AudioFormat, SynthesizeRequest, Synthesizer};
 pub use transcriber::{TranscribeRequest, Transcriber};
-pub use transcript::{Segment, WordTiming};
+pub use transcript::{
+    render_srt_segments, transcript_cache_key, Segment, Transcript, TranscriptCache, WordTiming,
+};
 
 /// Actionable "nothing can transcribe" message, naming BOTH remedies (cloud
 /// key + local engine). Shared so the tool layer's error and this module's
