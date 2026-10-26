@@ -20,8 +20,10 @@ function heavyAutoProxy(media: MediaSummary): boolean {
   if (!useAppSettingsStore.getState().settings.auto_preview_proxies) return false;
   if (media.kind !== "Video") return false;
   if (Math.max(media.width ?? 0, media.height ?? 0) < 2160) return false;
-  const route = media.decode_route.route;
-  return route === "direct-export" || route === "proxied";
+  // DirectExport is the long-GOP decodable class this exists for. A `proxied`
+  // source (ProRes/DNx/MPEG-2 and other WebCodecs blinds) seeks by nature;
+  // leave its engine/source choice to the user.
+  return media.decode_route.route === "direct-export";
 }
 
 export function resolvePreviewSource(media: MediaSummary, originalDecoded: boolean) {

@@ -115,9 +115,9 @@ Measured on a generated 3840×2160 30 fps, 240-frame-GOP H.264 fixture (8 s):
 | 24-clip single-track scrub | — | — | 0 / 0, 0 unsupported cards | max 3 | max 858 MiB |
 | **existing quick proxy (auto)** | **109 ms** | 0.9 ms | 0 / 0 | 0 HW | 528 MiB |
 
-**Decision:** a source that is (a) 2160p or larger, (b) on a Decode Route that
-already plans a quick proxy (`direct-export` or `proxied`), and (c) has that
-proxy on disk uses the proxy for preview automatically, unless the user chose
+**Decision:** a source that is (a) 2160p or larger, (b) on a `direct-export` Decode Route (the long-GOP decodable class that
+already plans a quick proxy; `proxied` WebCodecs-blind sources are excluded),
+and (c) has that proxy on disk uses the proxy for preview automatically, unless the user chose
 **Original** for that clip. This is a new app-level setting
 `auto_preview_proxies` (Settings → Preview, default **on**); it reads the
 existing `prefer_proxies` / `proxy_overrides` axes, never writes them, and does

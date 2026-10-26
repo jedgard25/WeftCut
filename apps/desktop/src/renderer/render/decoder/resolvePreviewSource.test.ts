@@ -67,6 +67,15 @@ describe("automatic quick proxy for heavy preview sources", () => {
     });
   });
 
+  it("does not auto-proxy a WebCodecs-blind (proxied) source", () => {
+    expect(resolvePreviewSource(video({
+      decode_route: { route: "proxied", quick_proxy: "/proxy.mp4", full_proxy: null, format_version: 0 },
+    }), false)).toMatchObject({
+      engine: "ffmpeg",
+      source: "original",
+    });
+  });
+
   it("does not auto-proxy a 1080p source", () => {
     expect(resolvePreviewSource(video({ width: 1920, height: 1080 }), false)).toMatchObject({
       engine: "ffmpeg",

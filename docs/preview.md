@@ -495,7 +495,8 @@ single-track fast scrub held at most 3 live sessions and 858 MiB (zero dropped,
 zero unsupported cards). The existing quick proxy sought to the same frame in
 109 ms. Because a cold long-GOP seek is inherently a keyframe-plus-prefix
 decode, **heavy sources use their quick proxy automatically** once it exists:
-2160p+ sources on a `direct-export`/`proxied` route, controlled by the
+2160p+ sources on a `direct-export` route (the long-GOP decodable class;
+`proxied` WebCodecs-blind sources keep their engine choice), controlled by the
 app-level **Use quick proxies for 4K preview automatically**
 (`auto_preview_proxies`, default on). A per-clip **Original** override wins,
 and export routing, export masters and the proxy job are untouched. The quick
