@@ -691,7 +691,7 @@
       "00000000-0000-0000-0000-0000000000aa": false
     },
     "generate_preview_proxies": true,
-    "build_export_masters": true,
+    "export_masters": "auto",
     "shot_review": null,
     "pause_review": null
   }

@@ -21,11 +21,14 @@ import type { MigrationContext, PositionBakeReport } from './migrate'
 
 /** The Rust-native workspace bookkeeping, exposed over napi (Backend methods
  *  commit_workspace / push_recent / set_last_new_project_parent). */
-/** The `ProjectSettings` fields the Rust job layer's `ProxyPolicy` mirrors. */
-export type ProxyPolicy = Pick<ProjectSettings, 'generate_preview_proxies' | 'build_export_masters'>
+/** The `ProjectSettings` fields the Rust job layer's `ProxyPolicy` is built
+ *  from. `export_masters` stays the SETTING here; the napi facade in
+ *  main/index.ts resolves `auto` against native-decoder availability
+ *  (`buildsMastersOnImport`), which only it knows. */
+export type ProxyPolicy = Pick<ProjectSettings, 'generate_preview_proxies' | 'export_masters'>
 
 export function proxyPolicyOf(settings: ProjectSettings): ProxyPolicy {
-  return { generate_preview_proxies: settings.generate_preview_proxies, build_export_masters: settings.build_export_masters }
+  return { generate_preview_proxies: settings.generate_preview_proxies, export_masters: settings.export_masters }
 }
 
 export interface WorkspaceNapi {

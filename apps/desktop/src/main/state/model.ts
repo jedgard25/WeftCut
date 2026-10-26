@@ -1,4 +1,5 @@
 // apps/desktop/src/main/state/model.ts
+import type { ExportMasters } from '../../shared/exportMasters'
 import type { IdGen } from './ids'
 import type { DecodeRoute } from '../../shared/decode-route'
 import type { Animated } from '../../shared/keyframe'
@@ -267,12 +268,11 @@ export interface ProjectSettings {
    *  one still gets it on demand — and so is an explicit "Generate proxy".
    *  Default true. */
   generate_preview_proxies: boolean
-  /** When false, the automatic import/open fan-out does NOT build the full
-   *  export master for a source that previews from a proxy: it exports from
-   *  its ORIGINAL, and the export gate builds the master on demand only if this
-   *  machine cannot decode that original. WebCodecs-blind sources (ProRes,
-   *  DNxHD, MPEG-2, ...) keep their master. Default true. */
-  build_export_masters: boolean
+  /** When the full export master of a source that previews from a proxy is
+   *  built (`shared/exportMasters.ts`). `auto` (default) builds it at import
+   *  only when the native export decoder is unavailable; otherwise export
+   *  decodes the original natively. */
+  export_masters: ExportMasters
   /** The reviewed detection parameters, or `null` for "whatever the detector
    *  defaults to". Null rather than a pair of numbers so no threshold literal
    *  lives in TypeScript at all: the defaults are Rust's
@@ -344,7 +344,7 @@ export function* eachLayer(p: Pick<Project, 'compositions'>): Iterable<{ composi
 export function defaultSettings(): ProjectSettings {
   return { preview_width: 1280, preview_height: 720, autosave_interval_secs: 60,
     history_capacity: 200, auto_pair_audio_on_import: true,
-    prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, build_export_masters: true, shot_review: null, pause_review: null }
+    prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', shot_review: null, pause_review: null }
 }
 
 /** Mirror of Rust `Project::new_blank`. Id order: A-roll, B-roll, project_id,

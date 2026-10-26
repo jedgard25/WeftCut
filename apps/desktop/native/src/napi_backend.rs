@@ -376,9 +376,10 @@ impl Backend {
     /// version is cleared through the derivative write-back seam. Versioned
     /// cache names prevent stale adoption without deleting expensive masters.
     /// `media_items_json` is a JSON array of serialized `MediaItem` (the TS
-    /// actor's pool values). `generate_preview_proxies` and
-    /// `build_export_masters` are the project's `ProjectSettings` fields of the
-    /// same names — the job layer has no settings access, so the TS actor's
+    /// actor's pool values). `generate_preview_proxies` is the project's
+    /// setting of that name and `build_export_masters` the EFFECTIVE
+    /// `export_masters` (TS resolves `auto` against native-decoder
+    /// availability) — the job layer has no settings access, so the TS actor's
     /// values cross here as a `jobs::ProxyPolicy`.
     #[napi]
     #[cfg(feature = "jobs")]

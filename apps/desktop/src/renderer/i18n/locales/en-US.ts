@@ -2297,9 +2297,12 @@ const enUS = {
     generate_preview_proxies: "Generate preview proxies",
     generate_preview_proxies_hint:
       "Build the lightweight 720p preview proxy for clips that need one. Turn off to skip the background transcode entirely — preview then decodes the original. Export is unaffected.",
-    build_export_masters: "Build export masters on import",
-    build_export_masters_hint:
-      "Transcode clips the export can't read directly (such as 4K HEVC or 10-bit) into a full-resolution master as soon as they're imported. Turn off to export from the original instead; a master is then built at export time only if this machine can't decode the clip. ProRes, DNxHD and MPEG-2 always get one.",
+    export_masters: "Export masters",
+    export_masters_hint:
+      "A full-resolution H.264 copy of clips the browser decoder can't read (HEVC, 10-bit, ProRes). Automatic skips it whenever the built-in FFmpeg decoder can export from the original.",
+    export_masters_auto: "Automatic",
+    export_masters_on_import: "Build on import",
+    export_masters_on_demand: "Build when exporting, if needed",
     decode_unsupported_generate_proxy: "Generate proxy",
     keybindings_blurb:
       "Manage your keyboard shortcut configuration table.",

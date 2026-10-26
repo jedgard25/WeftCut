@@ -76,12 +76,29 @@ describe("resolveExportDecodeRouting", () => {
   it("auto + component: decodable routes stay in-worker WebCodecs", () => {
     const r = resolveExportDecodeRouting(
       base({
-        media: [vid("b", "bypass"), vid("d", "direct-export"), vid("p", "proxied")],
+        media: [vid("b", "bypass"), vid("d", "direct-export")],
       }),
     );
     expect(r.routes["b"]).toEqual({ engine: "webcodecs" });
     expect(r.routes["d"]).toEqual({ engine: "webcodecs" });
-    // "proxied" = neither engine opens the original — full-proxy fallback.
+  });
+
+  it("auto + component: 'proxied' decodes its original natively, not its lossy master", () => {
+    const r = resolveExportDecodeRouting(base({ media: [vid("p", "proxied")] }));
+    expect(r.routes["p"]).toEqual({ engine: "native", sourcePath: "C:\\media\\p.mov" });
+  });
+
+  it("auto + component: a direct-export source WebCodecs can't decode here routes native", () => {
+    const media = [vid("d", "direct-export"), vid("e", "direct-export")];
+    const r = resolveExportDecodeRouting(base({ media, webcodecsUnusable: (id) => id === "d" }));
+    expect(r.routes["d"]).toEqual({ engine: "native", sourcePath: "C:\\media\\d.mov" });
+    expect(r.routes["e"]).toEqual({ engine: "webcodecs" });
+  });
+
+  it("auto without the component: 'proxied' keeps its master", () => {
+    const r = resolveExportDecodeRouting(
+      base({ componentAvailable: false, media: [vid("p", "proxied")], webcodecsUnusable: () => true }),
+    );
     expect(r.routes["p"]).toEqual({ engine: "webcodecs" });
   });
 
@@ -165,7 +182,7 @@ describe("proxyWaitScope", () => {
   it("drops native-routed media from the readiness gate's scope", () => {
     const media = [vid("n", "native-sw"), vid("d", "direct-export"), vid("p", "proxied")];
     const routing = resolveExportDecodeRouting(base({ media }));
-    expect(proxyWaitScope(media, routing).map((m) => m.id)).toEqual(["d", "p"]);
+    expect(proxyWaitScope(media, routing).map((m) => m.id)).toEqual(["d"]);
   });
 
   it("keeps everything when nothing routes native (webcodecs pin keeps today's wait)", () => {
@@ -184,11 +201,10 @@ describe("routingSourceCounts", () => {
     vid("n", "native-sw"),
   ];
 
-  it("auto + component: only 'proxied' feeds from the lossy proxy", () => {
+  it("auto + component: every source exports from its original", () => {
     const routing = resolveExportDecodeRouting(base({ media: ALL }));
-    // b/d decode originals in-worker, n decodes the original natively; only
-    // p (neither engine opens it) exports off its full proxy.
-    expect(routingSourceCounts(ALL, routing)).toEqual({ originals: 3, proxy: 1 });
+    // b/d decode originals in-worker, n and p decode their originals natively.
+    expect(routingSourceCounts(ALL, routing)).toEqual({ originals: 4, proxy: 0 });
   });
 
   it("webcodecs pin: blind spots join 'proxied' on the lossy-proxy side", () => {

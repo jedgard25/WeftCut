@@ -468,16 +468,23 @@ have no settings access. Export masters are unaffected — a source whose export
 needs a full proxy still gets one, built directly rather than chained off a
 quick proxy — and so is an explicit per-clip **Generate proxy**.
 
-A fourth, **Build export masters on import** (`build_export_masters`, default
-on), gates the full master the same way. Off, a source that would route
-`QuickThenFull` (4K HEVC, VP9, 10-bit) is routed DirectExport instead
-(`proxy_decision::defer_export_master`): export reads the original, and the
-export gate's probe (`prepareExportMedia`) builds the master on demand only on
-a definitive "unsupported" verdict. The import sweep marks such a source
-route-corrected but leaves the build to export. WebCodecs-blind sources
-(ProRes, DNxHD, MPEG-2; native-ffmpeg preview) keep their master, since export
-has no other way to read them. With both settings off, nothing is proxied
-automatically. Both cross into the job layer as one `jobs::ProxyPolicy`.
+A fourth, **Export masters** (`export_masters`: `auto` | `on_import` |
+`on_demand`, default `auto`; `shared/exportMasters.ts`), decides when a
+proxied source's full export master is built. `auto` builds it at import only
+when the native export decoder is unavailable — with it, export decodes the
+original natively (render.md §Export source resolution), so the master would go
+unused. `on_import` is the previous always-at-import behaviour; `on_demand`
+never builds at import. A deferred source keeps its decided route
+(`proxied` / `native-sw`) — only the master job is skipped, and re-open does not
+re-decide once its quick proxy has landed (`route_needs_decision`). If an
+export does decode it in-worker (a `webcodecs` pin, or no native component),
+the readiness gate requests the master then (`ensure_full_proxy`,
+single-flight). The import sweep likewise leaves a WebCodecs-undecodable
+direct-export source uncorrected when masters are deferred; export routes it
+native from the session verdict. Main resolves `auto` against native-decoder
+availability before both settings cross into the job layer as one
+`jobs::ProxyPolicy`; with preview proxies off and masters deferred, nothing is
+proxied automatically.
 
 The effective per-clip intent is `proxy_overrides[mediaId] ?? prefer_proxies`.
 Preview uses the proxy only when that intent is true **and** the clip's quick

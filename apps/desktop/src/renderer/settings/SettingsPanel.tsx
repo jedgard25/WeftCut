@@ -47,7 +47,8 @@ import {
   useAutoInstallUpdatesOnQuit,
 } from "./appSettingsStore";
 import { FontSelect } from "../components/FontSelect";
-import { setBuildExportMasters, setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
+import { setExportMasters, setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
+import { EXPORT_MASTERS, isExportMasters } from "../../shared/exportMasters";
 import {
   FPS_OPTIONS,
   RESOLUTION_PRESETS,
@@ -368,7 +369,7 @@ export function SettingsPanel({
                 <h3>{t("settings.playback_heading")}</h3>
                 <PreferProxiesToggle onError={setError} />
                 <GeneratePreviewProxiesToggle onError={setError} />
-                <BuildExportMastersToggle onError={setError} />
+                <ExportMastersSelect onError={setError} />
               </section>
             </div>
           )}
@@ -733,42 +734,41 @@ function GeneratePreviewProxiesToggle({
   );
 }
 
-/// Per-project toggle (`Project.settings.build_export_masters`) — stops the
-/// import/open fan-out from building the full export master for a source that
-/// previews from a proxy (4K HEVC, VP9, 10-bit...). Such a source then exports
-/// from its original; the export gate builds the master on demand only if this
-/// machine cannot decode that original. WebCodecs-blind sources (ProRes,
-/// DNxHD, MPEG-2) keep their master.
-function BuildExportMastersToggle({
+/// Per-project choice (`Project.settings.export_masters`) of when the full
+/// export master of a proxied source (4K HEVC, VP9, 10-bit, ProRes...) is
+/// built. `auto` skips it whenever the native export decoder can read the
+/// original; `on_import` is upstream's always-at-import; `on_demand` leaves it
+/// to the export gate. See shared/exportMasters.ts.
+function ExportMastersSelect({
   onError,
 }: {
   onError: (msg: string) => void;
 }) {
   const { t } = useTranslation();
-  const enabled = useProxyPrefStore((s) => s.buildExportMasters);
+  const value = useProxyPrefStore((s) => s.exportMasters);
 
   return (
-    <label className="settings-toggle-row">
-      <AppSwitch
-        checked={enabled}
-        onCheckedChange={async (next) => {
+    <div className="settings-control-row">
+      <span>
+        <span className="settings-toggle-label">{t("settings.export_masters")}</span>
+        <span className="settings-toggle-hint">{t("settings.export_masters_hint")}</span>
+      </span>
+      <AppSelect
+        className="settings-select"
+        value={value}
+        ariaLabel={t("settings.export_masters")}
+        onValueChange={async (v) => {
+          if (!isExportMasters(v)) return;
           onError("");
           try {
-            await setBuildExportMasters(next);
+            await setExportMasters(v);
           } catch (err) {
             onError(String(err));
           }
         }}
+        options={EXPORT_MASTERS.map((m) => ({ value: m, label: t(`settings.export_masters_${m}`) }))}
       />
-      <span>
-        <span className="settings-toggle-label">
-          {t("settings.build_export_masters")}
-        </span>
-        <span className="settings-toggle-hint">
-          {t("settings.build_export_masters_hint")}
-        </span>
-      </span>
-    </label>
+    </div>
   );
 }
 

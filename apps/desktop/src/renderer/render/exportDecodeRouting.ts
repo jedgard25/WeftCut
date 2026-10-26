@@ -64,6 +64,11 @@ export interface ExportRoutingInputs {
   /// `compositeBitDepth(settings)` — the depth frames are composited at.
   bitDepth: 8 | 10;
   media: readonly ExportRoutingMedia[];
+  /// Session verdict that WebCodecs cannot decode this source's original on
+  /// this machine (`isWebcodecsUnusable`) — a direct-export source the import
+  /// sweep found undecodable but whose master was deferred. Optional: absent
+  /// means no source is known unusable.
+  webcodecsUnusable?: (mediaId: string) => boolean;
 }
 
 export function resolveExportDecodeRouting(
@@ -77,7 +82,7 @@ export function resolveExportDecodeRouting(
   const routes: Record<string, ExportMediaRoute> = {};
   for (const m of i.media) {
     if (m.kind !== "Video") continue;
-    routes[m.id] = routeFor(m, effectiveSetting, nativeUsable);
+    routes[m.id] = routeFor(m, effectiveSetting, nativeUsable, i.webcodecsUnusable?.(m.id) ?? false);
   }
   return { effectiveSetting, outFormat, routes };
 }
@@ -86,6 +91,7 @@ function routeFor(
   m: ExportRoutingMedia,
   setting: ExportDecodeEngine,
   nativeUsable: boolean,
+  webcodecsUnusable: boolean,
 ): ExportMediaRoute {
   // `webcodecs` pin = today's behavior exactly: decodable originals decode
   // in-worker, blind spots via their full proxy (the readiness gate's
@@ -99,16 +105,21 @@ function routeFor(
   if (setting === "ffmpeg") {
     return { engine: "native", sourcePath: m.path };
   }
-  // auto: decodable sources keep the zero-transport in-worker WebCodecs path;
-  // WebCodecs-blind sources decode native on the original — no full-proxy
-  // wait; sources neither engine opens ("proxied") fall back to their full
-  // proxy. "Blind-spot" here is the PERSISTED import-time verdict
-  // ("native-sw"), not the gate's runtime probe: a source that fails its
-  // probe on this machine is route-corrected to "proxied" by the readiness
-  // gate (which runs after this resolve) and exports via proxy.
-  return m.decode_route.route === "native-sw"
-    ? { engine: "native", sourcePath: m.path }
-    : { engine: "webcodecs" };
+  // auto: every source WebCodecs can't be trusted with decodes native on its
+  // ORIGINAL — no lossy full master, no wait for one:
+  // - "native-sw": WebCodecs-blind (ProRes, DNxHD, MPEG-2...);
+  // - "proxied": not statically WebCodecs-decodable (HEVC, VP9, 10-bit) or
+  //   route-corrected after a failed probe — ffmpeg opens all of these;
+  // - "direct-export" this session found WebCodecs-unusable on this machine
+  //   (the import sweep's verdict, when its master was deferred).
+  // The rest keep the zero-transport in-worker WebCodecs path. A source
+  // ffmpeg then cannot open fails at session open, as under the pin.
+  const route = m.decode_route.route;
+  const native =
+    route === "native-sw" ||
+    route === "proxied" ||
+    (route === "direct-export" && webcodecsUnusable);
+  return native ? { engine: "native", sourcePath: m.path } : { engine: "webcodecs" };
 }
 
 export interface RoutingSourceCounts {

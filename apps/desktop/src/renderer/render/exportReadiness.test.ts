@@ -111,6 +111,17 @@ describe("prepareExportMedia", () => {
     expect(r.waiting).toEqual(["w"]);
     expect(r.failed).toEqual(["f"]);
     expect(d.probe).not.toHaveBeenCalled();
+    expect(d.ensureFullProxy).not.toHaveBeenCalled(); // pending: already building
+  });
+
+  // `export_masters` deferred the master and this export decodes in-worker
+  // (webcodecs pin, or no native decoder): nothing is building it, so the gate
+  // requests it instead of waiting forever.
+  it("a deferred master (Proxied, no master, no job) is requested, then waited on", async () => {
+    const d = deps({ proxyStateOf: () => undefined });
+    const r = await prepareExportMedia([vid({ id: "deferred" })] as any, d);
+    expect(d.ensureFullProxy).toHaveBeenCalledWith("deferred");
+    expect(r.waiting).toEqual(["deferred"]);
   });
 });
 

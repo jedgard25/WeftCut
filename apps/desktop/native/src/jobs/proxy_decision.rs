@@ -145,28 +145,23 @@ pub fn route_needs_decision(route: &DecodeRoute) -> bool {
             full_proxy: Some(p),
             ..
         } => !p.is_file(),
+        // No master yet but a landed preview proxy: the route is decided — the
+        // master was deferred (`ProxyPolicy::export_masters` off) or its build
+        // was interrupted. Re-open re-fans decorations and lets
+        // `enqueue_for_media` resume the master under the current policy,
+        // instead of re-deciding (which resets the paths: a transient blank
+        // preview on every open).
+        DecodeRoute::Proxied {
+            full_proxy: None,
+            quick_proxy: Some(q),
+            ..
+        }
+        | DecodeRoute::NativeSw {
+            full_proxy: None,
+            quick_proxy: Some(q),
+            ..
+        } => !q.is_file(),
         _ => true,
-    }
-}
-
-/// Apply `ProjectSettings.build_export_masters = false` to a decided route: a
-/// source that previews from a proxy exports from its ORIGINAL instead
-/// (DirectExport), so no master is built at import. The export gate
-/// (`prepareExportMedia`) probes the original and builds the master on demand
-/// only on a definitive "unsupported" verdict. A native-preview source
-/// (`PreviewSource::NativeFfmpeg`, the WebCodecs-blind family) keeps its
-/// master: export has no other way to read it, so deferring would only move
-/// the same encode to export time behind a probe that is certain to fail.
-pub fn defer_export_master(route: ProxyRoute) -> ProxyRoute {
-    match route {
-        ProxyRoute {
-            export: ExportSource::FullProxy,
-            preview: PreviewSource::Proxy,
-        } => ProxyRoute {
-            export: ExportSource::Original,
-            preview: PreviewSource::Proxy,
-        },
-        other => other,
     }
 }
 
@@ -297,31 +292,6 @@ mod tests {
     use super::*;
     use crate::state::{new_id, DecodeRoute, MediaKind, MediaMetadata, VideoStreamMeta};
     use chrono::Utc;
-
-    #[test]
-    fn deferring_masters_routes_proxied_sources_to_direct_export() {
-        let proxied = ProxyRoute {
-            export: ExportSource::FullProxy,
-            preview: PreviewSource::Proxy,
-        };
-        let deferred = defer_export_master(proxied);
-        assert_eq!(deferred.export, ExportSource::Original);
-        assert_eq!(job_for(deferred), ProxyJob::QuickOnly);
-    }
-
-    #[test]
-    fn deferring_masters_keeps_native_preview_and_bypass_routes() {
-        let native = ProxyRoute {
-            export: ExportSource::FullProxy,
-            preview: PreviewSource::NativeFfmpeg,
-        };
-        assert_eq!(defer_export_master(native), native);
-        let bypass = ProxyRoute {
-            export: ExportSource::Original,
-            preview: PreviewSource::Original,
-        };
-        assert_eq!(defer_export_master(bypass), bypass);
-    }
 
     fn video(over: impl FnOnce(&mut MediaItem)) -> MediaItem {
         let mut item = MediaItem {
@@ -600,6 +570,35 @@ mod tests {
         assert!(route_needs_decision(&DecodeRoute::Proxied {
             quick_proxy: None,
             full_proxy: Some("/no/such/file.mp4".into()),
+            format_version: 0,
+        }));
+    }
+
+    #[test]
+    fn deferred_master_with_landed_quick_proxy_is_decided() {
+        // Masters deferred (or interrupted): the quick proxy landed, so the route
+        // stands and re-open must not re-decide (which would reset the paths).
+        let quick = std::env::temp_dir().join(format!("weftcut-quick-{}.mp4", new_id()));
+        std::fs::write(&quick, b"q").unwrap();
+        for route in [
+            DecodeRoute::Proxied {
+                quick_proxy: Some(quick.clone()),
+                full_proxy: None,
+                format_version: 0,
+            },
+            DecodeRoute::NativeSw {
+                quick_proxy: Some(quick.clone()),
+                full_proxy: None,
+                format_version: 0,
+            },
+        ] {
+            assert!(!route_needs_decision(&route));
+        }
+        std::fs::remove_file(&quick).unwrap();
+        // The quick proxy gone again: decide afresh.
+        assert!(route_needs_decision(&DecodeRoute::Proxied {
+            quick_proxy: Some(quick),
+            full_proxy: None,
             format_version: 0,
         }));
     }

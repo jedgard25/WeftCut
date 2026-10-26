@@ -1,5 +1,6 @@
 import { applyRetimeLayers, applyPreservePitch, applyFrameInterpolation, interpolationCapabilities } from './mutations/retime'
 import type { RetimeTarget, FrameInterpolation } from '../../shared/timeMapping'
+import { EXPORT_MASTERS, isExportMasters, type ExportMasters } from '../../shared/exportMasters'
 // apps/desktop/src/main/state/actor.ts
 import { produce, setAutoFreeze } from 'immer'
 import { assertLockedLayersUnchanged } from './layerLocks'
@@ -849,7 +850,7 @@ export function createActor(opts: ActorOptions): ActorHandle {
     auto_pair_audio_on_import?: boolean | null
     prefer_proxies?: boolean | null
     generate_preview_proxies?: boolean | null
-    build_export_masters?: boolean | null
+    export_masters?: ExportMasters | null
     proxy_override?: { media_id: string; value: boolean | null } | null
     shot_review?: { sensitivity: number; min_shot_us: number } | null
     pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null
@@ -895,7 +896,10 @@ export function createActor(opts: ActorOptions): ActorHandle {
     }
     if (typeof patch.prefer_proxies === 'boolean') next.prefer_proxies = patch.prefer_proxies
     if (typeof patch.generate_preview_proxies === 'boolean') next.generate_preview_proxies = patch.generate_preview_proxies
-    if (typeof patch.build_export_masters === 'boolean') next.build_export_masters = patch.build_export_masters
+    if (patch.export_masters != null) {
+      if (!isExportMasters(patch.export_masters)) throw new CommandFailure({ error: 'InvalidArgument', field: 'export_masters', detail: `expected one of ${EXPORT_MASTERS.join(', ')}` })
+      next.export_masters = patch.export_masters
+    }
     if (typeof patch.auto_pair_audio_on_import === 'boolean') next.auto_pair_audio_on_import = patch.auto_pair_audio_on_import
     if (patch.proxy_override) {
       const { media_id, value } = patch.proxy_override
@@ -1484,7 +1488,7 @@ export function createActor(opts: ActorOptions): ActorHandle {
         case 'remove_media': removeMedia(a.media as Uuid, (a.force as boolean) ?? false); return { ok: true, value: null }
         case 'set_role_gain': setRoleGain(a.role as string, parseNum(a.gain_db, 'gain_db')); return { ok: true, value: null }
         case 'update_role_flags': updateRoleFlags(a.role as string, a.patch as RoleFlagsPatch); return { ok: true, value: null }
-        case 'update_project_settings': updateProjectSettings(a.patch as { correction_script?: string; auto_pair_audio_on_import?: boolean | null; prefer_proxies?: boolean | null; generate_preview_proxies?: boolean | null; build_export_masters?: boolean | null; proxy_override?: { media_id: string; value: boolean | null } | null; shot_review?: { sensitivity: number; min_shot_us: number } | null; pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null }); return { ok: true, value: null }
+        case 'update_project_settings': updateProjectSettings(a.patch as { correction_script?: string; auto_pair_audio_on_import?: boolean | null; prefer_proxies?: boolean | null; generate_preview_proxies?: boolean | null; export_masters?: ExportMasters | null; proxy_override?: { media_id: string; value: boolean | null } | null; shot_review?: { sensitivity: number; min_shot_us: number } | null; pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null }); return { ok: true, value: null }
         case 'add_caption_track': { const comp = compositionArg(a); return { ok: true, value: commit(HISTORY_SUMMARY.trackAddCaption, trackRef, { kind: 'Coarse' }, (d) => applyAddCaptionTrack(d, idGen, a.cues as Cue[], a.comp_w as number, a.comp_h as number, (a.label as string) ?? null, comp)) } }
         case 'set_correction_script': {
           if (a.project_id !== current().project_id) throw new CommandFailure({ error: 'InvalidArgument', field: 'project_id', detail: 'The project has changed' })

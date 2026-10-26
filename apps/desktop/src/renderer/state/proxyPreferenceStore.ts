@@ -1,6 +1,6 @@
 // Renderer mirror of the proxy-preference ProjectSettings fields
 // (prefer_proxies + proxy_overrides + generate_preview_proxies +
-// build_export_masters). PixiPreview reads it live per
+// export_masters). PixiPreview reads it live per
 // ensureClip; the UI subscribes via atomic selectors. Setters write
 // through the unrecorded update_project_settings mutation, then update
 // the store optimistically (updateProjectSettings returns void). Follows
@@ -8,6 +8,7 @@
 
 import { create } from "zustand";
 
+import type { ExportMasters } from "../../shared/exportMasters";
 import { getProjectSettings, updateProjectSettings } from "../ipc";
 import { useProjectStore } from "./projectStore";
 
@@ -16,15 +17,14 @@ interface ProxyPrefState {
   /// When false the import/open fan-out skips building the preview (quick)
   /// proxy. Mirrors `ProjectSettings.generate_preview_proxies`.
   generatePreviewProxies: boolean;
-  /// When false a proxied source exports from its original, and its export
-  /// master is built only on demand. Mirrors
-  /// `ProjectSettings.build_export_masters`.
-  buildExportMasters: boolean;
+  /// When a proxied source's export master is built. Mirrors
+  /// `ProjectSettings.export_masters`.
+  exportMasters: ExportMasters;
   overrides: Record<string, boolean>;
   hydrate: (v: {
     preferProxies: boolean;
     generatePreviewProxies: boolean;
-    buildExportMasters: boolean;
+    exportMasters: ExportMasters;
     overrides: Record<string, boolean>;
   }) => void;
 }
@@ -32,13 +32,13 @@ interface ProxyPrefState {
 export const useProxyPrefStore = create<ProxyPrefState>((set) => ({
   preferProxies: false,
   generatePreviewProxies: true,
-  buildExportMasters: true,
+  exportMasters: "auto",
   overrides: {},
   hydrate: (v) =>
     set({
       preferProxies: v.preferProxies,
       generatePreviewProxies: v.generatePreviewProxies,
-      buildExportMasters: v.buildExportMasters,
+      exportMasters: v.exportMasters,
       overrides: v.overrides,
     }),
 }));
@@ -59,9 +59,9 @@ export async function setGeneratePreviewProxies(v: boolean): Promise<void> {
   useProxyPrefStore.setState({ generatePreviewProxies: v });
 }
 
-export async function setBuildExportMasters(v: boolean): Promise<void> {
-  await updateProjectSettings({ build_export_masters: v });
-  useProxyPrefStore.setState({ buildExportMasters: v });
+export async function setExportMasters(v: ExportMasters): Promise<void> {
+  await updateProjectSettings({ export_masters: v });
+  useProxyPrefStore.setState({ exportMasters: v });
 }
 
 export async function setProxyOverride(mediaId: string, value: boolean | null): Promise<void> {
@@ -80,7 +80,7 @@ async function rehydrate(): Promise<void> {
     useProxyPrefStore.getState().hydrate({
       preferProxies: v.prefer_proxies,
       generatePreviewProxies: v.generate_preview_proxies,
-      buildExportMasters: v.build_export_masters,
+      exportMasters: v.export_masters ?? "auto",
       overrides: v.proxy_overrides,
     });
   } catch {

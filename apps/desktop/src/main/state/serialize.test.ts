@@ -261,6 +261,24 @@ describe('parseProject grid repair', () => {
     expect(project.settings.shot_review).toBeNull()
     expect(() => validate(project)).not.toThrow()
   })
+  it('export_masters: absent or unknown reads as auto; the old build_export_masters boolean maps across', () => {
+    const wire = () => {
+      const w = serializeProject(blankProject(seededGen(), 'masters')) as Wire & { settings: Record<string, unknown> }
+      delete w.settings.export_masters
+      return w
+    }
+    expect(parseProject(wire(), silent).settings.export_masters).toBe('auto')
+    const unknown = wire(); unknown.settings.export_masters = 'always'
+    expect(parseProject(unknown, silent).settings.export_masters).toBe('auto')
+    const off = wire(); off.settings.build_export_masters = false
+    const parsedOff = parseProject(off, silent)
+    expect(parsedOff.settings.export_masters).toBe('on_demand')
+    expect('build_export_masters' in parsedOff.settings).toBe(false)
+    const on = wire(); on.settings.build_export_masters = true
+    expect(parseProject(on, silent).settings.export_masters).toBe('auto')
+    const both = wire(); both.settings.export_masters = 'on_import'; both.settings.build_export_masters = false
+    expect(parseProject(both, silent).settings.export_masters).toBe('on_import')
+  })
   it('leaves a stored shot_review exactly as written — a default, never a repair', () => {
     const wire = serializeProject(blankProject(seededGen(), 'tuned')) as Wire & {
       settings: Record<string, unknown>

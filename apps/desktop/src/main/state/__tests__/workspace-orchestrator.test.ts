@@ -285,11 +285,11 @@ describe('makeEnqueueDerivatives', () => {
     const project = blankProject(seededGen(), 'D')
     enqueue(project)
     enqueue({ ...project, settings: { ...project.settings, generate_preview_proxies: false } })
-    enqueue({ ...project, settings: { ...project.settings, build_export_masters: false } })
+    enqueue({ ...project, settings: { ...project.settings, export_masters: 'on_demand' } })
     expect(policies).toEqual([
-      { generate_preview_proxies: true, build_export_masters: true },
-      { generate_preview_proxies: false, build_export_masters: true },
-      { generate_preview_proxies: true, build_export_masters: false },
+      { generate_preview_proxies: true, export_masters: 'auto' },
+      { generate_preview_proxies: false, export_masters: 'auto' },
+      { generate_preview_proxies: true, export_masters: 'on_demand' },
     ])
   })
 

@@ -822,8 +822,13 @@ per-media routing table that rides the init protocol into the Worker;
 nothing re-resolves mid-run, and cross-engine or cross-source fallback
 mid-export is forbidden — a native session error aborts the export loudly
 (ADR 0033). Under `auto`, decodable sources stay on the in-worker WebCodecs
-path and persisted blind spots route native, exporting the **original** with
-no proxy involved; an `ffmpeg` pin routes every source native; a missing
+path, and every source WebCodecs can't be trusted with routes native,
+exporting the **original** with no proxy involved: persisted blind spots
+(`native-sw`), `proxied` sources (HEVC, VP9, 10-bit, or route-corrected after a
+failed probe), and a `direct-export` source this session's import sweep found
+WebCodecs-unusable (`isWebcodecsUnusable`). Only with no native component does
+`auto` export a source off its lossy master. An `ffmpeg` pin routes every
+source native; a missing
 component degrades the pin to `auto` (`effectiveSetting`). Native-routed
 media skip the readiness machinery below entirely (`proxyWaitScope`), and
 the export dialog's summary line ("N from originals, M from lossy proxy")

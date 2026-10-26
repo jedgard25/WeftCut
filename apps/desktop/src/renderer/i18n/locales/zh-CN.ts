@@ -2059,9 +2059,12 @@ const zhCN: Resources = {
     generate_preview_proxies: "生成预览代理",
     generate_preview_proxies_hint:
       "为需要的片段生成轻量的 720p 预览代理。关闭后将完全跳过后台转码，预览直接解码原始文件；导出不受影响。",
-    build_export_masters: "导入时生成导出母版",
-    build_export_masters_hint:
-      "导入后立即将导出无法直接读取的片段（如 4K HEVC 或 10-bit）转码为全分辨率母版。关闭后改为从原始文件导出；仅当本机无法解码该片段时，才会在导出时生成母版。ProRes、DNxHD 和 MPEG-2 始终会生成。",
+    export_masters: "导出母版",
+    export_masters_hint:
+      "为浏览器解码器无法读取的片段（HEVC、10-bit、ProRes）生成全分辨率 H.264 副本。自动模式下，只要内置 FFmpeg 解码器能直接从原始文件导出，就跳过生成。",
+    export_masters_auto: "自动",
+    export_masters_on_import: "导入时生成",
+    export_masters_on_demand: "导出时按需生成",
     decode_unsupported_generate_proxy: "生成代理",
     keybindings_blurb:
       "管理你的快捷键配置表。",

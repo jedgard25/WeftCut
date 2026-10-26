@@ -138,9 +138,16 @@ export async function prepareExportMedia(
     }
     if (exportPath != null) continue; // Bypass / landed Proxied master — export path ready
     // Proxied with no master yet ⇒ resolveDecode exportPath null: the source
-    // was route-corrected and its proxy is in flight, or failed.
-    if (deps.proxyStateOf(m.id) === "failed") failed.push(m.id);
-    else waiting.push(m.id);
+    // was route-corrected and its proxy is in flight, or failed — or the
+    // project deferred masters (`export_masters`) and none was ever started.
+    // `ensureFullProxy` is single-flight per source, so requesting one whose
+    // build is already running joins it rather than starting a second.
+    const state = deps.proxyStateOf(m.id);
+    if (state === "failed") failed.push(m.id);
+    else {
+      if (state === undefined) await deps.ensureFullProxy(m.id);
+      waiting.push(m.id);
+    }
   }
   return { waiting, failed };
 }

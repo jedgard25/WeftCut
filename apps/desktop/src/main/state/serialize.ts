@@ -1,3 +1,4 @@
+import { isExportMasters } from '../../shared/exportMasters'
 import { cropProblem } from '../../shared/crop'
 import { SCHEMA_VERSION, defaultSettings, type Animated, type Link, type Project } from './model'
 import { frameGrid, gridForLayerKind, snapOnGrid, snapUpOnGrid, type Grid } from './snap'
@@ -529,15 +530,25 @@ export function parseProject(json: unknown, opts: ParseProjectOptions = {}): Pro
     if (problem) throw new Error('parseProject: ' + problem)
   })
   refuseRetiredKeyframeShape(o)
-  // Additive settings fields (prefer_proxies/proxy_overrides/shot_review/generate_preview_proxies/build_export_masters, added
+  // Additive settings fields (prefer_proxies/proxy_overrides/shot_review/generate_preview_proxies/export_masters, added
   // later WITHOUT a schema bump) deserialize as absent on projects saved before
   // they existed.
   // Backfill here, or a consumer that reads a field as non-optional (e.g.
   // get_project_settings → the renderer proxy store) hands `undefined` downstream
   // and a `settings.proxy_overrides[id]` read throws mid-render. Existing keys win.
-  o.settings = { ...defaultSettings(), ...(o.settings as Record<string, unknown>) }
+  const rawSettings = (o.settings ?? {}) as Record<string, unknown>
+  // `export_masters` replaced a short-lived boolean `build_export_masters`
+  // (true built masters at import unless native decode could read the
+  // original — that is `auto`; false deferred them — `on_demand`).
+  const legacyMasters = typeof rawSettings.build_export_masters === 'boolean' && !('export_masters' in rawSettings)
+    ? (rawSettings.build_export_masters ? 'auto' : 'on_demand')
+    : undefined
+  o.settings = { ...defaultSettings(), ...rawSettings }
   const correctionSettings = o.settings as Record<string, unknown>
   if (typeof correctionSettings.correction_script !== 'string') delete correctionSettings.correction_script
+  if (legacyMasters) correctionSettings.export_masters = legacyMasters
+  delete correctionSettings.build_export_masters
+  if (!isExportMasters(correctionSettings.export_masters)) correctionSettings.export_masters = 'auto'
   // `Composition.ordinal` / `Project.next_group_ordinal`: absent → creation-order
   // numbers and a counter above them, so a project written before the pair
   // existed opens under the numbering it always showed — see the function.

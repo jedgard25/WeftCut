@@ -33,6 +33,7 @@ import {
   resolveExportDecodeRouting,
   type ExportDecodeRouting,
 } from "../render/exportDecodeRouting";
+import { isWebcodecsUnusable } from "../render/decoder/webcodecsCapability";
 import { createExportFinalization } from "../render/exportFinalization";
 import {
   createConformTracker,
@@ -175,6 +176,7 @@ export function createExportRunner(deps: {
       componentAvailable: useDecodeComponentStore.getState().available,
       bitDepth: compositeBitDepth(settings),
       media: referencedMedia,
+      webcodecsUnusable: isWebcodecsUnusable,
     });
     const prep = await prepareExportMedia(proxyWaitScope(referencedMedia, decodeRouting), {
       probe: (url) => classifyWebcodecsDecodability(url),

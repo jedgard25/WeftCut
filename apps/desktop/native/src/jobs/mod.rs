@@ -341,12 +341,13 @@ pub fn enqueue_quick_proxy(
 
 /// The project's automatic-proxy settings, crossed in from the TS actor: the
 /// job layer has no settings access. `preview_proxies` is
-/// `ProjectSettings.generate_preview_proxies` (false: no quick proxy), and
-/// `export_masters` is `ProjectSettings.build_export_masters` (false: a
-/// proxied source exports from its original and the master is built only if
-/// the export gate finds that original undecodable; see
-/// `proxy_decision::defer_export_master`). Neither affects an explicit
-/// "Generate proxy" or the export gate's `ensure_full_proxy`.
+/// `ProjectSettings.generate_preview_proxies` (false: no quick proxy).
+/// `export_masters` is the EFFECTIVE `ProjectSettings.export_masters` — TS
+/// resolves `auto` against whether the native export decoder is available
+/// (`shared/exportMasters.ts`). False: the route is still decided as usual,
+/// but no full master is built at import; export decodes the original natively,
+/// or the export gate builds the master on demand (`ensure_full_proxy`).
+/// Neither affects an explicit "Generate proxy" or `ensure_full_proxy`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProxyPolicy {
     pub preview_proxies: bool,
@@ -393,10 +394,7 @@ pub fn enqueue_for_media(
         if policy.preview_proxies {
             planned.push("quick_proxy");
         }
-        if matches!(
-            media.decode_route,
-            DecodeRoute::Proxied { .. } | DecodeRoute::NativeSw { .. }
-        ) {
+        if master_wanted(&media.decode_route, policy) {
             planned.push("proxy");
         }
     }
@@ -425,10 +423,7 @@ pub fn enqueue_for_media(
         if proxy_decision::route_needs_decision(&media.decode_route) {
             spawn_proxy_decision(events, log_slot, cache, media, policy);
         } else if !matches!(media.decode_route, DecodeRoute::Bypass) {
-            if matches!(
-                media.decode_route,
-                DecodeRoute::Proxied { .. } | DecodeRoute::NativeSw { .. }
-            ) {
+            if master_wanted(&media.decode_route, policy) {
                 spawn_proxy(
                     events.clone(),
                     log_slot.clone(),
@@ -440,6 +435,19 @@ pub fn enqueue_for_media(
                 spawn_quick_proxy(events, log_slot, cache, media, false, None);
             }
         }
+    }
+}
+
+/// Whether the re-open fan-out should (re)build or adopt a source's full
+/// master: only routes that carry one, and — when the project defers masters —
+/// only one already registered (so a landed master is still adopted and
+/// validated, but none is started).
+fn master_wanted(route: &DecodeRoute, policy: ProxyPolicy) -> bool {
+    match route {
+        DecodeRoute::Proxied { full_proxy, .. } | DecodeRoute::NativeSw { full_proxy, .. } => {
+            policy.export_masters || full_proxy.is_some()
+        }
+        _ => false,
     }
 }
 
@@ -679,17 +687,18 @@ fn spawn_proxy_decision(
             return;
         }
         let route = proxy_decision::decide(&media, source_gop_secs);
-        let route = if policy.export_masters {
-            route
-        } else {
-            proxy_decision::defer_export_master(route)
-        };
-        let planned: &[&str] = match (proxy_decision::job_for(route), policy.preview_proxies) {
-            (proxy_decision::ProxyJob::None, _) => &[],
-            (proxy_decision::ProxyJob::QuickOnly, true) => &["quick_proxy"],
-            (proxy_decision::ProxyJob::QuickOnly, false) => &[],
-            (proxy_decision::ProxyJob::QuickThenFull, true) => &["quick_proxy", "proxy"],
-            (proxy_decision::ProxyJob::QuickThenFull, false) => &["proxy"],
+        let planned: &[&str] = match (
+            proxy_decision::job_for(route),
+            policy.preview_proxies,
+            policy.export_masters,
+        ) {
+            (proxy_decision::ProxyJob::None, _, _) => &[],
+            (proxy_decision::ProxyJob::QuickOnly, true, _) => &["quick_proxy"],
+            (proxy_decision::ProxyJob::QuickOnly, false, _) => &[],
+            (proxy_decision::ProxyJob::QuickThenFull, true, true) => &["quick_proxy", "proxy"],
+            (proxy_decision::ProxyJob::QuickThenFull, true, false) => &["quick_proxy"],
+            (proxy_decision::ProxyJob::QuickThenFull, false, true) => &["proxy"],
+            (proxy_decision::ProxyJob::QuickThenFull, false, false) => &[],
         };
         diagnostics::plan(&events, media_id, planned, false);
         // Commit the authoritative initial route FIRST, then spawn the jobs the
@@ -753,7 +762,15 @@ fn spawn_proxy_decision(
                 }
             }
             proxy_decision::ProxyJob::QuickThenFull => {
-                if policy.preview_proxies {
+                if !policy.export_masters {
+                    // Masters deferred: export decodes the original natively, or
+                    // the export gate builds the master on demand. Preview proxy
+                    // only, without chaining the master.
+                    info!("export masters deferred for {media_id}");
+                    if policy.preview_proxies {
+                        spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
+                    }
+                } else if policy.preview_proxies {
                     spawn_quick_proxy(events, log_slot, cache, media, true, source_gop_secs);
                 } else {
                     // No preview proxy, but export still needs its master: build

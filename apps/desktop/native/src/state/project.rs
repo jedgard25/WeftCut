@@ -158,15 +158,15 @@ pub struct ProjectSettings {
     /// `enqueue_jobs_for_media`. Default `true`.
     #[serde(default = "default_generate_preview_proxies")]
     pub generate_preview_proxies: bool,
-    /// When `false`, the automatic import/open fan-out does NOT build the full
-    /// export master for a source that previews from a proxy: the source
-    /// exports from its ORIGINAL (DirectExport), and the export gate builds the
-    /// master on demand only if this machine cannot decode that original.
-    /// WebCodecs-blind sources (ProRes, DNxHD, MPEG-2, ...) keep their master,
-    /// since export has no other way to read them. **TS owns it**; mirrored
-    /// like `generate_preview_proxies`. Default `true`.
-    #[serde(default = "default_build_export_masters")]
-    pub build_export_masters: bool,
+    /// When the full export master of a source that previews from a proxy is
+    /// built: `Auto` (only when the native export decoder is unavailable —
+    /// otherwise export decodes the original natively), `OnImport` (always, at
+    /// import: upstream's behaviour) or `OnDemand` (never at import; the export
+    /// gate builds it if the export cannot read the original). **TS owns it**
+    /// and resolves it against decoder availability (`shared/exportMasters.ts`)
+    /// before it reaches the job layer as `jobs::ProxyPolicy::export_masters`.
+    #[serde(default)]
+    pub export_masters: ExportMasters,
 }
 
 /// Twin of TS `ShotReviewSettings`: the threshold and minimum shot length a
@@ -199,8 +199,14 @@ fn default_generate_preview_proxies() -> bool {
     true
 }
 
-fn default_build_export_masters() -> bool {
-    true
+/// Twin of TS `ExportMasters` (see `ProjectSettings::export_masters`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportMasters {
+    #[default]
+    Auto,
+    OnImport,
+    OnDemand,
 }
 
 /// Patch shape for `update_project_settings` — every field optional so the UI
@@ -245,7 +251,7 @@ impl Default for ProjectSettings {
             shot_review: None,
             pause_review: None,
             generate_preview_proxies: true,
-            build_export_masters: true,
+            export_masters: ExportMasters::Auto,
         }
     }
 }
@@ -307,27 +313,27 @@ mod generate_preview_proxies_tests {
         assert!(!back.settings.generate_preview_proxies);
     }
 
-    /// Same backfill for `build_export_masters`: an older project keeps
-    /// building its export masters.
+    /// A project written before the setting existed reads as `Auto`.
     #[test]
-    fn missing_build_export_masters_reads_as_true() {
+    fn missing_export_masters_reads_as_auto() {
         let p = Project::new_blank("t");
         let mut v = serde_json::to_value(&p).unwrap();
         v["settings"]
             .as_object_mut()
             .unwrap()
-            .remove("build_export_masters");
+            .remove("export_masters");
         let back: Project = serde_json::from_value(v).unwrap();
-        assert!(back.settings.build_export_masters);
+        assert_eq!(back.settings.export_masters, ExportMasters::Auto);
     }
 
     #[test]
-    fn build_export_masters_round_trips_false() {
+    fn export_masters_round_trips_as_snake_case() {
         let mut p = Project::new_blank("t");
-        p.settings.build_export_masters = false;
-        let json = serde_json::to_string(&p).unwrap();
-        let back: Project = serde_json::from_str(&json).unwrap();
-        assert!(!back.settings.build_export_masters);
+        p.settings.export_masters = ExportMasters::OnDemand;
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["settings"]["export_masters"], "on_demand");
+        let back: Project = serde_json::from_value(v).unwrap();
+        assert_eq!(back.settings.export_masters, ExportMasters::OnDemand);
     }
 }
 

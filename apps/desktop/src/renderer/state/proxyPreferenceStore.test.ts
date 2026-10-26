@@ -32,11 +32,11 @@ describe("proxyPreferenceStore", () => {
     unwire();
   });
 
-  it("hydrates buildExportMasters from the project settings", async () => {
-    getProjectSettings.mockResolvedValue({ prefer_proxies: false, build_export_masters: false, proxy_overrides: {} });
+  it("hydrates exportMasters from the project settings", async () => {
+    getProjectSettings.mockResolvedValue({ prefer_proxies: false, export_masters: "on_demand", proxy_overrides: {} });
     useProjectStore.setState({ summary: summaryWithId("p2"), ready: true });
     const unwire = wireProxyPrefStore();
-    await vi.waitFor(() => expect(useProxyPrefStore.getState().buildExportMasters).toBe(false));
+    await vi.waitFor(() => expect(useProxyPrefStore.getState().exportMasters).toBe("on_demand"));
     unwire();
   });
 

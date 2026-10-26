@@ -16,6 +16,8 @@ import {
 } from "../ipc";
 import { type ProxyState } from "../panels/mediaReadiness";
 import { useProxyPrefStore } from "../state/proxyPreferenceStore";
+import { useDecodeComponentStore } from "../settings/decodeComponentStore";
+import { buildsMastersOnImport } from "../../shared/exportMasters";
 import {
   classifyWebcodecsDecodability,
 } from "../render/decoder/probeSourceDecodable";
@@ -224,9 +226,12 @@ export function useImportReadiness(deps: {
       markWebcodecsUnusable(media.id, 'webcodecs cannot decode original');
       if (resolveDecode(media).route === 'direct-export') {
         routeCorrected.current.add(media.id);
-        // With export masters off the project defers the master to export:
-        // the export gate (`prepareExportMedia`) re-probes and builds it then.
-        if (!useProxyPrefStore.getState().buildExportMasters) return;
+        // Masters deferred (`export_masters`, resolved against the native
+        // decoder): export decodes this original natively
+        // (`exportDecodeRouting`, from `isWebcodecsUnusable`), or the export
+        // gate builds the master then.
+        const nativeDecode = useDecodeComponentStore.getState().available;
+        if (!buildsMastersOnImport(useProxyPrefStore.getState().exportMasters, nativeDecode)) return;
         void ensureFullProxy(media.id).catch(error => console.error('[weftcut] route correction failed', error));
       }
     },
