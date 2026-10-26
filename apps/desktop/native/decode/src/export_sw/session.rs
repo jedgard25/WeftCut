@@ -1,7 +1,8 @@
 //! Per-source export-decode session thread + registry + credit window.
 //!
 //! Owns: a dedicated OS thread per session that opens a
-//! [`SwVideoStream`], services
+//! [`LaneStream`] (VideoToolbox copy-back on macOS when the machine confirms it,
+//! software otherwise — `lane.rs`), services
 //! `decode_range` commands posted over an mpsc channel, and ships owned
 //! [`SwFrame`] bytes (NV12 or I420P10, per the session's [`ExportOutFormat`])
 //! out through a shared sink one credit at a time. The reorder,
@@ -18,7 +19,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
-use crate::preview_sw::decoder::{SwColorTags, SwFrame, SwOutFormat, SwVideoStream};
+use super::lane::{
+    robust_seek_and_probe, DeclinedClasses, ExportLanePolicy, FaultPlan, FrameSource, LaneStream,
+};
+use crate::preview_sw::decoder::{SwColorTags, SwFrame, SwOutFormat};
 use crate::recover::{panic_message, LockExt};
 
 /// Default credits (frames in flight) when a caller does not specify one: bounds
@@ -26,15 +30,6 @@ use crate::recover::{panic_message, LockExt};
 /// the decoder far enough ahead of the encoder that it never idles between
 /// chunks. See ADR 0033.
 pub const DEFAULT_CREDIT_WINDOW: u32 = 6;
-
-/// Largest number of backward re-seek attempts when a container's seek overshoots
-/// the target. Index-less MPEG-PS/TS estimate the seek byte-offset and can land
-/// AFTER the requested time; each retry steps the target back by a growing
-/// margin. The final fallback (seek target 0) decodes from the start — always a
-/// valid at-or-before landing. Mirrors `preview_sw::session::serve_request`.
-const MAX_SEEK_RETRIES: u32 = 6;
-/// Initial backward step when re-seeking after an overshoot; doubles each retry.
-const SEEK_RETRY_MARGIN_US: i64 = 1_000_000;
 
 /// The pixel format a session emits (8-bit NV12 or 10-bit I420P10 — layouts on
 /// [`SwOutFormat`]); `parse` rejects any other requested format at `open` so a
@@ -80,6 +75,19 @@ pub struct ExportSwOpenInfo {
     /// offset `media_time::ticks_to_source_us` subtracts). 0 for a stream that
     /// starts at t=0.
     pub start_pts_us: i64,
+    /// The lane the session opened on (`"videotoolbox"` | `"software"`) and why —
+    /// the diagnostic main logs. A later mid-range downgrade is logged by the
+    /// session itself (see `LaneStream::fall_back_to_software`).
+    pub lane: &'static str,
+    pub lane_reason: String,
+}
+
+/// Per-open knobs beyond path/format/window. `Default` is the product path:
+/// automatic lane choice, no injected faults.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ExportOpenOptions {
+    pub policy: ExportLanePolicy,
+    pub fault: FaultPlan,
 }
 
 /// Announced out of a session thread through the shared sink. `Send` (its only
@@ -219,36 +227,6 @@ impl RangeState {
     }
 }
 
-/// Robust seek: land on a keyframe AT/BEFORE `target_us` and return the first
-/// decoded frame there — the initial candidate for the forward scan. `Ok(None)`
-/// means the seek landed at EOF. See [`MAX_SEEK_RETRIES`] for why an overshoot
-/// is retried. Mirrors `preview_sw`'s inline retry.
-fn robust_seek_and_probe(
-    stream: &mut SwVideoStream,
-    target_us: i64,
-) -> Result<Option<SwFrame>, String> {
-    let mut seek_target = target_us;
-    let mut margin = SEEK_RETRY_MARGIN_US;
-    let mut attempt = 0u32;
-    loop {
-        stream
-            .seek(seek_target)
-            .map_err(|e| format!("seek to {seek_target}us failed: {e}"))?;
-        match stream.next_frame()? {
-            Some(f) => {
-                if f.pts_us > target_us && seek_target > 0 && attempt < MAX_SEEK_RETRIES {
-                    seek_target = (target_us - margin).max(0);
-                    margin = margin.saturating_mul(2);
-                    attempt += 1;
-                    continue;
-                }
-                return Ok(Some(f)); // landed at/before target (or can't retry further)
-            }
-            None => return Ok(None),
-        }
-    }
-}
-
 /// Service one `decode_range(a, b)`: deliver every frame whose presentation
 /// interval `[pts, pts+dur)` intersects `[a, b]` (b inclusive — matches the
 /// WebCodecs `ExportFrameStore` half-open containment + `pts <= bUs` feed
@@ -261,7 +239,7 @@ fn robust_seek_and_probe(
 /// resuming on the previous range's stopped-on frame ([`RangeState::pending`])
 /// with no prefix re-feed; otherwise (backward clip-reuse jump) it re-seeks.
 fn serve_range(
-    stream: &mut SwVideoStream,
+    stream: &mut LaneStream,
     state: &mut RangeState,
     credit: &CreditWindow,
     sink: &ExportSink,
@@ -397,16 +375,25 @@ fn serve_range(
 /// The session thread body: open the decoder targeting the session's parsed
 /// output format, report metadata back to `open`, then run a blocking message
 /// loop until `Close` (or the sender drops).
+#[allow(clippy::too_many_arguments)]
 fn session_thread(
     session_id: String,
     path: String,
     out_format: ExportOutFormat,
+    options: ExportOpenOptions,
+    declined: DeclinedClasses,
     credit: Arc<CreditWindow>,
     rx: Receiver<ExportMsg>,
     init_tx: Sender<Result<ExportSwOpenInfo, String>>,
     sink: ExportSink,
 ) {
-    let mut stream = match SwVideoStream::open_with_format(&path, out_format.decoder_format()) {
+    let (mut stream, choice) = match LaneStream::open(
+        &path,
+        out_format.decoder_format(),
+        options.policy,
+        &declined,
+        options.fault,
+    ) {
         Ok(s) => s,
         Err(e) => {
             let _ = init_tx.send(Err(e));
@@ -418,6 +405,8 @@ fn session_thread(
         height: stream.height,
         color: stream.color.clone(),
         start_pts_us: stream.start_pts_us,
+        lane: choice.lane.wire_name(),
+        lane_reason: choice.reason,
     };
     if init_tx.send(Ok(info)).is_err() {
         return; // `open` gave up waiting; drop `stream` and exit.
@@ -464,6 +453,9 @@ fn session_thread(
 pub struct ExportSwRegistry {
     sessions: Mutex<HashMap<String, Session>>,
     sink: ExportSink,
+    /// Format classes VideoToolbox declined on this machine, shared by every
+    /// session this registry opens (see `lane::DeclinedClasses`).
+    declined: DeclinedClasses,
 }
 
 impl Default for ExportSwRegistry {
@@ -477,6 +469,7 @@ impl ExportSwRegistry {
         Self {
             sessions: Mutex::new(HashMap::new()),
             sink: Arc::new(Mutex::new(None)),
+            declined: Arc::default(),
         }
     }
 
@@ -497,6 +490,47 @@ impl ExportSwRegistry {
         out_format: &str,
         credit_window: u32,
     ) -> Result<ExportSwOpenInfo, String> {
+        self.open_with_options(
+            session_id,
+            path,
+            out_format,
+            credit_window,
+            ExportOpenOptions::default(),
+        )
+    }
+
+    /// [`open`](Self::open) with an explicit lane policy — the napi surface's
+    /// `lane` argument.
+    pub fn open_with_policy(
+        &self,
+        session_id: &str,
+        path: &str,
+        out_format: &str,
+        credit_window: u32,
+        policy: ExportLanePolicy,
+    ) -> Result<ExportSwOpenInfo, String> {
+        self.open_with_options(
+            session_id,
+            path,
+            out_format,
+            credit_window,
+            ExportOpenOptions {
+                policy,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// [`open`](Self::open) with an explicit lane policy (and, in tests, injected
+    /// VideoToolbox faults).
+    pub(crate) fn open_with_options(
+        &self,
+        session_id: &str,
+        path: &str,
+        out_format: &str,
+        credit_window: u32,
+        options: ExportOpenOptions,
+    ) -> Result<ExportSwOpenInfo, String> {
         // Validate the requested format FIRST — a format the session can't emit
         // must fail at open, before any thread or decoder work.
         let fmt = ExportOutFormat::parse(out_format)?;
@@ -513,6 +547,7 @@ impl ExportSwRegistry {
         let sink = Arc::clone(&self.sink);
         let sid = session_id.to_string();
         let path_owned = path.to_string();
+        let declined = Arc::clone(&self.declined);
 
         let thread_limit = crate::preview_sw::decoder::configured_decode_threads();
         let join = thread::Builder::new()
@@ -523,6 +558,8 @@ impl ExportSwRegistry {
                     sid,
                     path_owned,
                     fmt,
+                    options,
+                    declined,
                     credit_for_thread,
                     cmd_rx,
                     init_tx,
@@ -609,6 +646,7 @@ impl ExportSwRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preview_sw::decoder::SwVideoStream;
     use crate::test_wait::wait_for;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;

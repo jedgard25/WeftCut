@@ -43,3 +43,24 @@ it('rolls back a failed native open before publishing an owner', () => {
   expect(release).toHaveBeenCalledOnce()
   expect(contents.listenerCount('destroyed')).toBe(0)
 })
+
+it('forwards the lane policy and reports the lane the session chose', () => {
+  resources.reserve.mockReturnValue(vi.fn())
+  const contents = Object.assign(new EventEmitter(), { id: 4, isDestroyed: () => false })
+  const win = { webContents: contents, isDestroyed: () => false } as unknown as BrowserWindow
+  const exportSwOpen = vi.fn(() => ({ width: 2, height: 2, startPtsUs: 0, lane: 'videotoolbox', laneReason: 'probe ok' }))
+  const native = { exportSwOpen, exportSwClose: vi.fn() } as unknown as NativeDecode
+  const before = process.env.WEFTCUT_EXPORT_DECODE_LANE
+  try {
+    delete process.env.WEFTCUT_EXPORT_DECODE_LANE
+    expect(openExportSw(native, win, 'auto', 'fixture', 'NV12', 6)).toMatchObject({ lane: 'videotoolbox', laneReason: 'probe ok' })
+    expect((exportSwOpen.mock.calls[0] as unknown[])[5]).toBeNull()
+    process.env.WEFTCUT_EXPORT_DECODE_LANE = 'software'
+    openExportSw(native, win, 'pinned', 'fixture', 'NV12', 6)
+    expect((exportSwOpen.mock.calls[1] as unknown[])[5]).toBe('software')
+  } finally {
+    if (before === undefined) delete process.env.WEFTCUT_EXPORT_DECODE_LANE
+    else process.env.WEFTCUT_EXPORT_DECODE_LANE = before
+    closeAllExportSw(native)
+  }
+})

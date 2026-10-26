@@ -816,8 +816,9 @@ impl SwVideoStream {
     /// Decode one frame and return its RAW pixel format — the hardware surface
     /// format (`Pixel::CUDA`/`Pixel::VAAPI`) when a hw lane actually engaged, or
     /// the CPU format when the decoder fell back to software. No transfer, no
-    /// packing. `Ok(None)` at immediate end of stream. Backs the hw probe.
-    fn decode_one_raw_format(&mut self) -> Result<Option<Pixel>, String> {
+    /// packing. `Ok(None)` at immediate end of stream. Backs the hw probe and
+    /// the export session's open-time VideoToolbox probe (`export_sw::lane`).
+    pub(crate) fn decode_one_raw_format(&mut self) -> Result<Option<Pixel>, String> {
         let map = |e: ffmpeg_next::Error| e.to_string();
         loop {
             if self.decoder.receive_frame(&mut self.frame).is_ok() {

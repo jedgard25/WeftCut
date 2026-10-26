@@ -145,3 +145,13 @@ post-v1 debt rather than silently claimed.
   `e2e/electron/export-prores-fidelity.spec.ts`,
   `src/main/export-decode-native.integration.test.ts`, and the
   `export_sw/session.rs` coverage/credit/EOS test suite.
+
+## Amendment: the macOS VideoToolbox lane (ADR 0144)
+
+The "software-only" lane above gained a hardware lane on macOS: the session
+decodes on VideoToolbox when a one-frame probe confirms it, and a VideoToolbox
+failure mid-range re-opens the source in software and resumes at the exact
+next frame — the same-engine rebuild this ADR anticipated, done inside the
+session and licensed by conformance showing the two lanes deliver the same
+frames. Cross-engine and cross-source fallback stay forbidden. See
+[ADR 0144](0144-native-export-decode-uses-videotoolbox-and-resumes-in-software.md).

@@ -762,7 +762,15 @@ A pipeline is one of two handles behind the same
 - the native `NativeExportSourceHandle` — a relay client: `decodeRange`
   becomes an IPC command to a credit-windowed `export_sw` session in the
   native component, which decodes the **original** and streams NV12/I420P10
-  planes back main → renderer → Worker in-band and in order; the handle
+  planes back main → renderer → Worker in-band and in order. On macOS the
+  session decodes on the VideoToolbox copy-back lane when a one-frame probe
+  confirms a hardware surface for the source's format class (h264, hevc,
+  vp9, prores), else in software; the chosen lane and its reason are logged
+  per session, and a VideoToolbox error mid-range re-opens the source in
+  software and resumes at the exact next frame, so delivery stays
+  exactly-once. The lanes are conformance-gated to deliver the same frames
+  (H.264/HEVC bit-identical) — ADR 0144. Elsewhere the session is software
+  only. The handle
   returns one credit per frame that leaves the ring. Its ordered `rangeEnd`
   carries the completed source range and finalizes quantized wait targets
   without decoding an out-of-range proof frame; `decodeRange` remains

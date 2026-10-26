@@ -1,4 +1,5 @@
-// Main-process manager for native SOFTWARE export-decode sessions — the
+// Main-process manager for native export-decode sessions (software, or the
+// macOS VideoToolbox copy-back lane — ADR 0144) — the
 // EXPORT-side mirror of previewSw.ts (blind-spot originals: ProRes/DNxHD/
 // MPEG-2/VC-1). The addon delivers EVERYTHING in-band on the per-session
 // ThreadsafeFunction callback as a tagged `ExportSwMsg` — frames AND the
@@ -47,10 +48,22 @@ function trackOwner(backend: NativeDecode, contents: WebContents, sessionId: str
   sessionOwners.set(sessionId, contents.id)
 }
 
+/// The export-decode lane POLICY handed to the addon. Unset = `auto`: the
+/// session decodes on VideoToolbox (macOS) when a one-frame probe confirms a
+/// hardware surface for the source's format class, else software, and a
+/// VideoToolbox failure mid-range resumes in software at the exact next frame
+/// (ADR 0144). `WEFTCUT_EXPORT_DECODE_LANE=software` pins software — a
+/// diagnostic escape hatch, not a user setting; an unknown value fails the open.
+export function exportDecodeLanePolicy(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.WEFTCUT_EXPORT_DECODE_LANE || null
+}
+
 /// Open a native export-decode session. Synchronous on the addon side: the
 /// message callback is registered BEFORE the decode thread spawns, so no early
 /// message is dropped, and dimensions + source color tags + start PTS return
-/// immediately. Messages only start flowing after `decodeRangeExportSw`.
+/// immediately. Messages only start flowing after `decodeRangeExportSw`. The
+/// lane the session chose, and why, is logged here (the export-decode lane
+/// diagnostic) and returned on the reply.
 export function openExportSw(
   backend: NativeDecode,
   win: BrowserWindow,
@@ -67,7 +80,8 @@ export function openExportSw(
     if (err) return
     if (win.isDestroyed() || win.webContents.isDestroyed()) return
     win.webContents.send('exportSw:msg', msg)
-  })
+  }, exportDecodeLanePolicy())
+  console.info(`[main] exportSw ${sessionId}: decode lane ${info.lane} (${info.laneReason})`)
   sessions.add(sessionId)
   resources.set(sessionId, release)
   trackOwner(backend, win.webContents, sessionId)
@@ -79,6 +93,8 @@ export function openExportSw(
     colorPrimaries: info.colorPrimaries,
     colorTransfer: info.colorTransfer,
     startPtsUs: info.startPtsUs,
+    lane: info.lane === 'videotoolbox' ? 'videotoolbox' : 'software',
+    laneReason: info.laneReason,
   }
   } catch (error) { release(); throw error }
 }

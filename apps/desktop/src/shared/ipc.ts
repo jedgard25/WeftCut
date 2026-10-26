@@ -353,6 +353,12 @@ export interface ExportSwOpenReply {
   colorPrimaries?: string
   colorTransfer?: string
   startPtsUs: number
+  /// The decode lane the session opened on — `videotoolbox` (macOS copy-back,
+  /// confirmed by a one-frame probe) or `software` — and why (ADR 0144). A
+  /// later mid-range VideoToolbox failure resumes in software without changing
+  /// the delivered frames; that downgrade is logged by the native session.
+  lane: 'videotoolbox' | 'software'
+  laneReason: string
 }
 
 /// Availability of the optional @weftcut/native-decode component (level-0

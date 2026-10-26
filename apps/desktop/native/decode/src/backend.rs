@@ -180,6 +180,11 @@ pub struct ExportSwOpenInfoJs {
     pub color_primaries: Option<String>,
     pub color_transfer: Option<String>,
     pub start_pts_us: f64,
+    /// The lane the session opened on: `"videotoolbox"` (macOS copy-back, the
+    /// machine confirmed a hardware surface for this source) or `"software"`.
+    pub lane: String,
+    /// Why that lane — logged by main as the export-decode lane diagnostic.
+    pub lane_reason: String,
 }
 
 /// One export-decoded frame delivered to JS. Same wire shape as `PreviewSwFrame`,
@@ -987,7 +992,14 @@ impl NativeDecode {
     /// per-session message callback BEFORE opening so no early message is
     /// dropped; fails loudly (removing the callback) if the format can't be
     /// emitted or the decoder can't open. Returns dimensions, source color tags,
-    /// and start PTS.
+    /// start PTS, and the decode lane chosen (with its reason).
+    ///
+    /// `lane` is the lane POLICY: absent/`"auto"` lets the session choose
+    /// (VideoToolbox on macOS when a one-frame probe confirms a hardware surface
+    /// for the source's format class, software otherwise — and a VideoToolbox
+    /// session that errors mid-range resumes in software at the exact next
+    /// frame); `"software"` pins software. Anything else fails the open. See
+    /// ADR 0144.
     #[napi]
     pub fn export_sw_open(
         &self,
@@ -996,14 +1008,20 @@ impl NativeDecode {
         out_format: String,
         credit_window: u32,
         on_msg: ThreadsafeFunction<ExportSwMsg>,
+        lane: Option<String>,
     ) -> napi::Result<ExportSwOpenInfoJs> {
+        let policy = crate::export_sw::ExportLanePolicy::parse(lane.as_deref())
+            .map_err(napi::Error::from_reason)?;
         self.export_sw_sinks
             .lock_recover()
             .insert(session_id.clone(), on_msg);
-        match self
-            .export_sw
-            .open(&session_id, &path, &out_format, credit_window)
-        {
+        match self.export_sw.open_with_policy(
+            &session_id,
+            &path,
+            &out_format,
+            credit_window,
+            policy,
+        ) {
             Ok(info) => Ok(ExportSwOpenInfoJs {
                 width: info.width,
                 height: info.height,
@@ -1012,6 +1030,8 @@ impl NativeDecode {
                 color_primaries: info.color.primaries,
                 color_transfer: info.color.transfer,
                 start_pts_us: info.start_pts_us as f64,
+                lane: info.lane.to_string(),
+                lane_reason: info.lane_reason,
             }),
             Err(e) => {
                 // Open failed — drop the callback we optimistically registered so

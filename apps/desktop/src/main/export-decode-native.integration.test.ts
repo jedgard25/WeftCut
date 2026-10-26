@@ -23,6 +23,7 @@ const DECODE = path.join(APP, 'native', 'decode')
 const DLL_DIR = path.join(APP, 'resources', 'ffmpeg-lgpl', 'win', 'bin')
 const PRORES = path.join(DECODE, 'tests', 'fixtures', 'tiny_prores.mov')
 const MPEG2 = path.join(DECODE, 'tests', 'fixtures', 'tiny_mpeg2.mpg')
+const H264_BFRAMES = path.join(DECODE, 'tests', 'fixtures', 'tiny_h264_bframes.mp4')
 
 // Load the built addon the way main does. On Windows, dlopen resolves the
 // ffmpeg family via PATH, so prepend the co-located DLL dir first. On Linux the
@@ -161,6 +162,22 @@ describe.skipIf(!addon)('native export-decode session (napi seam)', () => {
     expect(info.height).toBe(240)
     expect(info.startPtsUs).toBe(0)
     close('open10')
+  })
+
+  it('open reports the decode lane it chose and honours a software pin (ADR 0144)', () => {
+    const lane = (id: string, file: string, policy?: string) => {
+      const info = ctx.backend.exportSwOpen(id, file, 'NV12', 6, () => {}, policy)
+      ctx.backend.exportSwClose(id)
+      return info
+    }
+    // VideoToolbox decodes H.264 on every supported Mac; elsewhere export
+    // decode stays software.
+    const auto = lane('lane-auto', H264_BFRAMES)
+    expect(auto.lane).toBe(process.platform === 'darwin' ? 'videotoolbox' : 'software')
+    expect(auto.laneReason.length).toBeGreaterThan(0)
+    expect(lane('lane-mpeg2', MPEG2).lane).toBe('software') // not VT-eligible
+    expect(lane('lane-pinned', H264_BFRAMES, 'software').lane).toBe('software')
+    expect(() => lane('lane-bad', H264_BFRAMES, 'gpu')).toThrow(/gpu/)
   })
 
   it('decodeRange delivers exactly the intersecting intra frames, once, in order', async () => {
