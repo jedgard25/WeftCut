@@ -5,6 +5,8 @@
 //!
 //! Encode is always software (libx264): proxies must be portable across
 //! machines, so HW-encoder selection is reserved for the user's exports.
+//! (The preview-only QUICK proxy is the exception: it is local and never
+//! exported, so `quick_proxy` prefers the platform hardware encoder.)
 
 use std::path::PathBuf;
 use std::process::Stdio;

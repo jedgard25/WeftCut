@@ -29,6 +29,26 @@ pub fn preferred_hwaccel() -> Option<&'static str> {
     }
 }
 
+/// Native ffmpeg `-c:v` hardware H.264 encoder for the current OS, if any.
+///
+/// Only for LOCAL, preview-only derivatives (the quick proxy), where encode
+/// speed and power draw matter more than portability. The full proxy and the
+/// export master stay libx264 (see `proxy.rs`). macOS gets VideoToolbox, an OS
+/// framework present on every Mac. Windows/Linux return `None`: NVENC/VAAPI are
+/// not universally present, and a failed hardware attempt followed by a
+/// software retry on every proxy build is worse than the predictable libx264
+/// path.
+pub fn preferred_hw_encoder() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        Some("h264_videotoolbox")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Append hardware-decode flags immediately before `-i`.
 pub fn push_hwaccel_args(cmd: &mut Command) {
     let Some(accel) = preferred_hwaccel() else {
@@ -98,5 +118,10 @@ mod tests {
     fn preferred_hwaccel_is_set_on_supported_platforms() {
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
         assert!(preferred_hwaccel().is_some());
+    }
+
+    #[test]
+    fn hw_encoder_is_macos_only() {
+        assert_eq!(preferred_hw_encoder().is_some(), cfg!(target_os = "macos"));
     }
 }
