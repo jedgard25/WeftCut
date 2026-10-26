@@ -110,8 +110,10 @@ _Avoid_: decode route (that's the persisted disk truth), tier, preset
 
 **Standard engine**:
 The FFmpeg decode engine (setting value `ffmpeg`) — decodes any original
-in-process, privately choosing a hardware (d3d11va shared-texture) or software
-(NV12-over-IPC) lane. Needs the optional native-decode component.
+in-process, privately choosing a hardware lane (Windows d3d11va
+shared-texture; Linux NVDEC/VAAPI copy-back; macOS VideoToolbox copy-back, or
+an opt-in IOSurface shared-texture transport) or a software (NV12-over-IPC)
+lane. Needs the optional native-decode component.
 _Avoid_: native engine, ffmpeg lane
 
 **Lite engine**:

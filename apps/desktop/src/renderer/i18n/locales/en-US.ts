@@ -2383,6 +2383,9 @@ const enUS = {
     playback_resolution_smooth: "Smooth",
     playback_resolution_sharp: "Sharp",
     playback_resolution_export_note: "Export always renders at full resolution.",
+    auto_preview_proxies: "Use quick proxies for 4K preview automatically",
+    auto_preview_proxies_hint:
+      "When a 4K source's short-GOP quick proxy is ready, preview it instead of the original. Per-clip Original still wins. Export is unaffected.",
     experimental_shared_texture: "Zero-copy VideoToolbox preview (macOS, experimental)",
     experimental_shared_texture_hint:
       "Hands the decoder's IOSurface directly to the renderer instead of copying frames. Off by default; falls back automatically if the path fails.",

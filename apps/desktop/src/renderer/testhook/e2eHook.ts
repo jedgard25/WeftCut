@@ -63,7 +63,7 @@ import {
   stageSnapshot,
   type StageSnapshot,
 } from "../render/perf/stageTimers";
-import { resolveDecode } from "../render/decodeRoute";
+import { quickProxyPath, resolveDecode } from "../render/decodeRoute";
 import { exists, readDir } from "@/bridge/fs";
 import { join as pathJoin } from "@/bridge/path";
 import { MotifSprite } from "../render/sprite/MotifSprite";
@@ -167,11 +167,21 @@ export interface E2EHook {
     mediaId: string;
     tStartUs?: number;
   }): Promise<{ layerId: string; compositionId: string }>;
+  /// Place many copies of ONE media on a SINGLE fresh track at the given
+  /// starts. The fast-scrub stress uses this to march one playhead across N
+  /// clips instead of N overlapping tracks.
+  placeMediaLayersOnOneTrack(args: {
+    mediaId: string;
+    startsUs: readonly number[];
+  }): Promise<{ trackId: string; layerIds: string[] }>;
   /// Resolve once `resolveDecode(media).exportPath` is non-null — for a
   /// Video source that means the proxy/bypass route has been decided AND any
   /// needed proxy has landed. The animated-gif spec uses this to prove the
   /// gif routes through the video pipeline to an export-ready state.
   waitMediaExportReady(args: { mediaId: string; timeoutMs?: number }): Promise<void>;
+  /// The 720p short-GOP quick proxy path, or null until the background job
+  /// lands. Used by the 4K proxy-vs-original measurement.
+  mediaQuickProxyPath(mediaId: string): string | null;
   /// Export the CURRENT timeline as-is (no import/placement) to
   /// `outputAbsPath`. Lets a spec compose a multi-media timeline via
   /// `importAndPlaceMedia` and then drive the REAL export path, including
@@ -1256,9 +1266,21 @@ export function installExportHook(
     const layerId = await addMediaLayer(trackId, mediaId, tStartUs ?? 0);
     return { layerId, compositionId: await compositionOfLayer(layerId) };
   };
+  hookSlot().placeMediaLayersOnOneTrack = async ({ mediaId, startsUs }) => {
+    const trackId = await addTrack();
+    const layerIds: string[] = [];
+    for (const tStartUs of startsUs) {
+      layerIds.push(await addMediaLayer(trackId, mediaId, tStartUs));
+    }
+    return { trackId, layerIds };
+  };
 
   hookSlot().waitMediaExportReady = async ({ mediaId, timeoutMs }) => {
     await waitForMediaExportReady(mediaId, timeoutMs ?? 120000);
+  };
+  hookSlot().mediaQuickProxyPath = (mediaId) => {
+    const media = mediaFromStore(mediaId);
+    return media ? quickProxyPath(media) : null;
   };
 
   hookSlot().exportTimeline = async ({ outputAbsPath, settings, range }) => {

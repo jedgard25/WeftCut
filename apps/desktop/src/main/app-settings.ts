@@ -135,6 +135,10 @@ export function createAppSettingsStore(deps: PerformanceEnvironment & { cores?: 
         typeof parsed.experimental_macos_shared_texture === 'boolean'
           ? parsed.experimental_macos_shared_texture
           : d.experimental_macos_shared_texture,
+      auto_preview_proxies:
+        typeof parsed.auto_preview_proxies === 'boolean'
+          ? parsed.auto_preview_proxies
+          : d.auto_preview_proxies,
       // Additive field, same trap as playback_resolution: files written before
       // it existed have no key — an absent/unrecognized value MUST land on the
       // default ("large") so the pool keeps its legacy card layout.
@@ -312,6 +316,7 @@ export function createAppSettingsStore(deps: PerformanceEnvironment & { cores?: 
       if (patch.decode_engine !== undefined) current.decode_engine = patch.decode_engine
       if (patch.playback_resolution !== undefined) current.playback_resolution = patch.playback_resolution
       if (patch.experimental_macos_shared_texture !== undefined) current.experimental_macos_shared_texture = patch.experimental_macos_shared_texture
+      if (patch.auto_preview_proxies !== undefined) current.auto_preview_proxies = patch.auto_preview_proxies
       if (patch.media_pool_layout !== undefined) current.media_pool_layout = patch.media_pool_layout
       if (patch.timeline_wheel_axis !== undefined) current.timeline_wheel_axis = patch.timeline_wheel_axis
       if (patch.timeline_follow_playhead !== undefined) current.timeline_follow_playhead = patch.timeline_follow_playhead

@@ -6,6 +6,7 @@ import { Slider } from "@base-ui/react/slider";
 import {
   setAppSettings,
   useDecodeEngine,
+  useAutoPreviewProxies,
   useExperimentalMacosSharedTexture,
   usePlaybackResolution,
 } from "./appSettingsStore";
@@ -30,6 +31,7 @@ export function PreviewSection({
     <>
       <DecodeEngineCards onError={onError} />
       <PlaybackResolutionSlider onError={onError} />
+      <AutoPreviewProxyToggle onError={onError} />
       <MacosSharedTextureToggle onError={onError} />
     </>
   );
@@ -100,6 +102,39 @@ function DecodeEngineCards({ onError }: { onError: (msg: string) => void }) {
         </p>
       )}
     </div>
+  );
+}
+
+/// Automatic quick-proxy preview for >=2160p long-GOP sources. On by default;
+/// an explicit per-clip Original choice still wins. The proxy itself is the
+/// existing import-time quick proxy — this only chooses it as the preview
+/// source when it exists.
+function AutoPreviewProxyToggle({ onError }: { onError: (msg: string) => void }) {
+  const { t } = useTranslation();
+  const enabled = useAutoPreviewProxies();
+  return (
+    <label className="settings-control-row">
+      <div className="settings-performance-copy">
+        <span className="settings-toggle-label">
+          {t("settings.auto_preview_proxies")}
+        </span>
+        <p className="settings-toggle-hint">
+          {t("settings.auto_preview_proxies_hint")}
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={async (e) => {
+          onError("");
+          try {
+            await setAppSettings({ auto_preview_proxies: e.target.checked });
+          } catch (err) {
+            onError(String(err));
+          }
+        }}
+      />
+    </label>
   );
 }
 

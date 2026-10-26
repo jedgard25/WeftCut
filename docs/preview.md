@@ -68,6 +68,17 @@ handle's `FrameRing` caches 1 s lookahead / 0.5 s
 lookbehind of `ImageBitmap` snapshots around the current playhead.
 The ring is what the compositor reads.
 
+Per-clip rings are still the right cursor model, but their **lifetime** is
+bounded by the demand plan, not by how far the user dragged the playhead. The
+pool keeps only the active clips, the bounded lookahead set, and a two-session
+LRU retention cache; every priority change and every new acquire trims the
+rest, and the idle sweep is a backstop. A capacity refusal is retryable: the
+requesting `FfmpegSource` closes its partial transport, asks the pool to
+release non-priority sessions (any lane — a macOS VideoToolbox copy-back
+session is a `previewSw` lease, not a Windows HW lease), and retries the same
+lane with bounded backoff. Capacity is never recorded as engine capability.
+See [ADR 0146](adr/0146-preview-decoders-are-bounded-cursors-and-macos-shares-videotoolbox-iosurfaces.md).
+
 The sprite's held image outlives the decoder ring. On replay, a retained
 sprite may therefore still hold the clip's previous tail even after its
 decoder was reclaimed. Preview checks the source target of that image before
@@ -218,6 +229,18 @@ means for licensing.
   compositor with zero pixel bytes crossing IPC. The preload isolated world
   builds each `ImageBitmap` from the shared slot and forwards it over a
   MessagePort. Codec-agnostic — nothing on the path inspects the bitstream.
+- **macOS HW transport** — VideoToolbox copy-back by default (NV12 or I420P10
+  bytes over `previewSw`). With the machine-level **Zero-copy VideoToolbox
+  preview** setting on (Settings → Preview, default off,
+  `experimental_macos_shared_texture`), the same lane instead shares the
+  decoder's own **IOSurface** through Electron `sharedTexture`: native retains
+  each decoded `CVPixelBuffer`, main imports a surface once, and the preload
+  snapshots it with `createImageBitmap` (which honors the source colorSpace;
+  the e2e gate covers BT.601). There is no CPU frame copy and no per-frame pixel
+  IPC, only a `frameReady` poke + `consumeAck`. NV12 (8-bit) and P010 (10-bit,
+  both range fourccs) are admitted; any import/session/format failure falls back
+  to the copy-back transport on the same lane. See
+  [ADR 0146](adr/0146-preview-decoders-are-bounded-cursors-and-macos-shares-videotoolbox-iosurfaces.md).
 - **A slot's recycling waits for the GPU read; its delivery doesn't.** ffmpeg
   overwrites a slot in place as soon as it is acked, on its own D3D11 device,
   while Chromium reads that texture on the GPU process's — a cross-device
@@ -444,12 +467,18 @@ Web Audio path is preview-only.
 
 ## Proxies
 
-Proxy is a decode **source** the user opts into (the `source` axis of a
-[resolution](#decode-engine)), never a tier the engine falls back to on its
-own — the native-NLE convention (`feedback_native_nle_conventions`). The
-opt-in is two-layered, both persisted on `ProjectSettings` and written through
-the unrecorded `update_project_settings` mutation, so neither ever enters undo
-history (`data-model.md` §ProjectSettings):
+Proxy is a decode **source** (the `source` axis of a
+[resolution](#decode-engine)). The user opts in with the two project-scoped
+controls below; in addition, a **heavy-source auto rule** uses the quick proxy
+that the route already plans for >=2160p `direct-export`/`proxied` sources once
+it exists (app-level **Use quick proxies for 4K preview automatically**,
+`auto_preview_proxies`, default on). A per-clip **Original** choice always
+wins; the auto rule never builds a proxy, changes an export route, or creates a
+second transcode pipeline. It exists because a cold 240-frame-GOP seek measured
+740 ms on the original versus 109 ms on the existing quick proxy (ADR 0146).
+The two explicit controls are persisted on `ProjectSettings` and written
+through the unrecorded `update_project_settings` mutation, so neither ever
+enters undo history (`data-model.md` §ProjectSettings):
 
 - **Prefer Proxies** — a project-scoped toggle, surfaced in the Settings
   panel (`prefer_proxies`). On, it prefers the quick proxy for every clip in
@@ -458,6 +487,18 @@ history (`data-model.md` §ProjectSettings):
   keyed by media id) that cycles **Auto → Proxy → Original → Auto**. Auto
   defers to the global toggle; Proxy/Original force that one clip regardless
   of the toggle. Hidden for `Bypass` sources (below).
+
+**Measured 4K note.** On a generated 3840×2160 30 fps 240-frame-GOP H.264
+source, the macOS IOSurface lane sought to 4 s in 740 ms while a 24-clip
+single-track fast scrub held at most 3 live sessions and 858 MiB (zero dropped,
+zero unsupported cards). The existing quick proxy sought to the same frame in
+109 ms. Because a cold long-GOP seek is inherently a keyframe-plus-prefix
+decode, **heavy sources use their quick proxy automatically** once it exists:
+2160p+ sources on a `direct-export`/`proxied` route, controlled by the
+app-level **Use quick proxies for 4K preview automatically**
+(`auto_preview_proxies`, default on). A per-clip **Original** override wins,
+and export routing, export masters and the proxy job are untouched. The quick
+proxy is still built by the existing import job, not by a second pipeline.
 
 A third, independent project setting, **Generate preview proxies**
 (`generate_preview_proxies`, default on, beside Prefer Proxies in Settings),

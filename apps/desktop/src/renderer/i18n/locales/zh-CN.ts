@@ -2141,6 +2141,9 @@ const zhCN: Resources = {
     playback_resolution_smooth: "流畅",
     playback_resolution_sharp: "清晰",
     playback_resolution_export_note: "导出始终按完整分辨率渲染。",
+    auto_preview_proxies: "4K 预览自动使用快速代理",
+    auto_preview_proxies_hint:
+      "当 4K 源文件的短 GOP 快速代理就绪时，预览使用代理而不是原始文件。逐片段选择“原始”仍然优先。导出不受影响。",
     experimental_shared_texture: "零拷贝 VideoToolbox 预览（macOS，实验性）",
     experimental_shared_texture_hint:
       "直接把解码器的 IOSurface 交给渲染器，而不是复制帧。默认关闭；失败时会自动回退。",

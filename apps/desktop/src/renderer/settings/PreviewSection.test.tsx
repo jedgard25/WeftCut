@@ -21,6 +21,7 @@ vi.mock("./appSettingsStore", () => ({
   useDecodeEngine: () => stores.decodeEngine,
   usePlaybackResolution: () => stores.playbackResolution,
   useExperimentalMacosSharedTexture: () => false,
+  useAutoPreviewProxies: () => true,
 }));
 
 vi.mock("./decodeComponentStore", () => ({

@@ -97,6 +97,13 @@ export interface AppSettings {
   /// the import or the session fails. Machine-level because it depends on this
   /// machine's GPU/Chromium build; it changes no pixel of an export.
   experimental_macos_shared_texture: boolean;
+  /// Automatic preview proxy for heavy sources. When on (default), a >=2160p
+  /// video whose Decode Route already plans a quick proxy uses that 720p
+  /// short-GOP proxy as soon as it lands, unless the user explicitly chose
+  /// Original for that clip. This is a preview-only source choice; export
+  /// routing and master generation are untouched. Measured on an 8 s
+  /// 3840x2160 240-frame-GOP H.264 source: cold seek 738 ms -> 108 ms.
+  auto_preview_proxies: boolean;
   /// Media-pool card arrangement (see MediaPoolLayout). App-level: it's a
   /// browsing preference of this user, not a property of any project.
   media_pool_layout: MediaPoolLayout;
@@ -182,6 +189,7 @@ export interface AppSettingsPatch {
   decode_engine?: "auto" | "ffmpeg" | "webcodecs";
   playback_resolution?: PlaybackResolution;
   experimental_macos_shared_texture?: boolean;
+  auto_preview_proxies?: boolean;
   media_pool_layout?: MediaPoolLayout;
   timeline_wheel_axis?: TimelineWheelAxis;
   timeline_follow_playhead?: boolean;
@@ -227,6 +235,7 @@ export const APP_SETTINGS_DEFAULTS: AppSettings = {
   preview_effects_enabled: true,
   decode_engine: "auto",
   experimental_macos_shared_texture: false,
+  auto_preview_proxies: true,
   playback_resolution: "full",
   media_pool_layout: "large",
   // Horizontal, matching Premiere's `Timeline Mouse Scrolling` default and

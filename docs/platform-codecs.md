@@ -22,8 +22,8 @@ user can install and launch it.
 | Encode fallback | Software encoder selected by the registry | Same | Same |
 | Lite engine export decode | WebCodecs hardware allowed for eligible sources | Software by the platform allowlist | WebCodecs hardware allowed for eligible sources |
 | Standard engine export decode | Software FFmpeg session | Software FFmpeg session | Software FFmpeg session |
-| Standard engine hardware preview | d3d11va shared texture | nvdec / vaapi copy-back | videotoolbox copy-back |
-| Hardware preview transport | Browser frame from shared texture | NV12 ship-bytes | NV12 or I420P10 ship-bytes |
+| Standard engine hardware preview | d3d11va shared texture | nvdec / vaapi copy-back | videotoolbox copy-back; optional IOSurface shared texture |
+| Hardware preview transport | Browser frame from shared texture | NV12 ship-bytes | NV12 or I420P10 ship-bytes; optional NV12/P010 Electron sharedTexture |
 | Hardware preview eligibility | 8-bit H.264 / HEVC / VP9 | 8-bit H.264 / HEVC / VP9 | H.264 / HEVC / VP9 / ProRes; 10-bit admitted |
 
 The encoder registry owns candidate selection, real availability probes and
@@ -51,6 +51,14 @@ priority (CONTEXT.md; ADR 0030 and ADR 0033).
   colour suite was 8/8 green, 0 skipped, with errors 2/1/1/1 for each lane
   across 709-limited / 601-limited / 709-full / 601-full. Pinning absent
   videotoolbox produced four clean skips.
+- **macOS (shared IOSurface, 2026-10-26):** a saturated BT.601 H.264 chart
+  through VideoToolbox → IOSurface → Electron `sharedTexture` → `VideoFrame` →
+  `createImageBitmap` read `[20,220,41]` against a source of `[20,220,40]`
+  (error 1) in the committed `macos-shared-texture` e2e gate; the copy-back
+  control read the same. P010 (10-bit HEVC) imported through the same path and
+  read `[17,218,38]` on a source of `[20,220,40]`. The transport is opt-in
+  (`experimental_macos_shared_texture`, default off); any failure falls back to
+  copy-back. See ADR 0146.
 - **macOS:** the base M1 hardware preview measured H.264 SSIM 0.982 and HEVC
   Main10 I420P10 SSIM 0.9975. A MacBook Air M3 (Mac15,12, macOS 26.6.2,
   FFmpeg sidecar 8.1.2) also passed ProRes on 2026-09-02: I420P10,
