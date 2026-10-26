@@ -49,6 +49,17 @@ function isCopyBackHwLane(lane: string): boolean {
   return lane === "nvdec" || lane === "vaapi" || lane === "videotoolbox";
 }
 
+/// Formats the macOS IOSurface transport can import today: 4:2:0 NV12/P010.
+/// ProRes (and any 4:2:2/4:4:4/RGB source) stays on the copy-back transport —
+/// VideoToolbox would hand back a 4:2:2 CVPixelBuffer that Electron's
+/// `sharedTexture` importer does not expose. The check is deliberately before
+/// the open so an unsupported format never becomes a HW capability verdict.
+function sharedTextureEligible(codec: string | null | undefined, pixFmt: string | null | undefined): boolean {
+  if (codec === "prores") return false;
+  const pf = (pixFmt ?? "").toLowerCase();
+  return !pf.includes("422") && !pf.includes("444") && !pf.includes("rgb");
+}
+
 export interface FfmpegSourceInit {
   layerId: string;
   mediaId: string;
@@ -542,7 +553,12 @@ export class FfmpegSource implements PreviewDecodeSession {
     // Electron's sharedTexture importer, so the frame never crosses IPC as
     // pixels. Off by default; an open failure falls back to the copy-back
     // transport below (same lane, same ring).
-    if (hw && hw.lane === "videotoolbox" && this.preferSharedTexture) {
+    if (
+      hw
+      && hw.lane === "videotoolbox"
+      && this.preferSharedTexture
+      && sharedTextureEligible(this.init.codec, this.init.pixFmt)
+    ) {
       return this.deps.makeGpu?.() ?? new GpuTransport();
     }
     if (hw && isCopyBackHwLane(hw.lane)) {
@@ -589,7 +605,11 @@ export class FfmpegSource implements PreviewDecodeSession {
     // VideoToolbox is copy-back normally, but the iOSurface shared-texture
     // feature flag swaps that same lane onto the GPU transport. Every caller
     // (scale re-open, HW-lease reclaim, transport diagnostics) must agree.
-    if (hw?.lane === "videotoolbox" && this.preferSharedTexture) return false;
+    if (
+      hw?.lane === "videotoolbox"
+      && this.preferSharedTexture
+      && sharedTextureEligible(this.init.codec, this.init.pixFmt)
+    ) return false;
     return hw !== null && isCopyBackHwLane(hw.lane);
   }
 
@@ -704,6 +724,10 @@ export class FfmpegSource implements PreviewDecodeSession {
       })();
       return;
     }
+    // A format the shared-texture importer cannot represent (e.g. 4:2:2) is a
+    // transport limitation, not a hardware capability verdict. Fall back to
+    // copy-back for this source but leave the lane eligible.
+    const sharedFormatUnsupported = reason.includes("shared-texture-format-unsupported");
     if (lane === "hardware" && this.startedHardware && this.transport) {
       // Console too, not just the LogBus lane-trail row: the trail names the
       // transition but bench harnesses read the PAGE console, and a HW lane
@@ -712,7 +736,7 @@ export class FfmpegSource implements PreviewDecodeSession {
       console.warn(
         `[weftcut/decode] decoder hardware-lane error: ${reason} — falling back to software (media ${this.mediaId})`,
       );
-      markHwUnusable(this.mediaId, reason);
+      if (!sharedFormatUnsupported) markHwUnusable(this.mediaId, reason);
       this.budgetSpill = false;
       const dead = this.transport;
       this.transport = null;

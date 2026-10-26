@@ -83,11 +83,14 @@ instead of copy-back:
   `createImageBitmap`, which honors the source colorSpace (the POC's Result 7,
   reconfirmed by the committed e2e gate for BT.601). The frame then enters the
   same ring the WebCodecs and copy-back paths use.
-- **Both 8-bit NV12 and 10-bit P010 are supported.** P010's two range fourccs
-  (`'x420'` video, `'xf44'` full) map to Electron's `p010le`; a 10-bit HEVC
-  chart read [17,218,38] against a source of [20,220,40] through this path.
-  Wrong or unsupported formats fail the session and fall back to copy-back;
-  they never render silently black.
+- **Both 8-bit NV12 and 10-bit 4:2:0 P010 are supported.** P010's two range
+  fourccs (`'x420'` video, `'xf44'` full) map to Electron's `p010le`; a 10-bit
+  HEVC chart read [17,218,38] against a source of [20,220,40] through this path.
+  The importer has no 4:2:2/4:4:4 format, so ProRes and any `422`/`444`/`RGB`
+  source stays on copy-back by an explicit pre-open eligibility check (it never
+  becomes a HW capability verdict). An unexpected CVPixelBuffer format fails
+  the session with a `shared-texture-format-unsupported` marker and falls back
+  to copy-back without a sticky HW mark; it never renders silently black.
 - any failure — import, native session, format — falls back to the existing
   copy-back lane on the same resolved hardware lane. The WebCodecs path,
   export routing, and the `DecoderHandle`/`DecoderPool` seam are untouched.

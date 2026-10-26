@@ -612,6 +612,35 @@ describe("FfmpegSource — macOS shared-texture feature flag", () => {
     } finally { await src.disposeAndWait(); }
   });
 
+  it("keeps ProRes 4:2:2 on copy-back even with the flag on", async () => {
+    const gpu = fakeTransport();
+    const sw = fakeTransport();
+    const src = new FfmpegSource(
+      {
+        layerId: "vt-prores",
+        mediaId: "m-vt-prores",
+        sourcePath: "clip.mov",
+        codec: "prores",
+        pixFmt: "yuv422p10le",
+        width: 1920,
+        height: 1080,
+        componentAvailable: true,
+        preferSharedTexture: true,
+      },
+      {
+        makeGpu: () => gpu.t,
+        makeSw: () => sw.t,
+        pickLane: async () => ({ lane: "hardware" as const, hwLane: "videotoolbox", device: null }),
+      },
+    );
+    try {
+      await src.ensureReady();
+      expect(gpu.t.open).not.toHaveBeenCalled();
+      expect(sw.t.open).toHaveBeenCalledOnce();
+      expect(src.isSharedTextureTransport()).toBe(false);
+    } finally { await src.disposeAndWait(); }
+  });
+
   it("keeps the copy-back transport when the flag is off", async () => {
     const { src, gpu, sw } = vtSource(false);
     try {

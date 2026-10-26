@@ -110,7 +110,7 @@ fn cv_info(pixel_buffer: *mut c_void) -> Result<(u32, u32, &'static str, bool), 
         K_CV_PIXEL_FORMAT_XF44 => ("p010le", true),
         other => {
             return Err(format!(
-                "unsupported VideoToolbox CVPixelBuffer format 0x{other:08x}"
+                "shared-texture-format-unsupported: VideoToolbox CVPixelBuffer 0x{other:08x}"
             ))
         }
     };

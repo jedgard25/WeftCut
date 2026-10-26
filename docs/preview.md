@@ -237,9 +237,10 @@ means for licensing.
   each decoded `CVPixelBuffer`, main imports a surface once, and the preload
   snapshots it with `createImageBitmap` (which honors the source colorSpace;
   the e2e gate covers BT.601). There is no CPU frame copy and no per-frame pixel
-  IPC, only a `frameReady` poke + `consumeAck`. NV12 (8-bit) and P010 (10-bit,
-  both range fourccs) are admitted; any import/session/format failure falls back
-  to the copy-back transport on the same lane. See
+  IPC, only a `frameReady` poke + `consumeAck`. NV12 (8-bit) and 4:2:0 P010
+  (10-bit, both range fourccs) are admitted; ProRes/4:2:2/4:4:4/RGB sources stay
+  on copy-back by an explicit eligibility check, and any import/session/format
+  failure falls back to the copy-back transport on the same lane. See
   [ADR 0146](adr/0146-preview-decoders-are-bounded-cursors-and-macos-shares-videotoolbox-iosurfaces.md).
 - **A slot's recycling waits for the GPU read; its delivery doesn't.** ffmpeg
   overwrites a slot in place as soon as it is acked, on its own D3D11 device,
