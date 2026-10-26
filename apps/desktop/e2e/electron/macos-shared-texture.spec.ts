@@ -111,6 +111,21 @@ test('@serial macOS VideoToolbox IOSurface preview is color-correct and live-swi
       SEEK_US,
     )
 
+    // First let the lane resolve at all. On a host where VideoToolbox cannot
+    // engage, this becomes a clean skip, not a 90 s timeout waiting for a
+    // shared transport that will never exist.
+    await expect
+      .poll(async () => {
+        const p = await probe(page, layerId)
+        return p?.spriteBound && p.ringLastPtsUs != null ? p : null
+      }, { timeout: 90_000, intervals: [200] })
+      .not.toBeNull()
+    const initial = await probe(page, layerId)
+    test.skip(
+      initial?.hwLane !== 'videotoolbox',
+      `videotoolbox not engaged (hwLane=${initial?.hwLane}, sourceKind=${initial?.sourceKind}) — lane unavailable`,
+    )
+
     // Shared-texture transport engaged: hardware lane, GPU-surface sharing, and
     // a real frame bound into the sprite.
     await expect
@@ -128,7 +143,6 @@ test('@serial macOS VideoToolbox IOSurface preview is color-correct and live-swi
       }, { timeout: 90_000, intervals: [200] })
       .not.toBeNull()
     const first = await probe(page, layerId)
-    test.skip(first?.hwLane !== 'videotoolbox', `videotoolbox not engaged (hwLane=${first?.hwLane}) — lane unavailable`)
     expect(first?.ringLastPtsUs ?? -1).toBeGreaterThanOrEqual(SEEK_US)
 
     const sample = async (): Promise<[number, number, number]> => {
