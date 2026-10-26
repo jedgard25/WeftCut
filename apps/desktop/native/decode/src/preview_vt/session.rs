@@ -366,11 +366,12 @@ fn session_thread(
     init_tx: Sender<Result<OpenInfo, String>>,
     done_tx: Sender<()>,
 ) {
-    let stream = SwVideoStream::open_with_accel(
+    let stream = SwVideoStream::open_with_accel_range(
         &path,
         SwOutFormat::Nv12,
         DecodeAccel::VideoToolbox,
         OutScale::FULL,
+        true,
     );
     let mut stream = match stream {
         Ok(s) => {

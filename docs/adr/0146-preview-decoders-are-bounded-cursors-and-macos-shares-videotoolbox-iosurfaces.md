@@ -83,10 +83,16 @@ instead of copy-back:
   `createImageBitmap`, which honors the source colorSpace (the POC's Result 7,
   reconfirmed by the committed e2e gate for BT.601). The frame then enters the
   same ring the WebCodecs and copy-back paths use.
-- **Both 8-bit NV12 and 10-bit 4:2:0 P010 are supported.** P010's two range
-  fourccs (`'x420'` video, `'xf44'` full) map to Electron's `p010le`; a 10-bit
-  HEVC chart read [17,218,38] against a source of [20,220,40] through this path.
-  The importer has no 4:2:2/4:4:4 format, so ProRes and any `422`/`444`/`RGB`
+- **Both 8-bit NV12 and 10-bit 4:2:0 P010 are supported.** This lane pins
+  VideoToolbox to the **video-range** pool (`'420v'` / `'x420'`), because
+  Electron's `nv12`/`p010le` import has no full-range `'420f'`/`'xf44'` surface
+  format. VT range-converts the source into that surface, and the import color
+  tag is taken from the actual surface, not the source metadata. A full-range
+  `yuvj420p` H.264 source — the production crash — now imports; expanding its
+  limited luma back to full matches the copy-back decode within 0.3 luma, and
+  `shared_vt_lane_converts_full_range_to_video_range` is the native regression.
+  The 10-bit P010 path is probe-tested, not yet a full e2e gate.
+  The importer also has no 4:2:2/4:4:4 format, so ProRes and any `422`/`444`/`RGB`
   source stays on copy-back by an explicit pre-open eligibility check (it never
   becomes a HW capability verdict). An unexpected CVPixelBuffer format fails
   the session with a `shared-texture-format-unsupported` marker and falls back

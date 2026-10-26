@@ -197,6 +197,23 @@ unsafe extern "C" fn get_format_videotoolbox(
     pick_hw_pix_format(pix_fmts, ffs::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX)
 }
 
+/// VideoToolbox pick for the shared-IOSurface lane. Electron's `nv12` import
+/// accepts only the video-range `'420v'` surface; a full-range source decodes
+/// into `'420f'`, which Chromium refuses (`IOSurface pixel format does not
+/// match specified shared image format`). Pinning the codec context to MPEG
+/// range makes ffmpeg ask VT for the video-range pool (`ff_videotoolbox_common_init`
+/// maps `AVCOL_RANGE_MPEG` to `420v`); VT performs the range conversion into
+/// that surface. The copy-back and every other lane keep the source's range.
+unsafe extern "C" fn get_format_videotoolbox_video_range(
+    ctx: *mut ffs::AVCodecContext,
+    pix_fmts: *const ffs::AVPixelFormat,
+) -> ffs::AVPixelFormat {
+    if !ctx.is_null() {
+        unsafe { (*ctx).color_range = ffs::AVColorRange::AVCOL_RANGE_MPEG };
+    }
+    pick_hw_pix_format(pix_fmts, ffs::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX)
+}
+
 /// Pin the BUNDLED libva (>= 2.21) and report whether it can copy back (issue #5
 /// Block C). The BtbN LGPL ffmpeg calls `vaMapBuffer2` (a libva 2.21 symbol)
 /// unconditionally during `av_hwframe_transfer_data`; against a libva without it
@@ -256,6 +273,7 @@ pub fn vaapi_copyback_supported() -> bool {
 unsafe fn attach_hw_device(
     codec_ctx: &mut ffmpeg_next::codec::context::Context,
     accel: &DecodeAccel,
+    force_video_range: bool,
 ) -> Result<*mut ffs::AVBufferRef, String> {
     let hw_type = accel
         .hw_device_type()
@@ -281,9 +299,16 @@ unsafe fn attach_hw_device(
     unsafe {
         let raw = codec_ctx.as_mut_ptr();
         (*raw).hw_device_ctx = ffs::av_buffer_ref(hw_ctx);
+        if force_video_range {
+            // Set both sides: the callback wins if a parser later restores the
+            // bitstream's full-range tag, and this value is what VT sees if the
+            // callback never runs.
+            (*raw).color_range = ffs::AVColorRange::AVCOL_RANGE_MPEG;
+        }
         (*raw).get_format = Some(match accel {
             DecodeAccel::Nvdec => get_format_cuda,
             DecodeAccel::Vaapi { .. } => get_format_vaapi,
+            DecodeAccel::VideoToolbox if force_video_range => get_format_videotoolbox_video_range,
             DecodeAccel::VideoToolbox => get_format_videotoolbox,
             DecodeAccel::Software => unreachable!("guarded above"),
         });
@@ -566,6 +591,21 @@ impl SwVideoStream {
         accel: DecodeAccel,
         out_scale: OutScale,
     ) -> Result<SwVideoStream, String> {
+        Self::open_with_accel_range(path, out_format, accel, out_scale, false)
+    }
+
+    /// Same as [`open_with_accel`](Self::open_with_accel), with an explicit
+    /// VideoToolbox range policy. `force_video_range` is used only by the
+    /// shared-IOSurface preview lane: Electron's `nv12` import accepts `'420v'`
+    /// but not a full-range `'420f'` surface, so VT is asked for the video-range
+    /// pool and performs the conversion. Other lanes keep the source's range.
+    pub fn open_with_accel_range(
+        path: &str,
+        out_format: SwOutFormat,
+        accel: DecodeAccel,
+        out_scale: OutScale,
+        force_video_range: bool,
+    ) -> Result<SwVideoStream, String> {
         ffmpeg_next::init().ok();
         let map = |e: ffmpeg_next::Error| e.to_string();
 
@@ -599,7 +639,13 @@ impl SwVideoStream {
         // hardware decoder runs on the GPU, so CPU thread tuning does not apply.
         let mut hw_ctx: *mut ffs::AVBufferRef = ptr::null_mut();
         if accel.hw_device_type().is_some() {
-            hw_ctx = unsafe { attach_hw_device(&mut codec_ctx, &accel)? };
+            hw_ctx = unsafe {
+                attach_hw_device(
+                    &mut codec_ctx,
+                    &accel,
+                    force_video_range && matches!(accel, DecodeAccel::VideoToolbox),
+                )?
+            };
         } else {
             let requested_threads = decode_thread_count();
             let thread_type = thread_type_for(stream.parameters().id());
@@ -634,7 +680,7 @@ impl SwVideoStream {
         // the same functions ffprobe uses), so these strings match the import
         // probe's `color_matrix/color_range/...`. `.name()` returns `None` for
         // unspecified values.
-        let color = SwColorTags {
+        let mut color = SwColorTags {
             matrix: decoder.color_space().name().map(|s| s.to_string()),
             range: decoder.color_range().name().map(|s| s.to_string()),
             primaries: decoder.color_primaries().name().map(|s| s.to_string()),
@@ -643,6 +689,11 @@ impl SwVideoStream {
                 .name()
                 .map(|s| s.to_string()),
         };
+        if force_video_range && matches!(accel, DecodeAccel::VideoToolbox) {
+            // The decoder context may still report the bitstream's full range;
+            // this session's pixels are the video-range surface VT produced.
+            color.range = Some("tv".to_string());
+        }
 
         Ok(SwVideoStream {
             ictx,
@@ -1768,6 +1819,71 @@ mod tests {
         assert!(
             luma_varies,
             "decoded luma is uniform — black/garbage frames"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shared_vt_lane_converts_full_range_to_video_range() {
+        use super::DecodeAccel;
+        let p = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tiny_h264_fullrange.mp4"
+        );
+        // The shared-IOSurface lane must expose 420v, never 420f: Electron's
+        // nv12 importer has no full-range surface format.
+        let mut forced = SwVideoStream::open_with_accel_range(
+            p,
+            SwOutFormat::Nv12,
+            DecodeAccel::VideoToolbox,
+            OutScale::FULL,
+            true,
+        )
+        .expect("open forced videotoolbox");
+        let surface = forced
+            .next_frame_surface()
+            .expect("decode")
+            .expect("a frame");
+        assert_eq!(surface.pixel_format, "nv12");
+        assert!(!surface.full_range, "forced lane must expose 420v");
+        assert_eq!(forced.color.range.as_deref(), Some("tv"));
+        crate::preview_vt::release_pixel_buffer(surface.pixel_buffer);
+
+        // VT must range-convert, not merely relabel: expanding the limited
+        // luma back to full must match the unforced full-range decode.
+        let mut plain = SwVideoStream::open_with_accel_range(
+            p,
+            SwOutFormat::Nv12,
+            DecodeAccel::VideoToolbox,
+            OutScale::FULL,
+            false,
+        )
+        .expect("open unforced videotoolbox");
+        let mut limited = SwVideoStream::open_with_accel_range(
+            p,
+            SwOutFormat::Nv12,
+            DecodeAccel::VideoToolbox,
+            OutScale::FULL,
+            true,
+        )
+        .expect("open forced videotoolbox");
+        let full_frame = plain.next_frame().expect("plain decode").expect("frame");
+        let limited_frame = limited.next_frame().expect("forced decode").expect("frame");
+        let pixels = full_frame.width as usize * full_frame.height as usize;
+        let full = &full_frame.data[..pixels];
+        let lim = &limited_frame.data[..pixels];
+        let mean_diff = full
+            .iter()
+            .zip(lim.iter())
+            .map(|(&a, &b)| {
+                let expanded = ((b as f64 - 16.0) * 255.0 / 219.0).clamp(0.0, 255.0);
+                (expanded - a as f64).abs()
+            })
+            .sum::<f64>()
+            / pixels as f64;
+        assert!(
+            mean_diff < 2.0,
+            "forced video-range decode no longer matches full-range luma (mean diff {mean_diff:.3})"
         );
     }
 }

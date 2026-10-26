@@ -356,6 +356,14 @@ export function importPreviewGpuSlot(payload: PreviewGpuSlotInfo): Promise<void>
     if (!session) return
     if (session.imported.has(payload.slot)) return
     const releaseReference = session.bufferLifetime.reference()
+    // The slot's ACTUAL surface range, not the source's. The shared lane pins
+    // VideoToolbox to the video-range pool (Electron's nv12 import has no
+    // 420f format), so a full-range source arrives here as limited-range pixels
+    // and must be imported with that tag or Chromium expands them twice.
+    const colorSpace: ColorSpace = {
+      ...session.colorSpace,
+      range: payload.fullRange ? 'full' : 'limited',
+    }
     let imp: SharedTextureImported
     try {
       imp = sharedTexture.importSharedTexture({
@@ -363,7 +371,7 @@ export function importPreviewGpuSlot(payload: PreviewGpuSlotInfo): Promise<void>
           codedSize: { width: payload.width, height: payload.height },
           visibleRect: { x: 0, y: 0, width: payload.width, height: payload.height },
           pixelFormat: payload.pixelFormat,
-          colorSpace: session.colorSpace,
+          colorSpace,
           timestamp: 0,
           handle: { ioSurface: Buffer.from(payload.handle, 'hex') },
         },
