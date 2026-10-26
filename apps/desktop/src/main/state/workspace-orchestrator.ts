@@ -33,7 +33,7 @@ export interface WorkspaceNapi {
   /** jobs::enqueue_for_media per media item (open-time derivative re-fan-out +
    *  stale-proxy invalidation). mediaItemsJson = JSON array of serialized
    *  MediaItem. Async napi binding → Promise; the factory fire-and-forgets it. */
-  enqueueJobsForMedia(mediaItemsJson: string): Promise<void> | void
+  enqueueJobsForMedia(mediaItemsJson: string, generatePreviewProxies: boolean): Promise<void> | void
 }
 
 /** Filesystem shell, injected so the orchestrator stays unit-testable. */
@@ -231,7 +231,7 @@ export function makeEnqueueDerivatives(
     const items = Object.values((serializeProject(project) as { media_pool: Record<string, { file_hash_blake3: string }> }).media_pool)
       .filter(item => !item.file_hash_blake3.startsWith('pending-'))
     try {
-      void Promise.resolve(napi.enqueueJobsForMedia(JSON.stringify(items))).catch(error => {
+      void Promise.resolve(napi.enqueueJobsForMedia(JSON.stringify(items), project.settings.generate_preview_proxies)).catch(error => {
         console.warn('[media] derivative recovery could not start', error)
       })
     } catch (error) { console.warn('[media] derivative recovery could not start', error) }

@@ -24,6 +24,14 @@ describe("proxyPreferenceStore", () => {
     getProjectSettings.mockResolvedValue({ prefer_proxies: false, proxy_overrides: {} });
   });
 
+  it("hydrates generatePreviewProxies from the project settings", async () => {
+    getProjectSettings.mockResolvedValue({ prefer_proxies: false, generate_preview_proxies: false, proxy_overrides: {} });
+    useProjectStore.setState({ summary: summaryWithId("p1"), ready: true });
+    const unwire = wireProxyPrefStore();
+    await vi.waitFor(() => expect(useProxyPrefStore.getState().generatePreviewProxies).toBe(false));
+    unwire();
+  });
+
   it("proxyIntent follows the global toggle when no override is set", () => {
     useProxyPrefStore.setState({ preferProxies: true, overrides: {} });
     expect(proxyIntent("m1")).toBe(true);

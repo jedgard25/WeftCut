@@ -376,13 +376,17 @@ impl Backend {
     /// version is cleared through the derivative write-back seam. Versioned
     /// cache names prevent stale adoption without deleting expensive masters.
     /// `media_items_json` is a JSON array of serialized `MediaItem` (the TS
-    /// actor's pool values).
+    /// actor's pool values). `generate_preview_proxies` is the project's
+    /// `ProjectSettings.generate_preview_proxies` — the job layer has no
+    /// settings access, so the TS actor's value crosses here; false skips the
+    /// automatic quick-proxy build (export masters are unaffected).
     #[napi]
     #[cfg(feature = "jobs")]
     pub async fn enqueue_jobs_for_media(
         &self,
         media_items_json: String,
         expected_generation: Option<u32>,
+        generate_preview_proxies: bool,
     ) -> napi::Result<()> {
         let cache = self
             .cache
@@ -423,6 +427,7 @@ impl Backend {
                 self.log_slot.clone(),
                 cache.clone(),
                 item,
+                generate_preview_proxies,
             );
         }
         Ok(())

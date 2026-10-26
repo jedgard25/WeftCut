@@ -341,11 +341,17 @@ pub fn enqueue_quick_proxy(
 
 /// Look at a freshly imported `MediaItem` and fan out the appropriate
 /// background jobs. Returns immediately; jobs run on tokio::spawn.
+///
+/// `generate_preview_proxies` is the project's
+/// `ProjectSettings.generate_preview_proxies`. When false the automatic fan-out
+/// builds no preview (quick) proxy; export masters and the explicit
+/// `enqueue_quick_proxy` ("Generate proxy") are unaffected.
 pub fn enqueue_for_media(
     events: Arc<dyn EventSink>,
     log_slot: LogBusSlot,
     cache: CacheLayout,
     media: MediaItem,
+    generate_preview_proxies: bool,
 ) {
     if media.file_hash_blake3.starts_with("pending-") {
         return;
@@ -365,7 +371,9 @@ pub fn enqueue_for_media(
         && !decision_pending
         && !matches!(media.decode_route, DecodeRoute::Bypass)
     {
-        planned.push("quick_proxy");
+        if generate_preview_proxies {
+            planned.push("quick_proxy");
+        }
         if matches!(
             media.decode_route,
             DecodeRoute::Proxied { .. } | DecodeRoute::NativeSw { .. }
@@ -396,7 +404,7 @@ pub fn enqueue_for_media(
             );
         }
         if proxy_decision::route_needs_decision(&media.decode_route) {
-            spawn_proxy_decision(events, log_slot, cache, media);
+            spawn_proxy_decision(events, log_slot, cache, media, generate_preview_proxies);
         } else if !matches!(media.decode_route, DecodeRoute::Bypass) {
             if matches!(
                 media.decode_route,
@@ -409,7 +417,9 @@ pub fn enqueue_for_media(
                     media.clone(),
                 );
             }
-            spawn_quick_proxy(events, log_slot, cache, media, false, None);
+            if generate_preview_proxies {
+                spawn_quick_proxy(events, log_slot, cache, media, false, None);
+            }
         }
     }
 }
@@ -564,6 +574,7 @@ fn spawn_proxy_decision(
     log_slot: LogBusSlot,
     cache: CacheLayout,
     media: MediaItem,
+    generate_preview_proxies: bool,
 ) {
     let cache = cache.snapshot();
     let log_slot = log_slot.snapshot();
@@ -612,8 +623,10 @@ fn spawn_proxy_decision(
                 // re-chaining the
                 // full build. `None` GOP forces the safe transcode path,
                 // matching the on-demand build.
-                diagnostics::plan(&events, media_id, &["quick_proxy"], false);
-                spawn_quick_proxy(events, log_slot, cache, media, false, None);
+                if generate_preview_proxies {
+                    diagnostics::plan(&events, media_id, &["quick_proxy"], false);
+                    spawn_quick_proxy(events, log_slot, cache, media, false, None);
+                }
                 return;
             }
         }
@@ -647,10 +660,12 @@ fn spawn_proxy_decision(
             return;
         }
         let route = proxy_decision::decide(&media, source_gop_secs);
-        let planned: &[&str] = match proxy_decision::job_for(route) {
-            proxy_decision::ProxyJob::None => &[],
-            proxy_decision::ProxyJob::QuickOnly => &["quick_proxy"],
-            proxy_decision::ProxyJob::QuickThenFull => &["quick_proxy", "proxy"],
+        let planned: &[&str] = match (proxy_decision::job_for(route), generate_preview_proxies) {
+            (proxy_decision::ProxyJob::None, _) => &[],
+            (proxy_decision::ProxyJob::QuickOnly, true) => &["quick_proxy"],
+            (proxy_decision::ProxyJob::QuickOnly, false) => &[],
+            (proxy_decision::ProxyJob::QuickThenFull, true) => &["quick_proxy", "proxy"],
+            (proxy_decision::ProxyJob::QuickThenFull, false) => &["proxy"],
         };
         diagnostics::plan(&events, media_id, planned, false);
         // Commit the authoritative initial route FIRST, then spawn the jobs the
@@ -704,12 +719,26 @@ fn spawn_proxy_decision(
                     },
                 );
                 // Thumbnails + waveform off the original; preview proxy in the
-                // background WITHOUT chaining a full proxy.
-
-                spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
+                // background WITHOUT chaining a full proxy — unless the project
+                // turned preview proxies off, in which case export already reads
+                // the original and there is nothing to build.
+                if generate_preview_proxies {
+                    spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
+                } else {
+                    info!("preview proxies disabled; skipping quick proxy for {media_id}");
+                }
             }
             proxy_decision::ProxyJob::QuickThenFull => {
-                spawn_quick_proxy(events, log_slot, cache, media, true, source_gop_secs);
+                if generate_preview_proxies {
+                    spawn_quick_proxy(events, log_slot, cache, media, true, source_gop_secs);
+                } else {
+                    // No preview proxy, but export still needs its master: build
+                    // it directly rather than chaining it off a quick proxy.
+                    info!(
+                        "preview proxies disabled; building the export master directly for {media_id}"
+                    );
+                    spawn_proxy(events, log_slot, cache, media);
+                }
             }
         }
     });
@@ -1250,7 +1279,13 @@ mod tests {
 
         let sink = Arc::new(VecEventSink::new());
         let events: Arc<dyn EventSink> = sink.clone();
-        spawn_proxy_decision(events, crate::logs::LogBusSlot::new(), cache.clone(), media);
+        spawn_proxy_decision(
+            events,
+            crate::logs::LogBusSlot::new(),
+            cache.clone(),
+            media,
+            true,
+        );
 
         // The adopt commit is the first thing the spawned task does; poll for it.
         let mut adopted = None;
@@ -1460,7 +1495,7 @@ mod tests {
             )
             .await
             .unwrap();
-            enqueue_for_media(sink.clone(), LogBusSlot::new(), cache.clone(), media);
+            enqueue_for_media(sink.clone(), LogBusSlot::new(), cache.clone(), media, true);
         }
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {

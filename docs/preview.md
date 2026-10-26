@@ -459,6 +459,15 @@ history (`data-model.md` §ProjectSettings):
   defers to the global toggle; Proxy/Original force that one clip regardless
   of the toggle. Hidden for `Bypass` sources (below).
 
+A third, independent project setting, **Generate preview proxies**
+(`generate_preview_proxies`, default on, beside Prefer Proxies in Settings),
+gates the *automatic* build: off, the import/open fan-out spawns no quick proxy
+(an already-cached one is still adopted) and previews decode the original. It
+is threaded to the job layer through `enqueue_jobs_for_media`, since Rust jobs
+have no settings access. Export masters are unaffected — a source whose export
+needs a full proxy still gets one, built directly rather than chained off a
+quick proxy — and so is an explicit per-clip **Generate proxy**.
+
 The effective per-clip intent is `proxy_overrides[mediaId] ?? prefer_proxies`.
 Preview uses the proxy only when that intent is true **and** the clip's quick
 proxy exists on disk (`quickProxyPath`); otherwise it decodes the original.

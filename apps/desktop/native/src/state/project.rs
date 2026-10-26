@@ -150,6 +150,14 @@ pub struct ProjectSettings {
     /// `shot_review` is declared here.
     #[serde(default)]
     pub pause_review: Option<PauseReviewSettings>,
+    /// When `false`, the automatic import/open fan-out does NOT build the
+    /// preview (quick) proxy. Export masters are unaffected: a source whose
+    /// export needs one still gets it on demand, and an explicit "Generate
+    /// proxy" still builds. **TS owns it** (`state/model.ts`); Rust mirrors it
+    /// for the job layer, which receives it through
+    /// `enqueue_jobs_for_media`. Default `true`.
+    #[serde(default = "default_generate_preview_proxies")]
+    pub generate_preview_proxies: bool,
 }
 
 /// Twin of TS `ShotReviewSettings`: the threshold and minimum shot length a
@@ -175,6 +183,10 @@ pub struct PauseReviewSettings {
 }
 
 fn default_auto_pair_audio_on_import() -> bool {
+    true
+}
+
+fn default_generate_preview_proxies() -> bool {
     true
 }
 
@@ -219,6 +231,7 @@ impl Default for ProjectSettings {
             proxy_overrides: Default::default(),
             shot_review: None,
             pause_review: None,
+            generate_preview_proxies: true,
         }
     }
 }
@@ -249,6 +262,35 @@ mod shot_review_tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.settings.shot_review, Some(reviewed));
+    }
+}
+
+#[cfg(test)]
+mod generate_preview_proxies_tests {
+    use super::*;
+
+    /// A project written before the toggle existed carries no
+    /// `generate_preview_proxies`; it reads as `true` (proxies on), the same
+    /// default TS backfills.
+    #[test]
+    fn missing_generate_preview_proxies_reads_as_true() {
+        let p = Project::new_blank("t");
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("generate_preview_proxies");
+        let back: Project = serde_json::from_value(v).unwrap();
+        assert!(back.settings.generate_preview_proxies);
+    }
+
+    #[test]
+    fn generate_preview_proxies_round_trips_false() {
+        let mut p = Project::new_blank("t");
+        p.settings.generate_preview_proxies = false;
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert!(!back.settings.generate_preview_proxies);
     }
 }
 

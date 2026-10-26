@@ -279,6 +279,15 @@ describe('makeEnqueueDerivatives', () => {
     expect(JSON.parse(calls[0])).toEqual([])
   })
 
+  it('passes the project\'s generate_preview_proxies to the napi', () => {
+    const flags: boolean[] = []
+    const enqueue = makeEnqueueDerivatives({ enqueueJobsForMedia: (_json, generate) => { flags.push(generate) } })
+    const project = blankProject(seededGen(), 'D')
+    enqueue(project)
+    enqueue({ ...project, settings: { ...project.settings, generate_preview_proxies: false } })
+    expect(flags).toEqual([true, false])
+  })
+
   it('openProject runs the injected enqueueDerivatives after replaceState', async () => {
     const fs = memFs({ [`/ws/${PROJECT_FILE}`]: serializeProjectToJson(blankProject(seededGen(), 'Demo')) }); fs.dirs.add('/ws')
     const seen: unknown[] = []

@@ -802,7 +802,7 @@ app.whenReady().then(async () => {
     commitWorkspace: (p: string) => backend!.commitWorkspace(p),
     pushRecent: (p: string, n: string) => recents.push(p, n),
     setLastNewProjectParent: (p: string) => recents.setLastNewProjectParent(p),
-    enqueueJobsForMedia: (j: string) => backend!.enqueueJobsForMedia(j, workspaceEvents.requireCurrent()),
+    enqueueJobsForMedia: (j: string, generatePreviewProxies: boolean) => backend!.enqueueJobsForMedia(j, workspaceEvents.requireCurrent(), generatePreviewProxies),
   }
 
   // Workspace dir cache — seeded once at boot; refreshed after each persistence call
