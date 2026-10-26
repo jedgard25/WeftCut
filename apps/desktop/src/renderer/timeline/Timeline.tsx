@@ -899,6 +899,15 @@ export const Timeline = memo(function Timeline({
     trackHeightsRef,
     setTrackHeights,
   });
+  // `beginHeightDrag(id)` returns a fresh closure each call; cache one per row
+  // so `TrackLane`'s memo can bail on a zoom re-render.
+  const heightDragStartByTrack = useMemo(() => {
+    const map = new Map<string, (e: React.PointerEvent) => void>();
+    for (const { track } of orderedTracks) {
+      map.set(track.id, beginHeightDrag(track.id));
+    }
+    return map;
+  }, [orderedTracks, beginHeightDrag]);
 
   // A spawned lane carries no role, so the A/B Roll filter above would hide the clip
   // that just landed on it. Route it through the existing inline-reveal (R.7)
@@ -1091,10 +1100,11 @@ export const Timeline = memo(function Timeline({
       const track = tracks.find((candidate) =>
         candidate.layers.some((l) => l.id === layerId),
       );
-      if (canvas && track && !track.locked && pxPerSec > 0) {
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      if (canvas && track && !track.locked && nowPxPerSec > 0) {
         const rect = canvas.getBoundingClientRect();
-        const xUs = ((e.clientX - rect.left) / pxPerSec) * 1_000_000;
-        const toleranceUs = (CUT_CLICK_TOLERANCE_PX / pxPerSec) * 1_000_000;
+        const xUs = ((e.clientX - rect.left) / nowPxPerSec) * 1_000_000;
+        const toleranceUs = (CUT_CLICK_TOLERANCE_PX / nowPxPerSec) * 1_000_000;
         cut = findCutNear(
           track.layers,
           xUs,
@@ -1110,7 +1120,7 @@ export const Timeline = memo(function Timeline({
         cut,
       });
     },
-    [tracks, pxPerSec, fpsNum, fpsDen, selectedLayerIds, selectFromClick],
+    [tracks, fpsNum, fpsDen, selectedLayerIds, selectFromClick],
   );
 
   // Create a transition at a cut (context-menu action). Default duration is
@@ -1181,6 +1191,12 @@ export const Timeline = memo(function Timeline({
       }
     },
     [onMutated],
+  );
+  // Void-returning adapter for the lane's `onChipResize` prop — stable so
+  // `TrackLane`'s memo can bail on a zoom re-render.
+  const onChipResizeVoid = useCallback(
+    (args: TransitionResizeArgs) => void onChipResize(args),
+    [onChipResize],
   );
 
   const onChipMenuDelete = useCallback(
@@ -1397,18 +1413,22 @@ export const Timeline = memo(function Timeline({
     (e: React.MouseEvent, trackId: string) => {
       const canvas = canvasRef.current;
       const track = tracks.find((candidate) => candidate.id === trackId);
-      if (canvas === null || track === undefined || track.locked || pxPerSec <= 0) {
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      if (canvas === null || track === undefined || track.locked || nowPxPerSec <= 0) {
         return;
       }
       const rect = canvas.getBoundingClientRect();
-      const gap = gapAt(track.layers, ((e.clientX - rect.left) / pxPerSec) * 1_000_000);
+      const gap = gapAt(
+        track.layers,
+        ((e.clientX - rect.left) / nowPxPerSec) * 1_000_000,
+      );
       if (gap === null) return;
       e.preventDefault();
       setGapSelection(track.id, gap.s, gap.e);
       clearKeyframeSelection();
       setGapMenu({ x: e.clientX, y: e.clientY });
     },
-    [pxPerSec, tracks],
+    [tracks],
   );
 
   const onSeparateAudio = useCallback(
@@ -1456,7 +1476,8 @@ export const Timeline = memo(function Timeline({
       if (!canvasRef.current) return;
       const rect = canvasRef.current.getBoundingClientRect();
       const x = clientX - rect.left;
-      const rawUs = Math.max(0, Math.round((x / pxPerSec) * 1_000_000));
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      const rawUs = Math.max(0, Math.round((x / nowPxPerSec) * 1_000_000));
       const localUs = snapFrameRound(rawUs, fpsNum, fpsDen);
       const rootUs = rootUsOf(compositionId, localUs);
       if (rootUs === null) {
@@ -1465,7 +1486,7 @@ export const Timeline = memo(function Timeline({
       }
       onSeek(rootUs);
     },
-    [compositionId, onSeek, pxPerSec, fpsNum, fpsDen],
+    [compositionId, onSeek, fpsNum, fpsDen],
   );
 
   const bladeCutTimeFromClientX = useCallback(
@@ -1473,7 +1494,10 @@ export const Timeline = memo(function Timeline({
       if (!canvasRef.current) return null;
       const rect = canvasRef.current.getBoundingClientRect();
       const x = clientX - rect.left;
-      const rawUs = Math.max(0, Math.round((x / pxPerSec) * 1_000_000));
+      // Event-time scale, so this callback's identity does not change on zoom
+      // (which would re-render every lane and clip through the memo).
+      const nowPxPerSec = pxPerSecForScrollRef.current;
+      const rawUs = Math.max(0, Math.round((x / nowPxPerSec) * 1_000_000));
       const frameUs = snapFrameRound(rawUs, fpsNum, fpsDen);
       const atUs = snapTimeToTimelineBoundary({
         timeUs: frameUs,
@@ -1491,7 +1515,7 @@ export const Timeline = memo(function Timeline({
         currentTimeUs: playheadClockUs(compositionId),
         fpsNum,
         fpsDen,
-        pxPerSec,
+        pxPerSec: pxPerSecForScrollRef.current,
         enabled: tailSnapEnabled,
         strengthPx: tailSnapStrengthPx,
         isValidSnap: (boundaryUs) =>
@@ -1505,7 +1529,6 @@ export const Timeline = memo(function Timeline({
       fpsDen,
       linkByLayerId,
       links,
-      pxPerSec,
       tailSnapEnabled,
       tailSnapStrengthPx,
       visibleSnapTracks,
@@ -1941,17 +1964,17 @@ export const Timeline = memo(function Timeline({
                     onBladeSplit={splitFromClientX}
                     onBladePreview={updateBladePreview}
                     onSelectFromClick={selectFromClick}
-                    onDragStart={(state) => setDrag(state)}
+                    onDragStart={setDrag}
                     onContextMenu={onContextMenu}
                     onChipContextMenu={onChipContextMenu}
                     onGapContextMenu={onGapContextMenu}
-                    onChipResize={(args) => void onChipResize(args)}
+                    onChipResize={onChipResizeVoid}
                     onCommitLabel={onCommitLabel}
                     onCommitGroupLabel={onCommitGroupLabel}
                     onMediaDrop={onMediaDrop}
                     isRevealed={displayMode === "AbRoll" && track.id === (revealedTrackId ?? null)}
                     isResizing={heightDrag?.trackId === track.id}
-                    onHeightDragStart={beginHeightDrag(track.id)}
+                    onHeightDragStart={heightDragStartByTrack.get(track.id)!}
                     fpsNum={fpsNum}
                     fpsDen={fpsDen}
                     mediaDropSnap={mediaDropSnap}

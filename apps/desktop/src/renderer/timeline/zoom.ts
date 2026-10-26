@@ -22,6 +22,11 @@ import {
 /// power-of-two ladder makes where the next press lands predictable.
 export const KEYBOARD_ZOOM_FACTOR = 2;
 
+/// The wheel/pinch zoom rate: scale multiplies by `exp(-px * this)` per wheel
+/// pixel, so the gesture is 1:1 in log space. Pure taste — higher is more
+/// responsive per pinch. 0.0075 is 3× the 0.0025 the gesture shipped with.
+export const WHEEL_ZOOM_PER_PX = 0.0075;
+
 /// The zoom-out stop: the scale at which the project extent (before the
 /// deliberate post-roll padding) exactly fills the lane. Recomputed per
 /// gesture rather than cached, so it tracks a resized panel and a project that

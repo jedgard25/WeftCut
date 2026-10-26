@@ -52,6 +52,14 @@ export interface TileProducer<T> {
 
 export const DEFAULT_TILE_BUDGET_BYTES = (PERFORMANCE_DEFAULTS.filmstrip_cache_mib + PERFORMANCE_DEFAULTS.waveform_cache_mib) * MIB;
 
+/// Cap on slots that hold NO bytes (pending / not_ready / error). Byte-budget
+/// eviction only ever considers `ready` slots, so these are otherwise
+/// unbounded: zooming/scrubbing mints a slot per missed (lod, index), and a
+/// tile whose proxy never arrives parks as `not_ready` forever. The count is
+/// generous — far above the visible working set — so pruning only fires on
+/// pathological churn.
+export const NON_READY_SLOT_CAP = 2048;
+
 /// A failed fetch parks the slot as `error`; `request()` retries it once this
 /// cooldown has elapsed, so a transient failure (file mid-promote, ffmpeg
 /// hiccup) heals without an invalidation, but a persistent one can't hot-loop.
@@ -123,6 +131,7 @@ export class TileEngine {
     if (!producer) return;
     const version = ++this.clock;
     this.slots.set(ks, { key, entry: { state: "pending" }, bytes: 0, version });
+    this.pruneNonReadySlots();
     producer
       .fetch(key)
       .then((value) => {
@@ -180,6 +189,35 @@ export class TileEngine {
       if (!mediaIds.has(slot.key.mediaId)) this.freeSlot(ks, slot);
     }
     for (const producer of this.producers.values()) producer.retainMedia?.(mediaIds);
+  }
+
+  /// Evict the oldest byte-less slots once their count exceeds
+  /// `NON_READY_SLOT_CAP`. Insertion order is the LRU approximation (a request
+  /// that re-uses a slot does not move it, but a pruned-then-re-requested tile
+  /// simply lands at the tail, which is what we want). Ready slots are never
+  /// touched here — the byte budget owns them.
+  private pruneNonReadySlots(): void {
+    let nonReady = 0;
+    for (const slot of this.slots.values()) {
+      if (slot.entry.state !== "ready") nonReady += 1;
+    }
+    if (nonReady <= NON_READY_SLOT_CAP) return;
+    let excess = nonReady - NON_READY_SLOT_CAP;
+    for (const [ks, slot] of this.slots) {
+      if (excess <= 0) break;
+      if (slot.entry.state !== "ready") {
+        this.slots.delete(ks);
+        excess -= 1;
+      }
+    }
+  }
+
+  /// Drop every slot, disposing ready values (and their bitmaps). For project
+  /// teardown — a closed project's media ids are gone, so their tiles can never
+  /// be requested again.
+  clear(): void {
+    for (const [ks, slot] of this.slots) this.freeSlot(ks, slot);
+    this.bytesByKind.clear();
   }
 
   private freeSlot(ks: string, slot: Slot<unknown>): void {

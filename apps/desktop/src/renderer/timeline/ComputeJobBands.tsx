@@ -25,7 +25,8 @@ import { jobsForLayer, useComputeJobsStore } from "../compute/computeJobsStore";
 import { useTranscribeRunStore } from "../speech/transcribeRun";
 import { uiPixels } from "../settings/layoutTheme";
 import { UI_METRICS } from "../settings/uiMetrics";
-import { headerColumnPx } from "./geometry";
+import { DEFAULT_PX_PER_SEC, headerColumnPx } from "./geometry";
+import { useCameraPxPerSec } from "./camera";
 
 /// Least band, in baseline px, that holds the compact chip: an icon, a few
 /// words and the Cancel glyph. Narrower bands show the glyph alone.
@@ -58,13 +59,17 @@ export function jobBandRect(
 
 export function ComputeJobBands({
   layerId,
+  compositionId,
   pxPerSec,
   blockLoUs,
   blockHiUs,
   heightPx,
 }: {
   layerId: string;
-  pxPerSec: number;
+  /// The Panel's composition — the camera key. Absent in isolated tests, which
+  /// hand a fixed `pxPerSec`.
+  compositionId?: string | null | undefined;
+  pxPerSec?: number;
   /// The block's LIVE span in composition µs — its left edge is `blockLoUs`.
   blockLoUs: number;
   blockHiUs: number;
@@ -73,8 +78,14 @@ export function ComputeJobBands({
 }) {
   const jobs = useComputeJobsStore(useShallow((s) => jobsForLayer(s, layerId)));
   const applying = useTranscribeRunStore((s) => s.applying?.includes(layerId) ?? false);
+  // Reactive: a band tracks the zoom even when its block's body rides the
+  // camera's imperative geometry and does not re-render.
+  const pps = useCameraPxPerSec(
+    compositionId,
+    pxPerSec ?? DEFAULT_PX_PER_SEC,
+  );
   if (jobs.length === 0 && !applying) return null;
-  const geometry = { pxPerSec, loUs: blockLoUs, hiUs: blockHiUs, heightPx };
+  const geometry = { pxPerSec: pps, loUs: blockLoUs, hiUs: blockHiUs, heightPx };
   return (
     <>
       {jobs.map((job) => (

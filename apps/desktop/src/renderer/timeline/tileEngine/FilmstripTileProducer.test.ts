@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   spacingUs,
   chooseFilmstripLod,
@@ -6,9 +6,11 @@ import {
   visibleTileRange,
   filmstripTileKey,
   registerFilmstripProducer,
+  filmstripGpuDecodeEnabled,
   FILMSTRIP_KIND,
   FILMSTRIP_INVALIDATE_ON,
   FILMSTRIP_MAX_CONCURRENT_FETCHES,
+  FILMSTRIP_TILE_HEIGHT,
   type FilmstripTileValue,
 } from "./FilmstripTileProducer";
 import { TileEngine, type TileProducer } from "./TileEngine";
@@ -27,6 +29,18 @@ vi.mock("../../ipc", () => ({
 vi.mock("@/bridge/ipc", () => ({
   convertFileSrc: vi.fn((path: string) => `weftcut-media://test/${path}`),
 }));
+
+// The GPU producer path is loaded lazily; stub it so these tests exercise the
+// producer's selection + fallback logic without the real decode graph.
+const { getFrameAtMock } = vi.hoisted(() => ({ getFrameAtMock: vi.fn() }));
+vi.mock("./filmstripGpuTiles", () => ({
+  filmstripFrameProvider: () => ({ getFrameAt: getFrameAtMock }),
+}));
+
+function setGpuFlag(value: boolean | undefined): void {
+  (globalThis as { __weftcutFilmstripGpuDecode?: boolean | undefined }).__weftcutFilmstripGpuDecode =
+    value;
+}
 
 // The producer's fetch pipeline reads the ambient `fetch`/`createImageBitmap`
 // globals directly (not injected), so stub them once for the whole file and
@@ -195,5 +209,61 @@ describe("filmstrip tile producer (shared engine)", () => {
     vi.mocked(getFilmstripTile).mockResolvedValue({ path: "after.jpg", widthPx: 8, heightPx: 8 });
     const value = await producer.fetch(filmstripTileKey("m-reject", 0, 9));
     expect(value.tUs).toBe(9 * spacingUs(0));
+  });
+
+  describe("GPU decode flag", () => {
+    afterEach(() => setGpuFlag(undefined));
+
+    it("defaults off when no override or localStorage entry is set", () => {
+      setGpuFlag(undefined);
+      expect(filmstripGpuDecodeEnabled()).toBe(false);
+    });
+
+    it("honors the global override", () => {
+      setGpuFlag(true);
+      expect(filmstripGpuDecodeEnabled()).toBe(true);
+    });
+
+    it("decodes via the GPU provider when enabled", async () => {
+      setGpuFlag(true);
+      getFrameAtMock.mockReset();
+      vi.mocked(getFilmstripTile).mockReset();
+      const bitmap = { width: 455, height: 256, close: vi.fn() } as unknown as ImageBitmap;
+      getFrameAtMock.mockResolvedValueOnce(bitmap);
+
+      const lod = 2;
+      const index = 3;
+      const value = await producer.fetch(filmstripTileKey("m-gpu-ok", lod, index));
+
+      expect(getFrameAtMock).toHaveBeenCalledWith("m-gpu-ok", index * spacingUs(lod), {
+        height: FILMSTRIP_TILE_HEIGHT,
+      });
+      expect(value.bitmap).toBe(bitmap);
+      expect(value.tUs).toBe(index * spacingUs(lod));
+      expect(vi.mocked(getFilmstripTile)).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the ffmpeg producer when the GPU provider rejects", async () => {
+      setGpuFlag(true);
+      getFrameAtMock.mockReset();
+      getFrameAtMock.mockRejectedValueOnce(new Error("no decodable source"));
+      vi.mocked(getFilmstripTile).mockReset();
+      vi.mocked(getFilmstripTile).mockResolvedValue({
+        path: "/cache/fallback.jpg",
+        widthPx: 8,
+        heightPx: 8,
+      });
+      createImageBitmapMock.mockResolvedValueOnce({
+        width: 8,
+        height: 8,
+        close: vi.fn(),
+      } as unknown as ImageBitmap);
+
+      const index = 1;
+      const value = await producer.fetch(filmstripTileKey("m-gpu-fallback", 0, index));
+
+      expect(vi.mocked(getFilmstripTile)).toHaveBeenCalledWith("m-gpu-fallback", 0, index);
+      expect(value.tUs).toBe(index * spacingUs(0));
+    });
   });
 });

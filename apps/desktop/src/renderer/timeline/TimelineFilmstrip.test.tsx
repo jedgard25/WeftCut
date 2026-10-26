@@ -139,28 +139,38 @@ describe("TimelineFilmstrip", () => {
     }
   });
 
-  it("re-runs the pass immediately on an engine subscribe notification", () => {
+  it("coalesces engine subscribe notifications into one short frame window", () => {
     // Uses the default (quickly-resolving) mock from beforeEach rather than a
     // permanently-pending one: FilmstripTileProducer's concurrency gate
     // (FILMSTRIP_MAX_CONCURRENT_FETCHES) is a module-level singleton, and a
     // fetch that never settles would never release its slot, starving every
     // later test in this file of in-flight capacity.
-    const mediaId = "m-subscribe";
-    const requestSpy = vi.spyOn(tileEngine, "request");
-    renderFilmstrip(mediaId);
-    expect(requestSpy).toHaveBeenCalledTimes(3);
+    vi.useFakeTimers();
+    try {
+      const mediaId = "m-subscribe";
+      const requestSpy = vi.spyOn(tileEngine, "request");
+      renderFilmstrip(mediaId);
+      expect(requestSpy).toHaveBeenCalledTimes(3);
 
-    act(() => {
-      tileEngine.invalidateMedia(mediaId, FILMSTRIP_KIND);
-    });
+      act(() => {
+        tileEngine.invalidateMedia(mediaId, FILMSTRIP_KIND);
+      });
 
-    // No timer advance, no waitFor: invalidateMedia's notify is synchronous.
-    expect(requestSpy.mock.calls.length).toBe(6);
-    expect(requestSpy.mock.calls.slice(3)).toEqual([
-      [filmstripTileKey(mediaId, 2, 2)],
-      [filmstripTileKey(mediaId, 2, 3)],
-      [filmstripTileKey(mediaId, 2, 4)],
-    ]);
+      // A burst of completions must not run the pass once per tile.
+      expect(requestSpy).toHaveBeenCalledTimes(3);
+      act(() => {
+        vi.advanceTimersByTime(16);
+      });
+
+      expect(requestSpy.mock.calls.length).toBe(6);
+      expect(requestSpy.mock.calls.slice(3)).toEqual([
+        [filmstripTileKey(mediaId, 2, 2)],
+        [filmstripTileKey(mediaId, 2, 3)],
+        [filmstripTileKey(mediaId, 2, 4)],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps painting across a zoom in EITHER direction before the debounced fetch lands", async () => {
