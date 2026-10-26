@@ -79,6 +79,8 @@ const KNOWN_NON_TOOLS = new Set([
   'pad_us', 'threshold_amp', 't_start_us', 'segments', 'word_timing', 'source_us', 'playback_rate', 'time_fraction', 't_local_us', 'preset_id', 'src_out_us',
   // SKILL.md — a read_project view name
   'media_transcript',
+  // SKILL.md — apply_cut_list's two range lists
+  'keep', 'remove',
   // SKILL.md — fields of a mutator's committed record (mcp-results.ts)
   'adjusted', 'siblings',
   // SKILL.md — tack feedback: a mutating call's and end_agent_session's

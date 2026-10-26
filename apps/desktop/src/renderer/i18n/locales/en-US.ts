@@ -1498,6 +1498,7 @@ const enUS = {
     "detect_pauses": "Detect pauses",
     "import_media": "Import media",
     "synthesize_speech": "Synthesize speech",
+    "apply_cut_list": "Apply cut list",
     "apply_subtitles": "Apply subtitles",
     "auto_split_by_shot": "Split into shots",
     "remove_pauses": "Remove pauses",

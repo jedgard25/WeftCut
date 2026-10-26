@@ -1315,6 +1315,7 @@ const zhCN: Resources = {
     "detect_pauses": "检测停顿",
     "import_media": "导入素材",
     "synthesize_speech": "合成语音",
+    "apply_cut_list": "应用剪辑列表",
     "apply_subtitles": "应用字幕",
     "auto_split_by_shot": "按镜头分割",
     "remove_pauses": "移除停顿",

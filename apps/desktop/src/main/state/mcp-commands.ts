@@ -798,6 +798,7 @@ export function shapeDryRunResponse(
     | { kind: 'AddLayer'; layer_id: string }
     | { kind: 'SplitLayer'; left_id: string; right_id: string }
     | { kind: 'AddTransition'; transition_id: string; bounces: Array<{ layer: string; from_track: string; to_track: string; spawned: boolean }> }
+    | { kind: 'ApplyCutList'; layer_ids: string[]; removed_ranges: Array<{ t_start_us: number; t_end_us: number }>; removed_us: number }
     | { kind: 'Void' } } | { ok: false; error: CommandError }>,
 ): ToolResultJson {
   let haltedAt: number | null = null
@@ -807,6 +808,7 @@ export function shapeDryRunResponse(
       const output = o.kind === 'AddLayer' ? { kind: 'add_layer', layer_id: o.layer_id }
         : o.kind === 'SplitLayer' ? { kind: 'split_layer', left_id: o.left_id, right_id: o.right_id }
         : o.kind === 'AddTransition' ? { kind: 'add_transition', transition_id: o.transition_id, bounces: o.bounces }
+        : o.kind === 'ApplyCutList' ? { kind: 'apply_cut_list', layer_ids: o.layer_ids, removed_ranges: o.removed_ranges, removed_us: o.removed_us }
         : { kind: 'void' }
       return { index, status: 'ok', output }
     }
@@ -821,10 +823,11 @@ export function shapeDryRunResponse(
  *  closes a span it was given, and `remove_pauses` cuts spans it computed. One
  *  sentence for all three would send two of them chasing a parameter they do
  *  not have. */
-const RIPPLE_TOOL = { deleteLayers: 'delete_layers', gap: 'ripple_delete_gap', pauses: 'remove_pauses' } as const
+const RIPPLE_TOOL = { deleteLayers: 'delete_layers', gap: 'ripple_delete_gap', pauses: 'remove_pauses', cutList: 'apply_cut_list' } as const
 function rippleRemedy(tool: string | undefined, layer: string, widen: string, narrow: string): string {
   if (tool === RIPPLE_TOOL.gap) return `move_layer or delete_layers ${layer} first so the gap closes clean, or pick a gap it does not reach into`
   if (tool === RIPPLE_TOOL.pauses) return `move_layer or delete_layers ${layer} first, or cut the pauses with a narrower window (this tool has no layer set to widen)`
+  if (tool === RIPPLE_TOOL.cutList) return `move_layer or delete_layers ${layer} first, or keep the span it blocks (leave it out of the ranges removed)`
   if (tool === RIPPLE_TOOL.deleteLayers || tool === undefined) return `${widen}; or ${narrow}`
   return `move_layer or delete_layers ${layer} first`
 }
@@ -979,7 +982,7 @@ export function mapCommandError(e: CommandError, tool?: string): McpToolErrorJso
   // length, so an agent that assumed the length would otherwise read the refusal
   // against the wrong numbers. Every one is pre-write: the retry costs nothing. ──
   if (e.error === 'RippleInsideHole') {
-    const verb = tool === RIPPLE_TOOL.pauses ? 'the pause cut' : tool === RIPPLE_TOOL.gap ? 'closing the gap' : 'ripple delete'
+    const verb = tool === RIPPLE_TOOL.pauses ? 'the pause cut' : tool === RIPPLE_TOOL.cutList ? 'the cut list' : tool === RIPPLE_TOOL.gap ? 'closing the gap' : 'ripple delete'
     const remedy = rippleRemedy(tool, e.layer,
       `add ${e.layer} to layer_ids, so its own hole merges into this one and both close in a single ripple`,
       `call delete_layers without ripple (its default), which removes the layers and leaves the span open`)
@@ -1177,6 +1180,22 @@ const T_START_SCHEMA = US_SCHEMA('Timeline start')
 const T_END_SCHEMA = US_SCHEMA('Timeline end (exclusive)')
 const SRC_IN_SCHEMA = US_SCHEMA('Source in point')
 const SRC_OUT_SCHEMA = US_SCHEMA('Source out point (exclusive)')
+const CUT_RANGES_SCHEMA = (what: string) => ({ type: 'array', description: `${what} Timeline-absolute, inside the layer.`, items: { type: 'object', properties: { t_start_us: US_SCHEMA('Range start, timeline'), t_end_us: US_SCHEMA('Range end (exclusive), timeline') }, required: ['t_start_us', 't_end_us'] } })
+/** `apply_cut_list`'s ranges at the boundary: integer µs, each a `{ t_start_us,
+ *  t_end_us }` object. Bounds against the clip need the clip and are checked by
+ *  `cutListRanges` at the commit. */
+export function parseCutRanges(v: unknown, field: string): Array<{ t_start_us: number; t_end_us: number }> {
+  if (!Array.isArray(v)) throw new McpArgError(`${field} must be an array of { t_start_us, t_end_us }`, field)
+  return v.map((r, i) => {
+    const o = parseObj(r, `${field}[${i}]`)
+    const at = (k: 't_start_us' | 't_end_us'): number => {
+      const n = parseNum(o[k], `${field}[${i}].${k}`)
+      if (!Number.isSafeInteger(n)) throw new McpArgError(`${field}[${i}].${k} must be an integer microsecond`, field)
+      return n
+    }
+    return { t_start_us: at('t_start_us'), t_end_us: at('t_end_us') }
+  })
+}
 const ESCAPE_LINK_SCHEMA = { type: 'boolean', description: 'Act on this layer alone, leaving its link partners in place. Default false.' }
 const RGBA_SCHEMA = { type: 'object', description: 'Colour, integer channels 0..255.', properties: { r: { type: 'integer', description: 'Red 0..255.' }, g: { type: 'integer', description: 'Green 0..255.' }, b: { type: 'integer', description: 'Blue 0..255.' }, a: { type: 'integer', description: 'Alpha 0..255; 255 opaque.' } }, required: ['r', 'g', 'b', 'a'] }
 // What the layer is for. Any well-formed name is stored; one outside the
@@ -2056,6 +2075,24 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
       })
       return { ...common, at_t_us: cuts }
     } },
+  // A cut list is a document applied to a clip, as a transcript or a subtitle
+  // file is (`apply_transcripts`, `apply_subtitles`): the editor's decision of
+  // what stays, landed as ONE recorded edit through `remove_pauses`' own
+  // cut-and-close plan (`mutations/cutList.ts`, ADR 0143).
+  { name: 'apply_cut_list', exec: 'dedicated', annotations: ANN_DESTRUCTIVE,
+    description: "Rough-cut one clip from a cut list as ONE recorded edit: name what stays (`keep`) or what goes (`remove`), exactly one, as timeline-absolute µs ranges inside the layer — the space `transcribe_clip` segments and `detect_pauses` ranges are in. Each removed range is cut out and closed as `remove_pauses` does: link partners are cut with it (on the frame grid when the link holds a picture) and everything downstream shifts left on every track. Overlapping ranges merge. Returns `{ layers, removed_ranges, removed_us, moved }`. Refuses whole, before any write, with `delete_layers { ripple: true }`'s refusals by name; removing all of the clip is `delete_layers`. Rehearse with `dry_run`.",
+    inputSchema: { type: 'object', properties: {
+      layer_id: { type: 'string', description: 'The clip to cut: a VideoClip, an Audio layer, or any layer split_layer takes.' },
+      keep: CUT_RANGES_SCHEMA('Spans that stay; everything else of the clip is cut out.'),
+      remove: CUT_RANGES_SCHEMA('Spans that are cut out; the rest of the clip stays.'),
+    }, required: ['layer_id'] },
+    parseDedicated: (a) => {
+      const hasKeep = a.keep !== undefined && a.keep !== null
+      const hasRemove = a.remove !== undefined && a.remove !== null
+      if (hasKeep === hasRemove) throw new McpArgError('apply_cut_list takes exactly one of keep or remove', hasKeep ? 'remove' : 'keep')
+      const mode = hasKeep ? 'keep' : 'remove'
+      return { layer: parseUuid(a.layer_id, 'layer_id'), mode, ranges: parseCutRanges(hasKeep ? a.keep : a.remove, mode) }
+    } },
   { name: 'add_marker', exec: 'dedicated', annotations: ANN_WRITE,
     description: "Add a marker (point or region) to a composition's timeline — the root, or the Group named by `composition_id`. Returns the marker record (`marker_id`, `t_us` as snapped). Set `end_t_us` to make it a region marker. Set `anchor_layer_id` to have the mark FOLLOW a clip instead of standing at a fixed time; omit it for an ordinary marker.",
     inputSchema: { type: 'object', properties: { anchor_layer_id: { type: 'string',
@@ -2160,7 +2197,7 @@ export const MCP_TOOL_DEFS: ReadonlyArray<McpToolDef> = [
       return p
     } },
   { name: 'dry_run', exec: 'dedicated', annotations: ANN_READ,
-    description: "Run a sequence of edit operations against a clone of the project WITHOUT committing — check overlaps and invariants before touching real state. Validates after each op exactly as `commit()` does and HALTS at the first error. Returns `{ results: [{ index, status, output? | error? }], halted_at: number | null }`. Supported ops: `add_color_layer`, `add_video_layer`, `add_audio_layer`, `add_text_layer`, `update_layer`, `update_layer_params`, `move_layer`, `split_layer`, `delete_layers` (lift only — `ripple: true` is refused), `add_transition` (the transition kind rides as `transition_kind`, since `kind` names the op). Motifs, caption import, media import and undo/redo are not dry-runnable.",
+    description: "Rehearse a sequence of edits against a clone of the project WITHOUT committing. Validates after each op exactly as `commit()` does and HALTS at the first error. Returns `{ results: [{ index, status, output? | error? }], halted_at: number | null }`. Supported ops: `add_color_layer`, `add_video_layer`, `add_audio_layer`, `add_text_layer`, `update_layer`, `update_layer_params`, `move_layer`, `split_layer`, `delete_layers` (lift only — `ripple: true` is refused), `apply_cut_list` (its ripple rehearsed), `add_transition` (the transition kind rides as `transition_kind`, since `kind` names the op). Motifs, caption import, media import and undo/redo are not dry-runnable.",
     inputSchema: { type: 'object', properties: { operations: {
       type: 'array',
       description: 'The edits to rehearse, in order.',

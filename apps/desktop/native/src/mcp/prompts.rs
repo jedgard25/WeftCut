@@ -189,7 +189,7 @@ A refusal is whole and lands before any write, so the clip comes back UNSPLIT wi
 REVIEW FIRST — the alternative when the pauses should be seen before any of them goes:
 1. Call `detect_pauses` with `layer_id: \"{layer_id}\"`{extra}. Same walk over the same peaks, but it commits nothing: it returns `{{ pauses: [{{ t_start_us, t_end_us }}, ...], noise_floor_amp, peaks_source }}` — timeline-absolute ranges where the audio stays below threshold for the requested duration, the measured noise floor, and which peaks file the numbers came from. If it finds nothing, `noise_floor_amp` says why: a threshold near the floor plus 6 dB is the one that reads pauses as a listener would.
 2. Call `create_tacks` ONCE with `tacks: [...]`, one entry per pause: `t_us: <pause.t_start_us>`, `end_t_us: <pause.t_end_us>` and a short `label` (e.g. \"pause\") — setting `end_t_us` is what makes the tack a REGION spanning the pause rather than a point at its start. Each tack follows what plays in its range: a ripple upstream moves it with the audio it describes, and an edit inside the pause marks it outdated rather than leaving it to mean something it no longer does. Tacks are review marks, not project content: they record nothing, leave the user's markers alone, and the user resolves, dismisses or clears them in the agent panel. Do not use `add_marker` here — markers are the user's, created only when they ask for markers.
-3. Report how many pauses were tacked and their total duration, and leave what becomes of them to the human. Reading `project://tacks` later shows what they decided: a tack `resolved` or `dismissed` is their answer, `open` is still waiting.
+3. Report how many pauses were tacked and their total duration, and leave what becomes of them to the human. Reading `project://tacks` later shows what they decided: a tack `resolved` or `dismissed` is their answer, `open` is still waiting. When they ask you to cut the ones they kept, do it as ONE edit with `apply_cut_list {{ layer_id: \"{layer_id}\", remove: [...] }}`, one range per approved pause read from its tack's current `t_us` / `end_t_us` (a range moves with what plays), each shrunk by the pad on both sides first: `apply_cut_list` removes exactly the ranges it is given, and it refuses with the same ripple names as `remove_pauses`.
 
 Defaults if the agent leaves args off: threshold_amp = 0.02 (-34 dBFS), min_pause_us 500 ms, pad_us 100 ms per side (`remove_pauses` only); `detect_pauses` alone also takes bridge_us 80 ms (two pauses closer than that read as one) — tuned for podcast-style speech with quick breath-pause cuts. Loosen for music (lower threshold, longer min) or tighten for talking-head (higher threshold)."
     );
@@ -329,6 +329,8 @@ mod tests {
         // is the answer it leads with, the tack is the review-first fallback.
         assert!(body.contains("remove_pauses"));
         assert!(body.contains("detect_pauses"));
+        // The reviewed subset is cut by the cut-list tool, in one edit.
+        assert!(body.contains("apply_cut_list"));
         // `end_t_us` is what makes each tack a region spanning the pause rather
         // than a point at its start; drop it and the tacks stop meaning what
         // the prompt says they mean. A tack follows the content of its range by

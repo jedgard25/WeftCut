@@ -79,7 +79,11 @@ const PROPERTY_DESCRIPTION_CAP = 260
 // +0.5 KB: durable transcripts (ADR 0142) — `cached` in transcribe_clip's
 // return shape with the rule that decides it, and the `media_transcript` view a
 // client without resources reads a later session's transcript through.
-const CATALOG_BYTE_BUDGET = 157_500
+// +1.5 KB: `apply_cut_list` (ADR 0143) — the keep/remove range schema in the
+// transcript's timeline space, the shared ripple refusals by name, and its
+// place among `dry_run`'s ops. One tool for a rough cut that otherwise costs an
+// agent a split, a delete and an undo step per range.
+const CATALOG_BYTE_BUDGET = 159_000
 
 function compact(v: unknown): string { return JSON.stringify(v) }
 

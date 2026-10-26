@@ -176,7 +176,11 @@ descriptions:
   (also `/voiceover`).
 - Rough cut: `analyze_clip` or `auto_split_by_shot`, then trim and delete
   segments — `delete_layers` with `ripple: true` when the gap a cut leaves
-  should close behind it.
+  should close behind it. When you have decided what stays — transcript
+  segments to keep, words or pauses to drop — `apply_cut_list` takes that
+  list (`keep` or `remove`, timeline-absolute ranges inside one clip) and
+  makes the whole rough cut as ONE undoable edit, link partners and the
+  downstream ripple included; rehearse it in `dry_run` first.
 - Music, sound effects, a separate voice track: `add_audio_layer`. It is the
   only tool that places audio-only media — `add_video_layer` builds a visual
   layer and refuses an audio file.

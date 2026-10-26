@@ -5,8 +5,10 @@ import type { Animated, Keyframe, Project, Uuid } from '../model'
 import type { IdGen } from '../ids'
 import { gridForLayerKind, snapOnGrid } from '../snap'
 import { CommandFailure } from '../errors'
-import { cloneLayer, hasSourceWindow, locateLayerIn, requireLayer } from './helpers'
+import { cloneLayer, hasSourceWindow, locateLayer, locateLayerIn, requireLayer } from './helpers'
 import { linkSiblingsExcluding, checkLinkLock } from './links'
+import { applyDeleteLayer } from './delete'
+import { applyRippleDeleteLayers } from './ripple'
 import { forEachAnimatedF64, forEachAnimatedRgba, retainKeyframes, shiftKeyframes, firstKeyframeValue, lastKeyframeValue, collapseToStatic } from './animated'
 
 /** Partition one Animated<T> track for a split at the
@@ -135,6 +137,97 @@ export function applySplitLayerBatch(p: Project, idGen: IdGen, id: Uuid, rawCuts
   }
   ids.push(currentId)
   return { layer_ids: ids, at_t_us: cuts }
+}
+
+/** The `split_layer_multi` recipe, over a draft: split `layer` at every cut in
+ *  `ats` (each re-snapped on the current segment's own grid; one that no longer
+ *  lands strictly inside is skipped), then drop the segments `discardIdx` names
+ *  — nominal indices into the cut list as the caller counted it — and, with
+ *  `dropShortUs`, every segment shorter than it, each with the link members
+ *  overlapping it. `ripple` sends the doomed pieces to
+ *  `applyRippleDeleteLayers` as ONE set, so the split and the closing of what
+ *  it threw away are one edit (ADR 0062). Returns the surviving target
+ *  segments in timeline order. The actor's `split_layer_multi` arm states the
+ *  rules in full; this is its body, lifted out so `dry_run` rehearses
+ *  `apply_cut_list` through the very same code. */
+export function applySplitLayerMulti(
+  d: Project,
+  idGen: IdGen,
+  layer: Uuid,
+  ats: readonly number[],
+  discardIdx: readonly number[],
+  dropShortUs: number | null,
+  ripple: boolean,
+): Uuid[] {
+  let currentId = layer
+  const ids: Uuid[] = []
+  // Which segment actually carries each NOMINAL index — the numbering
+  // the caller counted off the cut list. A skipped cut merges two
+  // nominal segments into one real one, and without this map every
+  // index past the skip would name a neighbour of what was unchecked.
+  const carrier: Uuid[] = []
+  for (let i = 0; i < ats.length; i++) {
+    const at = ats[i]
+    // Re-snap on the CURRENT SEGMENT's own grid and skip a cut that no
+    // longer falls strictly inside it — defensive against a redundant cut so
+    // applySplitLayer never rejects mid-batch. The segment must be located
+    // first because the grid depends on its kind (spec R2-D6); shot splits
+    // target video, but this op is reachable for any kind.
+    const loc = locateLayer(d, currentId)
+    const seg = loc ? loc.layer : null
+    if (!seg) continue
+    const atSnapped = snapOnGrid(at, gridForLayerKind(seg.params.kind, loc!.comp.fps))
+    if (atSnapped <= seg.t_start_us || atSnapped >= seg.t_end_us) continue
+    const { left, right } = applySplitLayer(d, idGen, currentId, atSnapped, false)
+    while (carrier.length <= i) carrier.push(left)
+    ids.push(left)
+    currentId = right
+  }
+  while (carrier.length <= ats.length) carrier.push(currentId)
+  ids.push(currentId)
+  const discarded = new Set(discardIdx.map((i) => carrier[i]))
+  if (dropShortUs === null && discarded.size === 0) return ids
+  const kept: Uuid[] = []
+  const targets = new Set(ids)
+  const doomed = new Set<Uuid>()
+  for (const id of ids) {
+    const loc = locateLayer(d, id)
+    const seg = loc?.layer ?? null
+    const short = seg !== null && dropShortUs !== null && seg.t_end_us - seg.t_start_us < dropShortUs
+    if (!seg || !(short || discarded.has(id))) { kept.push(id); continue }
+    // Read the link BEFORE this segment's own delete: a link
+    // auto-dissolves below two members, so a two-member pair would
+    // have no siblings left to read afterwards.
+    // Half a frame of slack on the overlap: members on different
+    // grids are cut up to half a frame apart (a sample-lattice cut
+    // rounds onto the frame grid), so the piece of a KEPT neighbour
+    // can lap into this segment by that much without belonging to
+    // it. A piece that is mostly inside still travels however short
+    // it is, and a piece longer than the slack overlap is a partner
+    // that genuinely shares the span (a slipped or longer partner).
+    const halfFrameUs = (500_000 * loc!.comp.fps.den) / loc!.comp.fps.num
+    const partners = linkSiblingsExcluding(loc!.comp, id).filter((sid) => {
+      if (targets.has(sid)) return false // never another segment of the target
+      const s = locateLayer(d, sid)?.layer
+      if (s === undefined) return false
+      const overlapUs = Math.min(s.t_end_us, seg.t_end_us) - Math.max(s.t_start_us, seg.t_start_us)
+      if (overlapUs <= 0) return false
+      return overlapUs * 2 > s.t_end_us - s.t_start_us || overlapUs > halfFrameUs
+    })
+    if (ripple) { doomed.add(id); for (const sid of partners) doomed.add(sid); continue }
+    applyDeleteLayer(d, id)
+    // Defensive re-locate: no partner should overlap two rejected
+    // segments, since a member spanning a cut was split at it — but a
+    // stale id here would throw LayerNotFound and abort the whole
+    // apply, so the list is checked rather than trusted.
+    for (const sid of partners) if (locateLayer(d, sid)) applyDeleteLayer(d, sid)
+  }
+  // Nothing but the ripple branch above fills `doomed`, and it can
+  // still come out empty — `drop_short_us` with no segment under the
+  // floor. The ripple refuses an empty set (nothing to close), so the
+  // splits alone are the whole edit.
+  if (doomed.size > 0) applyRippleDeleteLayers(d, [...doomed])
+  return kept
 }
 
 /** Validate the set of segments a multi-split should delete in its own commit,
