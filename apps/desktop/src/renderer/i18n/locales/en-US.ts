@@ -1110,6 +1110,7 @@ const enUS = {
     project_filter: "WeftCut project",
     save_default_name: "untitled.vproj",
     import_title: "Import media",
+    locate_title: "Locate {{label}}",
     media_filter: "Media files",
   },
   media_pool: {
@@ -1134,7 +1135,9 @@ const enUS = {
     copy_failed: "Copy failed",
     unsupported: "Engine unsupported",
     unsupported_hint: "The current preview engine cannot read this media. Switch decode engines in Settings or use an available proxy.",
-    importing_cancel_hint: "Cancel copy and keep the original reference",
+    importing_cancel_hint: "Cancel the copy and leave the file where it is (it stays outside the project)",
+    locate_menu: "Locate…",
+    locate_menu_hint: "Choose the moved file; it must have the same content as the original.",
     missing: "Missing",
     missing_hint: "Source file not found: {{path}}",
     proxy_pending: "Preparing…",
@@ -2290,6 +2293,10 @@ const enUS = {
     tail_snap_strength: "Snap strength",
     tail_snap_strength_hint:
       "Measured in screen pixels.",
+    import_heading: "Import",
+    copy_media_on_import: "Copy media into the project",
+    copy_media_on_import_hint:
+      "Turn off to leave imported files where they are. The project folder then no longer contains them, so moving or sharing the project needs the originals at the same paths. Applies to files imported from now on.",
     playback_heading: "Playback",
     prefer_proxies: "Prefer proxies for preview",
     prefer_proxies_hint:
@@ -3088,6 +3095,7 @@ const enUS = {
     caption: { restyle: "Restyled captions", correct: "Corrected caption text", merge: "Merged captions" },
     style: { restyle: "Restyled to the project style" },
     media: {
+      locate: "Located media file",
       remove_cascade:
         "Removed media {{media}} and {{count}} referencing clip(s)",
     },

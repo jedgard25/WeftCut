@@ -736,20 +736,29 @@ export async function runHybrid(tool: string, args: Record<string, unknown>, dep
         if (facts.kind !== 'file') throw new McpArgError(`path ${path} is not a regular file — import_media takes a media file`, 'path')
         if (!facts.readable) throw new McpArgError(`path ${path} is not readable by this process — check its permissions, then retry`, 'path')
         // A drawing comes in as an SVG and goes into the pool as a PNG of it.
+        // That PNG is ours (the app's svg-import cache), not the user's file,
+        // so it is always copied into the project whatever the setting says.
+        let rasterized = false
         if (/\.svg$/i.test(path)) {
           if (!deps.rasterizeSvg) throw new McpArgError(`path ${path} is an SVG, which this host cannot draw — import a PNG of it`, 'path')
           try { path = await deps.rasterizeSvg(path) }
           catch (e) { throw new McpArgError(`import_media: drawing ${path} failed: ${errText(e)}. Nothing was imported`, 'path') }
+          rasterized = true
         }
+        // The project may leave the user's files where they are
+        // (`copy_media_on_import` off): the item is then `external` — its
+        // absolute path is authoritative — and no workspace copy is queued.
+        const leaveInPlace = !deps.actor.snapshot().settings.copy_media_on_import && !rasterized
         // Insert the probed item FIRST so the clip appears in the timeline
         // immediately. A probe that fails has written nothing; it says so.
         let item: MediaItem
         try { item = JSON.parse(await (trace ? deps.compute.probeMedia(path, trace.id) : deps.compute.probeMedia(path))) as MediaItem }
         catch (e) { throw new Error(`import_media: probing ${path} failed: ${errText(e)}. Nothing was imported`) }
         assertCurrent()
+        if (leaveInPlace) item = { ...item, external: true }
         const r = deps.actor.dispatch('add_media_item', { media: item })
         if (!r.ok) throw new Error(JSON.stringify(r.error))
-        trace?.bind(item, Boolean(deps.workspaceDir()))
+        trace?.bind(item, Boolean(deps.workspaceDir()) && !leaveInPlace)
         // Compute the REAL content hash (a lightweight standalone read pass), set it
         // on the pool item, THEN enqueue derivatives — so every job bakes the final
         // cache key and no derivative ever touches a pending alias (ADR 0007
@@ -780,10 +789,34 @@ export async function runHybrid(tool: string, args: Record<string, unknown>, dep
         // Workspace copy runs in PARALLEL: copies the source into <workspace>/Media,
         // re-confirms the same hash, and flips path_abs via the media:workspace_paths
         // seam. No-op napi when no workspace.
-        if (deps.workspaceDir()) await deps.enqueueWorkspaceCopy(item.id, path)
+        if (deps.workspaceDir() && !leaveInPlace) await deps.enqueueWorkspaceCopy(item.id, path)
         trace?.queued()
         return item.id
       } catch (error) { trace?.fail(error); throw error }
+    }
+    case 'locate_media': {
+      // An external item's file is gone and the user picked a candidate. The
+      // content hash is the identity every derivative, transcript and cache is
+      // keyed on, so a file that does not hash to it is REFUSED rather than
+      // adopted: a different file under the same id would silently serve the
+      // old file's caches. Nothing is written until the hash matches.
+      const mediaId = args.mediaId
+      const path = args.path
+      if (typeof mediaId !== 'string' || typeof path !== 'string') throw new Error('locate_media: mediaId and path are required')
+      const item = deps.actor.snapshot().media_pool[mediaId]
+      if (!item) throw new Error(`locate_media: no media ${mediaId}`)
+      if (!item.external) throw new Error(`locate_media: ${mediaId} is managed by the project; only a file left in place can be located`)
+      if (!/^[a-f0-9]{64}$/i.test(item.file_hash_blake3)) throw new Error('locate_media: the original is still being read for its content hash; try again in a moment')
+      const facts = deps.statPath(path)
+      if (facts === null || facts.kind !== 'file' || !facts.readable) throw new Error(`locate_media: ${path} is not a readable file`)
+      const assertCurrent = captureImportSession(deps)
+      const hash = await deps.compute.hashMediaSource(path)
+      assertCurrent()
+      if (hash.toLowerCase() !== item.file_hash_blake3.toLowerCase())
+        throw new Error(`locate_media: ${path} is not the same file as the original (content hash differs). Pick the original file, or import this one as new media`)
+      const r = deps.actor.dispatch('relink_media', { media: mediaId, path_abs: path })
+      if (!r.ok) throw new Error(JSON.stringify(r.error))
+      return mediaId
     }
     case 'apply_subtitles':
       // Reached by the agent's tool and by a Subtitle item dropped on the

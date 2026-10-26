@@ -272,6 +272,9 @@ export interface MediaSummary {
   size_bytes: number;
   /// Verified content identity. Null while the initial hash is pending.
   content_hash?: string | null;
+  /// True when the file lives outside the project on purpose (the project
+  /// leaves media in place, or its copy was cancelled). Absent otherwise.
+  external?: boolean;
   /// False when path_abs doesn't resolve to a real file. UI surfaces a
   /// "missing source" badge; project still opens; layers referencing the
   /// missing item render placeholders.
@@ -1279,6 +1282,24 @@ export async function importCancel(mediaId: string): Promise<boolean> {
   return invoke<boolean>("import_cancel", { mediaId });
 }
 
+/// Mark a pool item as living outside the project on purpose, so reopening
+/// does not queue its workspace copy again. Unrecorded.
+export async function setMediaExternal(
+  mediaId: string,
+  external: boolean,
+): Promise<void> {
+  return invoke<void>("set_media_external", { mediaId, external });
+}
+
+/// Point an external item whose file went missing at the file the user picked.
+/// Rejects unless the file's BLAKE3 hash equals the item's. One recorded edit.
+export async function locateMedia(
+  mediaId: string,
+  path: string,
+): Promise<void> {
+  await invoke<string>("locate_media", { mediaId, path });
+}
+
 export async function importMedia(path: string): Promise<string> {
   return invoke<string>("import_media", { path });
 }
@@ -1963,6 +1984,9 @@ export interface ProjectSettingsView {
   /// When a proxied source's full export master is built
   /// (`shared/exportMasters.ts`). Default `auto`.
   export_masters: ExportMasters;
+  /// When false, an import leaves the file where it is instead of copying it
+  /// into the project folder. Default true.
+  copy_media_on_import: boolean;
   /// `null` on a project nobody has tuned — read as "whatever the detector
   /// defaults to", which is what keeps every threshold literal in Rust.
   shot_review: ShotReviewSettings | null;
@@ -1975,6 +1999,7 @@ export interface ProjectSettingsPatch {
   prefer_proxies?: boolean;
   generate_preview_proxies?: boolean;
   export_masters?: ExportMasters;
+  copy_media_on_import?: boolean;
   proxy_override?: { media_id: string; value: boolean | null };
   /// `null` clears the tuning and restores the detection defaults. Refused
   /// whole if `sensitivity` is outside [0, 1] or `min_shot_us` is not a

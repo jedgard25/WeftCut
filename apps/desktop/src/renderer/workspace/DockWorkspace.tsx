@@ -63,13 +63,13 @@ import { AgentPanel } from "../agent/AgentPanel";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { ShotsPanel } from "../shots/ShotsPanel";
 import {
-  importCancel,
   restackLayer,
   updateLayer,
   type ImportEntry,
   type KeybindingsMap,
   type ProjectSummary,
 } from "../ipc";
+import { cancelImportCopy } from "./cancelImportCopy";
 import { type MediaReadiness } from "../panels/mediaReadiness";
 import { type OptimizeInfo } from "../panels/importOptimize";
 import { bumpPreviewLayoutEpoch } from "../preview/layoutRectCache";
@@ -234,7 +234,7 @@ function MediaDockPanel() {
         fpsDen={comp?.fps_den ?? 1}
         importsById={contracts.importsById}
         onCancelImport={async (id) => {
-          await importCancel(id).catch(() => false);
+          await cancelImportCopy(id);
         }}
         onMutated={contracts.onMutated}
         onImportMedia={contracts.onImportMedia}

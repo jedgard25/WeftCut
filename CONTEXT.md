@@ -27,6 +27,19 @@ file. A failed finalization can be retried without encoding again.
 The atomic operation that makes a completed export visible at its final path.
 The reported filename is the one publication actually used.
 
+## Import
+
+**External media**:
+A media item whose file the project deliberately leaves where it is, rather than
+copying it into the project folder. Chosen per project (leave files in place) or
+by cancelling a copy. Distinct from a copy that is merely pending. See ADR 0145.
+_Avoid_: linked media, referenced media, unmanaged media
+
+**Locate**:
+Re-pointing an external media item at the file that moved, accepted only when its
+content hash matches the original's.
+_Avoid_: relink (which heals project-owned media by content, automatically)
+
 ## Time remapping
 
 **Time remapping**:

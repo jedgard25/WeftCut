@@ -16,6 +16,13 @@ pub struct MediaItem {
     pub label: Option<String>,
     pub path_abs: PathBuf,
     pub path_rel: Option<PathBuf>,
+    /// The file lives outside the project folder on purpose (the project
+    /// leaves imported media where it is), so `path_abs` is authoritative and
+    /// `path_rel` stays `None`. Distinguishes that from "workspace copy still
+    /// pending", which reopening resumes. **TS owns it** (`state/model.ts`);
+    /// Rust round-trips it. Serde-defaulted so older projects load as `false`.
+    #[serde(default)]
+    pub external: bool,
     pub kind: MediaKind,
     pub metadata: MediaMetadata,
     /// Where preview and export each decode this source from, plus the
@@ -133,5 +140,25 @@ mod tests {
             item.decode_route,
             DecodeRoute::DirectExport { quick_proxy: None }
         );
+    }
+
+    /// A project written before `external` existed reads as workspace-managed;
+    /// the marker round-trips once set.
+    #[test]
+    fn media_item_external_defaults_false_and_round_trips() {
+        let json = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000000",
+            "label": null, "path_abs": "/footage/clip.mp4", "path_rel": null, "kind": "Video",
+            "metadata": { "duration_us": null, "video": null, "audio": null },
+            "decode_route": { "route": "bypass" },
+            "waveform_path": null, "conform_path": null, "thumbnails_dir": null,
+            "file_hash_blake3": "abc", "file_size": 1, "file_mtime": 0,
+            "imported_at": "2026-05-29T00:00:00Z"
+        });
+        let mut item: MediaItem = serde_json::from_value(json).unwrap();
+        assert!(!item.external);
+        item.external = true;
+        let back: MediaItem = serde_json::from_value(serde_json::to_value(&item).unwrap()).unwrap();
+        assert!(back.external);
     }
 }

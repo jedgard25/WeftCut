@@ -34,6 +34,8 @@ interface MediaMenuTarget {
   canAnalyze: boolean;
   analyzing: boolean;
   canRemove: boolean;
+  canLocate: boolean;
+  onLocate: () => void;
   onProxyModeChange: (mode: MediaProxyMode) => void;
   onAnalyze: () => void;
   onRemove: () => void;
@@ -171,6 +173,17 @@ function MediaItems({ target }: { target: MediaMenuTarget }) {
             hint={t("media_pool.analyze_shots_hint")}
             disabled={!target.canAnalyze || target.analyzing}
             onSelect={target.onAnalyze}
+          />
+          <MenuSeparator />
+        </>
+      )}
+
+      {target.canLocate && (
+        <>
+          <MenuItem
+            label={t("media_pool.locate_menu")}
+            hint={t("media_pool.locate_menu_hint")}
+            onSelect={target.onLocate}
           />
           <MenuSeparator />
         </>

@@ -390,6 +390,8 @@ export interface MediaSummary {
   start_pts_us: number | null; container_duration_us: number | null
   width: number | null; height: number | null; size_bytes: number; available: boolean
   content_hash?: string | null
+  /** True when the file lives outside the project on purpose (`MediaItem.external`). */
+  external?: boolean
   decode_route: DecodeRoute
   codec: string | null; pix_fmt: string | null; color_matrix: string | null; color_range: string | null
   color_primaries: string | null; color_transfer: string | null; video_start_pts_us: number | null
@@ -470,6 +472,7 @@ export function buildProjectSummary(p: Project, history: HistoryStatus, fileExis
       width: (video?.width as number | undefined) ?? null, height: (video?.height as number | undefined) ?? null,
       size_bytes: m.file_size, available: fileExists(m.path_abs),
       content_hash: /^[a-f0-9]{64}$/i.test(m.file_hash_blake3) ? m.file_hash_blake3 : null,
+      ...(m.external ? { external: true } : {}),
       decode_route: routeForSummary(m.decode_route),
       codec: (video?.codec as string | undefined) ?? null, pix_fmt: (video?.pix_fmt as string | undefined) ?? null,
       color_matrix: (video?.color_matrix as string | undefined) ?? null, color_range: (video?.color_range as string | undefined) ?? null,

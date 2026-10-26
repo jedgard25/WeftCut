@@ -904,6 +904,7 @@ mod tests {
             label: None,
             path_abs: std::path::PathBuf::from("/nonexistent/source.wav"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata::default(),
             decode_route: DecodeRoute::Bypass,
@@ -2095,6 +2096,7 @@ pub(crate) async fn synthesize_speech_audio(
             label: Some(format!("voiceover-{}", &cache_key_clone[..8])),
             path_abs: probe_path,
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata,
             decode_route: DecodeRoute::Bypass,
@@ -2176,6 +2178,7 @@ mod transcript_cache_tests {
             label: None,
             path_abs: dir.join("missing.wav"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(10_000_000),
@@ -2352,6 +2355,7 @@ mod compute_job_tests {
             label: None,
             path_abs: path,
             path_rel: None,
+            external: false,
             kind,
             metadata: MediaMetadata {
                 duration_us: Some(2_000_000),

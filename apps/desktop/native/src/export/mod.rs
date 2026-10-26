@@ -519,6 +519,7 @@ mod tests {
             label: Some("tone".into()),
             path_abs: "/m/tone.wav".into(),
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),

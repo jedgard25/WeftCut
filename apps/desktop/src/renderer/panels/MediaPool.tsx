@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { createPortal } from "react-dom";
+import { open as openDialog } from "@/bridge/dialog";
 import { useTranslation } from "react-i18next";
 import {
   FilterIcon,
@@ -50,6 +51,7 @@ import {
   compositionsDelete,
   generateQuickProxy,
   analyzeShots,
+  locateMedia,
   removeMedia,
 } from "../ipc";
 import { formatMediaDuration } from "../frames";
@@ -417,6 +419,22 @@ export function MediaPool({
       canAnalyze: contextReadiness.ready && m.content_hash !== null,
       analyzing: analyzingId === m.id,
       canRemove: copyStatus !== 'Pending' && copyStatus !== 'Copying',
+      // A file left in place is the project's only copy of the reference, so
+      // when it goes missing the user points at where it moved to. A
+      // workspace-managed item heals by content instead (`relink.ts`).
+      canLocate: m.external === true && !m.available,
+      onLocate: () => {
+        closeMenu();
+        void (async () => {
+          const picked = await openDialog({
+            title: t("dialogs.locate_title", { label: m.label }),
+          });
+          if (typeof picked !== "string") return;
+          if (await tryMutate(() => locateMedia(m.id, picked), "Locate media")) {
+            await onMutated();
+          }
+        })();
+      },
       onProxyModeChange: (mode) => {
         closeMenu();
         const next = mode === "auto" ? null : mode === "proxy" ? true : false;

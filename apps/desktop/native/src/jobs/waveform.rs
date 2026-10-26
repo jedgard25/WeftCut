@@ -1106,6 +1106,7 @@ mod tests {
             label: Some("source.wav".into()),
             path_abs: audio,
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),
@@ -1203,6 +1204,7 @@ mod tests {
                 label: None,
                 path_abs: source.clone(),
                 path_rel: None,
+                external: false,
                 kind: MediaKind::Audio,
                 metadata: MediaMetadata {
                     duration_us: Some(137_000),
@@ -1261,6 +1263,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("nope.mp4"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),

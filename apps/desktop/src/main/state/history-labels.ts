@@ -92,6 +92,7 @@ export const HISTORY_SUMMARY = {
 
   // Groups (ADR 0052). `groupCreate` is templated — see groupCreateSummary.
   groupUngroup: { key: 'history.group.ungroup', text: 'Ungrouped' },
+  mediaLocate: { key: 'history.media.locate', text: 'Located media file' },
   groupRename: { key: 'history.group.rename', text: 'Renamed Group' },
   compositionDelete: { key: 'history.composition.delete', text: 'Deleted Group' },
 

@@ -216,6 +216,7 @@ mod tests {
             label: None,
             path_abs: "clip.mp4".into(),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(10_000_000),
@@ -347,6 +348,7 @@ mod tests {
             label: Some("source.mp4".into()),
             path_abs: video,
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(6_000_000),
@@ -474,6 +476,7 @@ mod tests {
             label: Some("source_601full.mp4".into()),
             path_abs: video,
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),
@@ -562,6 +565,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("nope.mp4"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),
@@ -633,6 +637,7 @@ mod tests {
             label: Some("src1440.mp4".into()),
             path_abs: src,
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),

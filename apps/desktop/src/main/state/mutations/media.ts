@@ -116,6 +116,33 @@ export function applySetMediaHash(pool: Record<string, MediaItem>, id: Uuid, has
   return { ...pool, [id]: { ...item, file_hash_blake3: hash } }
 }
 
+/** Mark one pool item as living outside the project on purpose
+ *  (`MediaItem.external`) — the durable form of "cancel the copy and keep the
+ *  original reference", which reopening must not undo by re-queueing the copy.
+ *  UNRECORDED, like the sibling setters. MediaNotFound if absent; refused for an
+ *  item the workspace already owns (`path_rel` set — the copy landed first), so
+ *  a cancel that lost its race cannot orphan a managed file. */
+export function applySetMediaExternal(pool: Record<string, MediaItem>, id: Uuid, external: boolean): Record<string, MediaItem> {
+  const item = pool[id]
+  if (!item) throw new CommandFailure({ error: 'MediaNotFound', media: id })
+  if (external && item.path_rel !== null)
+    throw new CommandFailure({ error: 'InvalidArgument', field: 'external', detail: `media ${id} already lives in the project (${item.path_rel})` })
+  return { ...pool, [id]: { ...item, external } }
+}
+
+/** relink_media — point an external item at the file the user located. Only an
+ *  `external` item may be re-pointed: a workspace-managed one is healed by
+ *  content in `relink.ts`, and its `path_rel` is authoritative. The caller has
+ *  already proved the file's hash equals `file_hash_blake3`, so no derivative
+ *  or transcript keyed on that hash goes stale; size and mtime are left alone. */
+export function applyRelinkMedia(d: Project, id: Uuid, pathAbs: string): void {
+  const item = d.media_pool[id]
+  if (!item) throw new CommandFailure({ error: 'MediaNotFound', media: id })
+  if (!item.external)
+    throw new CommandFailure({ error: 'InvalidArgument', field: 'media', detail: `media ${id} is managed by the project; only a file left in place can be re-pointed` })
+  item.path_abs = pathAbs
+}
+
 /** Layer ids referencing this media, in composition-then-track-then-layer
  *  order, across EVERY composition — a Group's clip pins its media too.
  *  VideoClip/Audio/ImageOverlay only. */

@@ -1399,6 +1399,7 @@ mod tests {
             label: None,
             path_abs: std::path::PathBuf::from("/nonexistent"),
             path_rel: None,
+            external: false,
             kind: crate::state::MediaKind::Video,
             metadata: crate::state::MediaMetadata::default(),
             decode_route: crate::state::DecodeRoute::Bypass,

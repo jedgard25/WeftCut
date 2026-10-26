@@ -19,8 +19,13 @@ vi.mock("../ipc", async (importActual) => {
     analyzeShots: vi.fn().mockResolvedValue(3),
     getMediaThumbnail: vi.fn().mockRejectedValue("not_ready"),
     removeMedia: vi.fn().mockResolvedValue(undefined),
+    locateMedia: vi.fn().mockResolvedValue(undefined),
   };
 });
+
+vi.mock("@/bridge/dialog", () => ({
+  open: vi.fn(),
+}));
 
 vi.mock("@/bridge/events", () => ({
   listen: vi.fn().mockResolvedValue(() => undefined),
@@ -34,10 +39,12 @@ vi.mock("../state/proxyPreferenceStore", async (importActual) => {
 import {
   analyzeShots,
   generateQuickProxy,
+  locateMedia,
   removeMedia,
   type MediaSummary,
   type TrackSummary,
 } from "../ipc";
+import { open as openDialog } from "@/bridge/dialog";
 import { useProxyPrefStore, setProxyOverride } from "../state/proxyPreferenceStore";
 import { MediaDropZone, MediaPool } from "./MediaPool";
 import { type OptimizeInfo } from "./importOptimize";
@@ -166,6 +173,51 @@ describe("MediaPool import button", () => {
     const { onImportMedia } = renderPool([]);
     await user.click(screen.getByRole("button", { name: "Import media…" }));
     expect(onImportMedia).toHaveBeenCalledOnce();
+  });
+});
+
+describe("MediaPool locate", () => {
+  const missingExternal = (): MediaSummary => ({
+    ...makeMedia("m-gone", { route: "bypass" }),
+    external: true,
+    available: false,
+  });
+
+  it("offers Locate only for an external item whose file is missing", () => {
+    renderPool([missingExternal(), { ...makeMedia("m-ok", { route: "bypass" }), external: true }, { ...makeMedia("m-managed", { route: "bypass" }), available: false }]);
+    openMediaMenu("m-gone");
+    expect(screen.getByRole("menuitem", { name: "Locate…" })).toBeTruthy();
+    cleanup();
+    renderPool([{ ...makeMedia("m-ok", { route: "bypass" }), external: true }]);
+    openMediaMenu("m-ok");
+    expect(screen.queryByRole("menuitem", { name: "Locate…" })).toBeNull();
+    cleanup();
+    renderPool([{ ...makeMedia("m-managed", { route: "bypass" }), available: false }]);
+    openMediaMenu("m-managed");
+    expect(screen.queryByRole("menuitem", { name: "Locate…" })).toBeNull();
+  });
+
+  it("asks for a file, relinks it, and refreshes", async () => {
+    const user = userEvent.setup();
+    vi.mocked(openDialog).mockResolvedValue("/moved/m-gone.mp4");
+    const { onMutated } = renderPool([missingExternal()], {
+      readinessById: new Map([["m-gone", { ready: false, reason: "missing" }]]),
+    });
+    openMediaMenu("m-gone");
+    await user.click(screen.getByRole("menuitem", { name: "Locate…" }));
+    await waitFor(() => expect(onMutated).toHaveBeenCalled());
+    expect(locateMedia).toHaveBeenCalledExactlyOnceWith("m-gone", "/moved/m-gone.mp4");
+  });
+
+  it("does nothing when the picker is cancelled", async () => {
+    const user = userEvent.setup();
+    vi.mocked(openDialog).mockResolvedValue(null);
+    const { onMutated } = renderPool([missingExternal()]);
+    openMediaMenu("m-gone");
+    await user.click(screen.getByRole("menuitem", { name: "Locate…" }));
+    await waitFor(() => expect(openDialog).toHaveBeenCalled());
+    expect(locateMedia).not.toHaveBeenCalled();
+    expect(onMutated).not.toHaveBeenCalled();
   });
 });
 

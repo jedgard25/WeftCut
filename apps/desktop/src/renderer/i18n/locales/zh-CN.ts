@@ -983,6 +983,7 @@ const zhCN: Resources = {
     project_filter: "WeftCut 项目",
     save_default_name: "未命名.vproj",
     import_title: "导入素材",
+    locate_title: "重新定位 {{label}}",
     media_filter: "媒体文件",
   },
   media_pool: {
@@ -1002,7 +1003,9 @@ const zhCN: Resources = {
     copy_failed: "复制失败",
     unsupported: "当前引擎不支持",
     unsupported_hint: "当前预览引擎无法读取此素材，请在设置中切换解码引擎，或使用可用代理。",
-    importing_cancel_hint: "取消复制，保留原文件引用",
+    importing_cancel_hint: "取消复制，文件保留在原位置（不在项目内）",
+    locate_menu: "重新定位…",
+    locate_menu_hint: "选择移动后的文件；其内容必须与原文件一致。",
     missing: "缺失",
     missing_hint: "源文件未找到：{{path}}",
     proxy_pending: "准备中…",
@@ -2052,6 +2055,10 @@ const zhCN: Resources = {
     tail_snap_strength: "吸附强度",
     tail_snap_strength_hint:
       "以屏幕像素为单位。",
+    import_heading: "导入",
+    copy_media_on_import: "将素材复制到项目中",
+    copy_media_on_import_hint:
+      "关闭后，导入的文件保留在原位置，项目文件夹将不再包含它们；移动或分享项目时，原文件需位于相同路径。仅对之后导入的文件生效。",
     playback_heading: "播放",
     prefer_proxies: "预览优先使用代理",
     prefer_proxies_hint:
@@ -2791,7 +2798,10 @@ const zhCN: Resources = {
     composition: { delete: "删除组" },
     caption: { restyle: "修改字幕样式", correct: "文字校正", merge: "合并字幕" },
     style: { restyle: "按项目样式重设" },
-    media: { remove_cascade: "删除素材 {{media}} 及其 {{count}} 个引用片段" },
+    media: {
+      locate: "重新定位素材文件",
+      remove_cascade: "删除素材 {{media}} 及其 {{count}} 个引用片段",
+    },
     audio: { set_role_gain: "设置{{role}}角色增益" },
     checkpoint: { restore: "恢复到检查点“{{label}}”" },
     review: { revert: "撤回未审阅的变更" },

@@ -299,6 +299,7 @@ mod tests {
             label: None,
             path_abs: "clip.mp4".into(),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(10_000_000),

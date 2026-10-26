@@ -85,6 +85,7 @@ mod tests {
             label: Some("intro.mp4".into()),
             path_abs: "/media/intro.mp4".into(),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(10_000_000),

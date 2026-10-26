@@ -47,7 +47,7 @@ import {
   useAutoInstallUpdatesOnQuit,
 } from "./appSettingsStore";
 import { FontSelect } from "../components/FontSelect";
-import { setExportMasters, setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
+import { setCopyMediaOnImport, setExportMasters, setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
 import { EXPORT_MASTERS, isExportMasters } from "../../shared/exportMasters";
 import {
   FPS_OPTIONS,
@@ -363,6 +363,11 @@ export function SettingsPanel({
                   onChanged={onCompositionChanged}
                   onError={setError}
                 />
+              </section>
+
+              <section className="settings-section">
+                <h3>{t("settings.import_heading")}</h3>
+                <CopyMediaOnImportToggle onError={setError} />
               </section>
 
               <section className="settings-section">
@@ -728,6 +733,43 @@ function GeneratePreviewProxiesToggle({
         </span>
         <span className="settings-toggle-hint">
           {t("settings.generate_preview_proxies_hint")}
+        </span>
+      </span>
+    </label>
+  );
+}
+
+/// Per-project toggle (`Project.settings.copy_media_on_import`) — off leaves
+/// imported files where they are (Final Cut's "Leave files in place"): the
+/// project folder stops being self-contained, and moving or zipping it needs
+/// the originals at the same paths. Affects imports from now on only.
+function CopyMediaOnImportToggle({
+  onError,
+}: {
+  onError: (msg: string) => void;
+}) {
+  const { t } = useTranslation();
+  const enabled = useProxyPrefStore((s) => s.copyMediaOnImport);
+
+  return (
+    <label className="settings-toggle-row">
+      <AppSwitch
+        checked={enabled}
+        onCheckedChange={async (next) => {
+          onError("");
+          try {
+            await setCopyMediaOnImport(next);
+          } catch (err) {
+            onError(String(err));
+          }
+        }}
+      />
+      <span>
+        <span className="settings-toggle-label">
+          {t("settings.copy_media_on_import")}
+        </span>
+        <span className="settings-toggle-hint">
+          {t("settings.copy_media_on_import_hint")}
         </span>
       </span>
     </label>

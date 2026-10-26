@@ -530,7 +530,7 @@ export function parseProject(json: unknown, opts: ParseProjectOptions = {}): Pro
     if (problem) throw new Error('parseProject: ' + problem)
   })
   refuseRetiredKeyframeShape(o)
-  // Additive settings fields (prefer_proxies/proxy_overrides/shot_review/generate_preview_proxies/export_masters, added
+  // Additive settings fields (prefer_proxies/proxy_overrides/shot_review/generate_preview_proxies/export_masters/copy_media_on_import, added
   // later WITHOUT a schema bump) deserialize as absent on projects saved before
   // they existed.
   // Backfill here, or a consumer that reads a field as non-optional (e.g.
@@ -549,6 +549,7 @@ export function parseProject(json: unknown, opts: ParseProjectOptions = {}): Pro
   if (legacyMasters) correctionSettings.export_masters = legacyMasters
   delete correctionSettings.build_export_masters
   if (!isExportMasters(correctionSettings.export_masters)) correctionSettings.export_masters = 'auto'
+  if (typeof correctionSettings.copy_media_on_import !== 'boolean') correctionSettings.copy_media_on_import = true
   // `Composition.ordinal` / `Project.next_group_ordinal`: absent → creation-order
   // numbers and a counter above them, so a project written before the pair
   // existed opens under the numbering it always showed — see the function.

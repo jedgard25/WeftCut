@@ -22,7 +22,7 @@ describe('SVG on import', () => {
       statPath: () => ({ kind: 'file', readable: true }),
       compute: { probeMedia: async (p: string) => { probed.push(p); throw new Error('stop') } },
       workspaceDir: () => null,
-      actor: { snapshot: () => ({}) },
+      actor: { snapshot: () => ({ settings: { copy_media_on_import: true } }) },
     } as unknown as HybridDeps
     await expect(runHybrid('import_media', { path: '/w/brain.SVG' }, deps)).rejects.toThrow(/is an SVG, which this host cannot draw/)
     await expect(runHybrid('import_media', { path: '/w/brain.svg' }, { ...deps, rasterizeSvg: async () => '/cache/svg-import/k/brain.png' })).rejects.toThrow(/probing \/cache\/svg-import\/k\/brain.png failed/)

@@ -181,6 +181,46 @@ describe('runHybrid: import_media', () => {
     expect(deps._enqueueWorkspaceCopy).toHaveBeenCalledWith(MID, 'C:/x.mp4')
   })
 
+  describe('when the project leaves media where it is (copy_media_on_import off)', () => {
+    function leaveInPlace(actor: ActorHandle) {
+      const r = actor.dispatch('update_project_settings', { patch: { copy_media_on_import: false } })
+      expect(r.ok).toBe(true)
+    }
+
+    it('adds an external item with its absolute path, hashes it, runs derivatives, and never copies', async () => {
+      const actor = freshActor()
+      leaveInPlace(actor)
+      const deps = makeDeps(actor, { workspaceDir: '/ws' })
+      await runHybrid('import_media', { path: 'C:/x.mp4' }, deps)
+      const item = actor.snapshot().media_pool[MID]
+      expect(item.external).toBe(true)
+      expect(item.path_rel).toBeNull()
+      expect(item.path_abs).toBe('media/clip.bin')
+      expect(item.file_hash_blake3).toBe('realhash-deadbeef')
+      expect(deps._enqueueDerivatives).toHaveBeenCalledTimes(1)
+      expect((deps._enqueueDerivatives.mock.calls[0][0] as MediaItem[])[0]).toMatchObject({ id: MID, external: true, file_hash_blake3: 'realhash-deadbeef' })
+      expect(deps._enqueueWorkspaceCopy).not.toHaveBeenCalled()
+    })
+
+    it('still copies a drawing: its PNG is the app\'s own rasterization, not the user\'s file', async () => {
+      const actor = freshActor()
+      leaveInPlace(actor)
+      const deps = makeDeps(actor, { workspaceDir: '/ws' })
+      deps.rasterizeSvg = vi.fn(async () => 'C:/cache/svg-import/logo.png')
+      await runHybrid('import_media', { path: 'C:/logo.svg' }, deps)
+      expect(actor.snapshot().media_pool[MID].external).toBeFalsy()
+      expect(deps._enqueueWorkspaceCopy).toHaveBeenCalledWith(MID, 'C:/cache/svg-import/logo.png')
+    })
+
+    it('does not mark the item external while the setting is on', async () => {
+      const actor = freshActor()
+      const deps = makeDeps(actor, { workspaceDir: '/ws' })
+      await runHybrid('import_media', { path: 'C:/x.mp4' }, deps)
+      expect(actor.snapshot().media_pool[MID].external).toBeFalsy()
+      expect(deps._enqueueWorkspaceCopy).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it('does NOT enqueue the workspace copy when there is no workspace', async () => {
     const actor = freshActor()
     const deps = makeDeps(actor, { workspaceDir: null })
@@ -1852,5 +1892,45 @@ describe('applyWorkspacePathsEvent', () => {
       media_id: MID, path_abs: 'a', path_rel: 'r', file_hash_blake3: 'h', file_size: 1, file_mtime: 2,
     })
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('runHybrid: locate_media', () => {
+  const HASH = 'a'.repeat(64)
+  function externalProject(over: Partial<MediaItem> = {}) {
+    const actor = freshActor()
+    actor.dispatch('add_media_item', { media: { ...probedItem(), external: true, path_abs: '/gone/x.mp4', file_hash_blake3: HASH, ...over } })
+    const deps = makeDeps(actor, { workspaceDir: '/ws' })
+    return { actor, deps }
+  }
+
+  it('re-points the item as one recorded edit when the file hashes to the same content', async () => {
+    const { actor, deps } = externalProject()
+    deps._hashMediaSource.mockResolvedValue(HASH)
+    const before = actor.historyView(50).len
+    await runHybrid('locate_media', { mediaId: MID, path: '/moved/x.mp4' }, deps)
+    const item = actor.snapshot().media_pool[MID]
+    expect(item.path_abs).toBe('/moved/x.mp4')
+    expect(item.external).toBe(true)
+    expect(item.path_rel).toBeNull()
+    expect(actor.historyView(50).len).toBe(before + 1)
+    expect(actor.historyView(50).ops.at(-1)?.label_key).toBe('history.media.locate')
+    actor.dispatch('undo', {})
+    expect(actor.snapshot().media_pool[MID].path_abs).toBe('/gone/x.mp4')
+  })
+
+  it('refuses a file whose content hash differs and changes nothing', async () => {
+    const { actor, deps } = externalProject()
+    deps._hashMediaSource.mockResolvedValue('b'.repeat(64))
+    await expect(runHybrid('locate_media', { mediaId: MID, path: '/other/y.mp4' }, deps)).rejects.toThrow(/not the same file/)
+    expect(actor.snapshot().media_pool[MID].path_abs).toBe('/gone/x.mp4')
+  })
+
+  it('refuses an item the project manages, and one whose hash is still provisional', async () => {
+    const managed = externalProject({ external: false, path_rel: 'Media/x.mp4' })
+    await expect(runHybrid('locate_media', { mediaId: MID, path: '/m/x.mp4' }, managed.deps)).rejects.toThrow(/managed by the project/)
+    const pending = externalProject({ file_hash_blake3: 'pending-1' })
+    await expect(runHybrid('locate_media', { mediaId: MID, path: '/m/x.mp4' }, pending.deps)).rejects.toThrow(/content hash/)
+    expect(pending.deps._hashMediaSource).not.toHaveBeenCalled()
   })
 })

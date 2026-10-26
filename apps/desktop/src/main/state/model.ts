@@ -235,6 +235,13 @@ export interface MediaMetadata {
 }
 export interface MediaItem {
   id: Uuid; label: string | null; path_abs: string; path_rel: string | null; kind: 'Video' | 'Audio' | 'Image' | 'Subtitle'
+  /** The file lives outside the project on purpose (`ProjectSettings.copy_media_on_import`
+   *  was off at import, or the user cancelled the copy), so `path_abs` stays
+   *  authoritative with `path_rel === null`. Distinguishes that from "workspace
+   *  copy pending", which reopening resumes. Absent reads as false (optional,
+   *  so older projects and the many literals that predate it stay valid; Rust
+   *  always writes it). Mirrors Rust `MediaItem.external`. */
+  external?: boolean
   metadata: MediaMetadata; file_hash_blake3: string; file_size: number; file_mtime: number
   imported_at: string
   /** Where preview/export decode from + proxy readiness. Mirrors Rust
@@ -273,6 +280,9 @@ export interface ProjectSettings {
    *  only when the native export decoder is unavailable; otherwise export
    *  decodes the original natively. */
   export_masters: ExportMasters
+  /** When false, an import leaves the file where it is instead of copying it
+   *  into `<workspace>/Media/`; the item is marked `external`. Default true. */
+  copy_media_on_import: boolean
   /** The reviewed detection parameters, or `null` for "whatever the detector
    *  defaults to". Null rather than a pair of numbers so no threshold literal
    *  lives in TypeScript at all: the defaults are Rust's
@@ -344,7 +354,7 @@ export function* eachLayer(p: Pick<Project, 'compositions'>): Iterable<{ composi
 export function defaultSettings(): ProjectSettings {
   return { preview_width: 1280, preview_height: 720, autosave_interval_secs: 60,
     history_capacity: 200, auto_pair_audio_on_import: true,
-    prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', shot_review: null, pause_review: null }
+    prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', copy_media_on_import: true, shot_review: null, pause_review: null }
 }
 
 /** Mirror of Rust `Project::new_blank`. Id order: A-roll, B-roll, project_id,

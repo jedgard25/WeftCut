@@ -1301,6 +1301,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("gone.mp4"), // source needn't exist for the heal
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: Default::default(),
             decode_route: DecodeRoute::Proxied {

@@ -49,7 +49,7 @@ describe('PRODUCTION_OPS', () => {
       'remove_effect', 'remove_marker', 'remove_media', 'remove_transition', 'rename_track',
       // The Playhead Panel's anchored z-reorder drop (ADR 0044).
       'restack_layer', 'restyle_captions',
-      'separate_audio_to_new_track', 'set_composition', 'set_role_gain', 'set_scale_linked', 'split_layer_linked',
+      'separate_audio_to_new_track', 'set_composition', 'set_media_external', 'set_role_gain', 'set_scale_linked', 'split_layer_linked',
       'trim_layer', 'update_effect', 'update_layer', 'update_layer_param_track', 'update_marker',
       'update_layer_param_tracks', 'update_layer_params', 'update_param_tracks_multi', 'update_project_settings',
       'update_role_flags', 'update_track_flags', 'update_transition', 'set_position', 'translate_path', 'update_path_transform',
@@ -311,7 +311,7 @@ function makeProject(overrides?: Partial<Project> & { tracks?: Composition['trac
     media_pool: {}, audio_roles: {},
     settings: { preview_width: 1280, preview_height: 720, autosave_interval_secs: 60,
       history_capacity: 200, auto_pair_audio_on_import: true,
-      prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', shot_review: null, pause_review: null },
+      prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', copy_media_on_import: true, shot_review: null, pause_review: null },
     ...projectOverrides,
   }
   return base
@@ -498,7 +498,7 @@ describe('add_media_layer auto-pair', () => {
       waveform_path: null, thumbnails_dir: null } },
       settings: { preview_width: 1280, preview_height: 720, autosave_interval_secs: 60,
         history_capacity: 200, auto_pair_audio_on_import: false,
-        prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', shot_review: null, pause_review: null } })
+        prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: 'auto', copy_media_on_import: true, shot_review: null, pause_review: null } })
     const r3 = prodMediaLayer({ mediaId: 'vid' }, p3)
     expect(r3.autoPairAudio).toBeNull()
   })

@@ -530,6 +530,7 @@ mod tests {
             label: None,
             path_abs: conform.clone(),
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),

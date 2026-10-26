@@ -7,6 +7,7 @@ import { serializeProjectToJson } from './persistence'
 import { validate } from './validate'
 import { createActor } from './actor'
 import { applyAddLayer, colorParams, textParamsDefault } from './mutations/add'
+import { mediaItemTemplate } from './mutations/media'
 import { isCommandFailure } from './errors'
 import { root, withGroup } from './__tests__/fixtures/project'
 
@@ -278,6 +279,23 @@ describe('parseProject grid repair', () => {
     expect(parseProject(on, silent).settings.export_masters).toBe('auto')
     const both = wire(); both.settings.export_masters = 'on_import'; both.settings.build_export_masters = false
     expect(parseProject(both, silent).settings.export_masters).toBe('on_import')
+  })
+  it('backfills copy_media_on_import (true) on a project written before it existed; an absent MediaItem.external stays absent (reads as false)', () => {
+    const wire = serializeProject(blankProject(seededGen(), 'legacy')) as Wire & { settings: Record<string, unknown>; media_pool: Record<string, Record<string, unknown>> }
+    delete wire.settings.copy_media_on_import
+    wire.media_pool['m1'] = { ...mediaItemTemplate('m1', 'Video', 1_000_000) }
+    delete wire.media_pool['m1'].external
+    const parsed = parseProject(wire, silent)
+    expect(parsed.settings.copy_media_on_import).toBe(true)
+    expect(parsed.media_pool['m1'].external).toBeFalsy()
+  })
+  it('keeps a stored copy_media_on_import=false and external=true as written', () => {
+    const wire = serializeProject(blankProject(seededGen(), 'leave')) as Wire & { settings: Record<string, unknown>; media_pool: Record<string, Record<string, unknown>> }
+    wire.settings.copy_media_on_import = false
+    wire.media_pool['m1'] = { ...mediaItemTemplate('m1', 'Video', 1_000_000), external: true }
+    const parsed = parseProject(wire, silent)
+    expect(parsed.settings.copy_media_on_import).toBe(false)
+    expect(parsed.media_pool['m1'].external).toBe(true)
   })
   it('leaves a stored shot_review exactly as written — a default, never a repair', () => {
     const wire = serializeProject(blankProject(seededGen(), 'tuned')) as Wire & {

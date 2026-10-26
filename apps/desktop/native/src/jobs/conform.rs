@@ -299,6 +299,7 @@ mod tests {
             label: Some("source.wav".into()),
             path_abs: path,
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),

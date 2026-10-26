@@ -3,7 +3,10 @@ import { captureImportSession } from './hybrids'
 
 /** Resume the durable half of imports interrupted between probe, hash and copy.
  * Generated Cache/ sources are already workspace-owned and must not be copied
- * into Media/. Work is sequential; a large reopen cannot fan out hash readers. */
+ * into Media/. An `external` item was left where it is on purpose (the project's
+ * `copy_media_on_import` was off, or its copy was cancelled): it still finishes
+ * an interrupted hash, but is never copied. Work is sequential; a large reopen
+ * cannot fan out hash readers. */
 export async function recoverInterruptedImports(
   deps: HybridDeps,
   report: (mediaId: string, error: unknown) => void,
@@ -14,7 +17,7 @@ export async function recoverInterruptedImports(
   const normalized = (p: string) => p.replaceAll('\\', '/').replace(/\/$/, '')
   const cachePrefix = normalized(dir) + '/Cache/'
   const items = Object.values(deps.actor.snapshot().media_pool)
-    .filter(item => item.file_hash_blake3.startsWith('pending-') || item.path_rel === null)
+    .filter(item => item.file_hash_blake3.startsWith('pending-') || (item.path_rel === null && !item.external))
   for (const item of items) {
     assertCurrent()
     try {
@@ -34,7 +37,7 @@ export async function recoverInterruptedImports(
       }
       // A producer may have completed the copy while the hash was running.
       current = deps.actor.snapshot().media_pool[item.id]
-      if (current?.path_rel === null && !normalized(current.path_abs).startsWith(cachePrefix)) {
+      if (current?.path_rel === null && !current.external && !normalized(current.path_abs).startsWith(cachePrefix)) {
         await deps.enqueueWorkspaceCopy(item.id, current.path_abs)
       }
     } catch (error) {

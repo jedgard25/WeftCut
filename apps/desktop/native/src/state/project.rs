@@ -167,6 +167,12 @@ pub struct ProjectSettings {
     /// before it reaches the job layer as `jobs::ProxyPolicy::export_masters`.
     #[serde(default)]
     pub export_masters: ExportMasters,
+    /// When `false`, an import leaves the file where it is instead of copying
+    /// it into the workspace's `Media/` (the item is marked
+    /// `MediaItem::external`). **TS owns it** (`state/model.ts`); Rust mirrors
+    /// it so the field survives a round trip. Default `true`.
+    #[serde(default = "default_copy_media_on_import")]
+    pub copy_media_on_import: bool,
 }
 
 /// Twin of TS `ShotReviewSettings`: the threshold and minimum shot length a
@@ -196,6 +202,10 @@ fn default_auto_pair_audio_on_import() -> bool {
 }
 
 fn default_generate_preview_proxies() -> bool {
+    true
+}
+
+fn default_copy_media_on_import() -> bool {
     true
 }
 
@@ -252,6 +262,7 @@ impl Default for ProjectSettings {
             pause_review: None,
             generate_preview_proxies: true,
             export_masters: ExportMasters::Auto,
+            copy_media_on_import: true,
         }
     }
 }
@@ -400,5 +411,34 @@ mod role_tests {
         let m = p.role_mix(AudioRole::Dialogue);
         assert_eq!(m.gain_db, 6.0);
         assert!(m.solo);
+    }
+}
+
+#[cfg(test)]
+mod copy_media_on_import_tests {
+    use super::*;
+
+    /// A project written before the toggle existed carries no
+    /// `copy_media_on_import`; it reads as `true` (copy), upstream's behaviour
+    /// and the default TS backfills.
+    #[test]
+    fn missing_copy_media_on_import_reads_as_true() {
+        let p = Project::new_blank("t");
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("copy_media_on_import");
+        let back: Project = serde_json::from_value(v).unwrap();
+        assert!(back.settings.copy_media_on_import);
+    }
+
+    #[test]
+    fn copy_media_on_import_round_trips_false() {
+        let mut p = Project::new_blank("t");
+        p.settings.copy_media_on_import = false;
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert!(!back.settings.copy_media_on_import);
     }
 }

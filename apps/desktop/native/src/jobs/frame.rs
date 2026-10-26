@@ -176,6 +176,7 @@ mod tests {
             label: None,
             path_abs: video,
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(2_000_000),
@@ -220,6 +221,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("nope.mp4"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata::default(),
             decode_route: DecodeRoute::Bypass,
@@ -245,6 +247,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("nope.wav"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata::default(),
             decode_route: DecodeRoute::Bypass,

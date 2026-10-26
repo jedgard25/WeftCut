@@ -647,6 +647,7 @@
       "label": null,
       "path_abs": "/ws/Schema v2 fixture.vproj/Media/clip.mp4",
       "path_rel": "Media/clip.mp4",
+      "external": false,
       "kind": "Video",
       "metadata": {
         "duration_us": 5000000,
@@ -692,6 +693,7 @@
     },
     "generate_preview_proxies": true,
     "export_masters": "auto",
+    "copy_media_on_import": true,
     "shot_review": null,
     "pause_review": null
   }

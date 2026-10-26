@@ -43,7 +43,7 @@ import { applyDeleteTrack, applyMoveTrack, applyRenameTrack } from './mutations/
 import { applyAddEffect, applyUpdateEffect, applyMoveEffect, applyRemoveEffect, type EffectPatch } from './mutations/effects'
 import { applyAddTransition, applyRemoveTransition, applyUpdateTransition, type TransitionBounce } from './mutations/transitions'
 import { videoClipParams, audioParams, imageOverlayParams, mediaExtent, applySeparateAudio, mediaItemTemplate,
-  applySetMediaDerivatives, applySetMediaWorkspacePaths, applySetMediaHash, referencingLayers,
+  applySetMediaDerivatives, applySetMediaWorkspacePaths, applySetMediaHash, applySetMediaExternal, applyRelinkMedia, referencingLayers,
   type MediaDerivativesPatch, type WorkspacePaths } from './mutations/media'
 import type { MediaItem } from './model'
 import { applyUpdateLayerParams, applyUpdateLayerParamTrack, type LayerParamsPatch } from './mutations/params'
@@ -794,6 +794,20 @@ export function createActor(opts: ActorOptions): ActorHandle {
     history.replaceMediaPoolEverywhere(nextPool)
     broadcastUnrecorded('Updated media hash', current())
   }
+  // ── set_media_external — UNRECORDED. The durable "leave this file where it is"
+  //    marker (cancelled copy); a fact about where the bytes live, not an edit, so
+  //    it survives undo. MediaNotFound first; refused once the copy has landed. ──
+  function setMediaExternal(id: Uuid, external: boolean): void {
+    opts.assertWritable?.()
+    const nextPool = applySetMediaExternal(current().media_pool, id, external)
+    history.replaceMediaPoolEverywhere(nextPool)
+    broadcastUnrecorded('Updated media location', current())
+  }
+  // ── relink_media — RECORDED (undoable). The user located an external item's
+  //    file; the hybrid has already proved its hash equals the item's. ──
+  function relinkMedia(id: Uuid, pathAbs: string): void {
+    commit(HISTORY_SUMMARY.mediaLocate, [], { kind: 'Coarse' }, (d) => applyRelinkMedia(d, id, pathAbs))
+  }
   // ── remove_media — HYBRID. MediaNotFound → MediaInUse
   //    (when referenced && !force) → unused path (validate probe BEFORE broadcast,
   //    durable, 1 broadcast id) | force-cascade (applyDeleteLayer per referencing
@@ -851,6 +865,7 @@ export function createActor(opts: ActorOptions): ActorHandle {
     prefer_proxies?: boolean | null
     generate_preview_proxies?: boolean | null
     export_masters?: ExportMasters | null
+    copy_media_on_import?: boolean | null
     proxy_override?: { media_id: string; value: boolean | null } | null
     shot_review?: { sensitivity: number; min_shot_us: number } | null
     pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null
@@ -896,6 +911,7 @@ export function createActor(opts: ActorOptions): ActorHandle {
     }
     if (typeof patch.prefer_proxies === 'boolean') next.prefer_proxies = patch.prefer_proxies
     if (typeof patch.generate_preview_proxies === 'boolean') next.generate_preview_proxies = patch.generate_preview_proxies
+    if (typeof patch.copy_media_on_import === 'boolean') next.copy_media_on_import = patch.copy_media_on_import
     if (patch.export_masters != null) {
       if (!isExportMasters(patch.export_masters)) throw new CommandFailure({ error: 'InvalidArgument', field: 'export_masters', detail: `expected one of ${EXPORT_MASTERS.join(', ')}` })
       next.export_masters = patch.export_masters
@@ -1485,10 +1501,12 @@ export function createActor(opts: ActorOptions): ActorHandle {
         case 'set_media_derivatives': setMediaDerivatives(a.media as Uuid, a.patch as MediaDerivativesPatch); return { ok: true, value: null }
         case 'set_media_workspace_paths': setMediaWorkspacePaths(a.media as Uuid, a.paths as WorkspacePaths); return { ok: true, value: null }
         case 'set_media_hash': setMediaHash(a.media as Uuid, a.file_hash_blake3 as string); return { ok: true, value: null }
+        case 'set_media_external': setMediaExternal(a.media as Uuid, a.external as boolean); return { ok: true, value: null }
+        case 'relink_media': relinkMedia(a.media as Uuid, a.path_abs as string); return { ok: true, value: null }
         case 'remove_media': removeMedia(a.media as Uuid, (a.force as boolean) ?? false); return { ok: true, value: null }
         case 'set_role_gain': setRoleGain(a.role as string, parseNum(a.gain_db, 'gain_db')); return { ok: true, value: null }
         case 'update_role_flags': updateRoleFlags(a.role as string, a.patch as RoleFlagsPatch); return { ok: true, value: null }
-        case 'update_project_settings': updateProjectSettings(a.patch as { correction_script?: string; auto_pair_audio_on_import?: boolean | null; prefer_proxies?: boolean | null; generate_preview_proxies?: boolean | null; export_masters?: ExportMasters | null; proxy_override?: { media_id: string; value: boolean | null } | null; shot_review?: { sensitivity: number; min_shot_us: number } | null; pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null }); return { ok: true, value: null }
+        case 'update_project_settings': updateProjectSettings(a.patch as { correction_script?: string; auto_pair_audio_on_import?: boolean | null; prefer_proxies?: boolean | null; generate_preview_proxies?: boolean | null; export_masters?: ExportMasters | null; copy_media_on_import?: boolean | null; proxy_override?: { media_id: string; value: boolean | null } | null; shot_review?: { sensitivity: number; min_shot_us: number } | null; pause_review?: { threshold_amp: number; min_pause_us: number; pad_us: number } | null }); return { ok: true, value: null }
         case 'add_caption_track': { const comp = compositionArg(a); return { ok: true, value: commit(HISTORY_SUMMARY.trackAddCaption, trackRef, { kind: 'Coarse' }, (d) => applyAddCaptionTrack(d, idGen, a.cues as Cue[], a.comp_w as number, a.comp_h as number, (a.label as string) ?? null, comp)) } }
         case 'set_correction_script': {
           if (a.project_id !== current().project_id) throw new CommandFailure({ error: 'InvalidArgument', field: 'project_id', detail: 'The project has changed' })

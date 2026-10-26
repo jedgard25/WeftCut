@@ -35,6 +35,7 @@ pub fn media_item_from_metadata(
         label,
         path_abs: source_buf,
         path_rel: None,
+        external: false,
         kind,
         metadata,
         // A fresh import's route is UNDECIDED — the real codec-based decision runs
@@ -572,6 +573,7 @@ mod mirror_tests {
             label: None,
             path_abs: std::path::PathBuf::from("/nonexistent"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata::default(),
             decode_route: DecodeRoute::Bypass,
@@ -754,6 +756,7 @@ mod mirror_tests {
             label: None,
             path_abs,
             path_rel: None,
+            external: false,
             kind,
             metadata: MediaMetadata::default(),
             decode_route,

@@ -40,6 +40,19 @@ describe("proxyPreferenceStore", () => {
     unwire();
   });
 
+  it("hydrates copyMediaOnImport from the project settings, defaulting to true", async () => {
+    getProjectSettings.mockResolvedValue({ prefer_proxies: false, copy_media_on_import: false, proxy_overrides: {} });
+    useProjectStore.setState({ summary: summaryWithId("p3"), ready: true });
+    const unwire = wireProxyPrefStore();
+    await vi.waitFor(() => expect(useProxyPrefStore.getState().copyMediaOnImport).toBe(false));
+    unwire();
+    getProjectSettings.mockResolvedValue({ prefer_proxies: false, proxy_overrides: {} });
+    useProjectStore.setState({ summary: summaryWithId("p4"), ready: true });
+    const again = wireProxyPrefStore();
+    await vi.waitFor(() => expect(useProxyPrefStore.getState().copyMediaOnImport).toBe(true));
+    again();
+  });
+
   it("proxyIntent follows the global toggle when no override is set", () => {
     useProxyPrefStore.setState({ preferProxies: true, overrides: {} });
     expect(proxyIntent("m1")).toBe(true);

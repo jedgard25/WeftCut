@@ -336,7 +336,8 @@ struct MediaItem {
     id: MediaId,
     label: Option<String>,
     path_abs: PathBuf,                // computed at load = workspace.join(path_rel)
-    path_rel: Option<PathBuf>,        // authoritative; relative to workspace root
+    path_rel: Option<PathBuf>,        // authoritative; relative to workspace root; None = copy pending OR external
+    external: bool,                   // lives outside the project on purpose (serde default false); see below
     kind: MediaKind,                  // Video | Audio | Image (subtitle files are consumed at import)
     metadata: MediaMetadata,
     decode_route: DecodeRoute,        // where preview and export each read their pixels; see below
@@ -373,6 +374,10 @@ enum DecodeRoute {
     },
 }
 ```
+
+`external` marks a file the project deliberately leaves where it is: `copy_media_on_import` was off when it was imported, or the user cancelled its workspace copy from the media pool. Its `path_abs` is then authoritative (it is never rewritten from `path_rel`, which stays `None`), and no workspace copy is ever queued for it. This is the field that tells "lives outside the project" from "copy still pending" — both have `path_rel: None`, and reopening resumes the second but never the first (`recoverInterruptedImports` still finishes an external item's interrupted hash, then stops). A missing external file shows the usual missing badge; the pool's *Locate…* action re-points `path_abs` at a replacement as one recorded edit (`relink_media`), and only after the replacement hashes to the item's `file_hash_blake3` — a file with different content is refused, because every derivative, transcript and cache is keyed on that hash. See [ADR 0145](adr/0145-a-project-can-leave-media-where-it-is.md).
+
+The per-project setting `ProjectSettings.copy_media_on_import` (default `true`, additive with a serde default) chooses which of the two an import produces. Subtitle documents never become pool items, and an SVG's rasterized PNG (written to the app's cache, not the user's file) is always copied.
 
 `path_rel` is the on-disk anchor (workspace-relative, e.g. `Media/clip.mp4`). On load, `io::load_from_dir` rewrites `path_abs = workspace.join(path_rel)` so workspace moves between machines don't break references. `path_abs` is the in-memory convenience path consumed by the IR compiler + background jobs. If `path_rel` is missing (legacy v1 project before migration) or the resolved file doesn't exist, the pool item gets a "missing media" badge — the project still loads.
 
@@ -1289,7 +1294,7 @@ golden fixture. See [`mcp.md`](mcp.md).
 
 ## On-disk format: workspace folder
 
-The workspace folder *is* the project. Opening a workspace folder = opening the project; zipping the folder = backing up the project. Originals get copied in on import so the bundle is self-contained.
+The workspace folder *is* the project. Opening a workspace folder = opening the project; zipping the folder = backing up the project. Originals get copied in on import so the bundle is self-contained — unless the project sets `copy_media_on_import` off, in which case its imports are `external` and stay where they were: the folder then holds the project and its derivatives but not those originals, and moving or zipping it needs them at the same absolute paths (ADR 0145).
 
 ```
 <workspace>/
@@ -1312,7 +1317,7 @@ The workspace folder *is* the project. Opening a workspace folder = opening the 
 └── Renders/                  ← export outputs default here
 ```
 
-**Authoritative path is `MediaItem.path_rel`** (relative to the workspace root). At load time `io::load_from_dir` rewrites `path_abs` as `workspace.join(path_rel)` so moving the workspace folder between machines doesn't break references. `path_abs` is kept in the struct as a convenience for the IR compiler + jobs that read media by absolute path.
+**Authoritative path is `MediaItem.path_rel`** (relative to the workspace root), except for an `external` item, whose absolute `path_abs` is authoritative and is kept verbatim on load. At load time `io::load_from_dir` rewrites `path_abs` as `workspace.join(path_rel)` so moving the workspace folder between machines doesn't break references. `path_abs` is kept in the struct as a convenience for the IR compiler + jobs that read media by absolute path.
 
 `Backups/` rolls every 50 commits or 5 minutes (whichever first), retains the 20 most recent. `project_save_as` is gone in favor of the auto-save subscriber; Cmd-S is a force-flush hook reserved for future UI. The save model is "the folder is the truth" — closing the app loses nothing.
 

@@ -201,6 +201,7 @@ mod tests {
             label: None,
             path_abs: path,
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(duration_us),

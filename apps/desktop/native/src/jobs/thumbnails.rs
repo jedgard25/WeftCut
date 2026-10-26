@@ -467,6 +467,7 @@ mod tests {
             label: Some("source.mp4".into()),
             path_abs: video,
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),
@@ -519,6 +520,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("nope.mp4"), // never read because cache hits
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(1_000_000),
@@ -551,6 +553,7 @@ mod tests {
             label: None,
             path_abs: tmp.path().join("tiny.mp4"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Video,
             metadata: MediaMetadata {
                 duration_us: Some(50_000), // 50ms — below MIN_DURATION_US

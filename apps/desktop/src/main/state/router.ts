@@ -49,6 +49,10 @@ export type Route =
  *  Either caller lands the same single commit; the MCP path differs only in
  *  wrapping the string result as a `ToolResult` text block (server.ts).
  *
+ *  `locate_media` is the same split for an external item whose file went
+ *  missing: Rust hashes the picked file, the TS actor re-points the item as one
+ *  recorded edit when the hash matches. Renderer-only — an agent re-imports.
+ *
  *  `mark_pauses` is the same split one capability over: Rust reads the
  *  waveform peaks through `detect_pauses`, the TS actor lands one region
  *  marker per pause in a single commit. Renderer-only for
@@ -62,7 +66,7 @@ export type Route =
  *  channel serves the very same arm. */
 export const HYBRID_CHANNELS: ReadonlySet<string> = new Set([
   'import_media', 'drop_shot_markers', 'apply_shot_cuts', 'mark_pauses',
-  'remove_pauses', 'apply_subtitles', 'synthesize_speech',
+  'remove_pauses', 'apply_subtitles', 'synthesize_speech', 'locate_media',
 ])
 
 /** Read-only channels whose Rust entry point is a direct napi method (or the

@@ -484,6 +484,7 @@ mod tests {
             label: None,
             path_abs: dir.path().join("source.wav"),
             path_rel: None,
+            external: false,
             kind: MediaKind::Audio,
             metadata: MediaMetadata {
                 duration_us: Some(990_000),

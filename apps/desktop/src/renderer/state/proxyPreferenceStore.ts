@@ -1,6 +1,6 @@
 // Renderer mirror of the proxy-preference ProjectSettings fields
 // (prefer_proxies + proxy_overrides + generate_preview_proxies +
-// export_masters). PixiPreview reads it live per
+// export_masters + copy_media_on_import). PixiPreview reads it live per
 // ensureClip; the UI subscribes via atomic selectors. Setters write
 // through the unrecorded update_project_settings mutation, then update
 // the store optimistically (updateProjectSettings returns void). Follows
@@ -20,11 +20,15 @@ interface ProxyPrefState {
   /// When a proxied source's export master is built. Mirrors
   /// `ProjectSettings.export_masters`.
   exportMasters: ExportMasters;
+  /// When false, an import leaves the file where it is instead of copying it
+  /// into the project. Mirrors `ProjectSettings.copy_media_on_import`.
+  copyMediaOnImport: boolean;
   overrides: Record<string, boolean>;
   hydrate: (v: {
     preferProxies: boolean;
     generatePreviewProxies: boolean;
     exportMasters: ExportMasters;
+    copyMediaOnImport: boolean;
     overrides: Record<string, boolean>;
   }) => void;
 }
@@ -33,12 +37,14 @@ export const useProxyPrefStore = create<ProxyPrefState>((set) => ({
   preferProxies: false,
   generatePreviewProxies: true,
   exportMasters: "auto",
+  copyMediaOnImport: true,
   overrides: {},
   hydrate: (v) =>
     set({
       preferProxies: v.preferProxies,
       generatePreviewProxies: v.generatePreviewProxies,
       exportMasters: v.exportMasters,
+      copyMediaOnImport: v.copyMediaOnImport,
       overrides: v.overrides,
     }),
 }));
@@ -64,6 +70,11 @@ export async function setExportMasters(v: ExportMasters): Promise<void> {
   useProxyPrefStore.setState({ exportMasters: v });
 }
 
+export async function setCopyMediaOnImport(v: boolean): Promise<void> {
+  await updateProjectSettings({ copy_media_on_import: v });
+  useProxyPrefStore.setState({ copyMediaOnImport: v });
+}
+
 export async function setProxyOverride(mediaId: string, value: boolean | null): Promise<void> {
   await updateProjectSettings({ proxy_override: { media_id: mediaId, value } });
   useProxyPrefStore.setState((s) => {
@@ -81,6 +92,7 @@ async function rehydrate(): Promise<void> {
       preferProxies: v.prefer_proxies,
       generatePreviewProxies: v.generate_preview_proxies,
       exportMasters: v.export_masters ?? "auto",
+      copyMediaOnImport: v.copy_media_on_import ?? true,
       overrides: v.proxy_overrides,
     });
   } catch {

@@ -153,7 +153,7 @@ function row(
 function settings(
   shot_review: ProjectSettingsView["shot_review"],
 ): ProjectSettingsView {
-  return { prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: "auto", shot_review, pause_review: null };
+  return { prefer_proxies: false, proxy_overrides: {}, generate_preview_proxies: true, export_masters: "auto", copy_media_on_import: true, shot_review, pause_review: null };
 }
 
 /// The arguments of the most recent reduce — the one place a parameter change
