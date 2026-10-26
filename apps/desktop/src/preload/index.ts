@@ -362,6 +362,46 @@ const api: WeftcutApi = {
 // Populated once per slot at open by pairing the receiver callbacks (which carry
 // no slot id) to `previewGpu:slot` announces in FIFO order.
 const importedByKey = new Map<string, SharedTextureImported>()
+/// Dynamic macOS slots are announced at frame time, after the renderer is
+/// already live. A frame can therefore arrive a few IPC hops before its
+/// import does; the frameReady handler waits on this registry rather than
+/// dropping that frame.
+const slotImportWaiters = new Map<string, Array<(imp: SharedTextureImported | undefined) => void>>()
+function waitForSlotImport(key: string, timeoutMs: number): Promise<SharedTextureImported | undefined> {
+  const existing = importedByKey.get(key)
+  if (existing) return Promise.resolve(existing)
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (imp: SharedTextureImported | undefined) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      const list = slotImportWaiters.get(key)
+      if (list) {
+        const i = list.indexOf(finish)
+        if (i >= 0) list.splice(i, 1)
+        if (list.length === 0) slotImportWaiters.delete(key)
+      }
+      resolve(imp)
+    }
+    const timer = setTimeout(() => finish(undefined), timeoutMs)
+    const list = slotImportWaiters.get(key)
+    if (list) list.push(finish)
+    else slotImportWaiters.set(key, [finish])
+  })
+}
+function resolveSlotWaiters(key: string, imp: SharedTextureImported | undefined): void {
+  const list = slotImportWaiters.get(key)
+  if (!list) return
+  slotImportWaiters.delete(key)
+  for (const waiter of [...list]) waiter(imp)
+}
+function resolveStreamSlotWaiters(streamId: string): void {
+  const prefix = `${streamId}:`
+  for (const key of [...slotImportWaiters.keys()]) {
+    if (key.startsWith(prefix)) resolveSlotWaiters(key, undefined)
+  }
+}
 let importsClosed = false
 // A document reload destroys this preload without closing its WebContents.
 // Electron's imported textures need an explicit release before that context
@@ -373,6 +413,7 @@ window.addEventListener('pagehide', () => {
   }
   importedByKey.clear()
   announceQueue.length = 0
+  for (const key of [...slotImportWaiters.keys()]) resolveSlotWaiters(key, undefined)
 })
 ipcRenderer.on('evt:motifGpu:close', (_e, { key }: { key: string }) => {
   importedByKey.get(`${key}:0`)?.release()
@@ -442,6 +483,9 @@ const barrierModeByStream = new Map<string, HwBarrierMode>()
 // sequential await is enough, no try/finally required.
 async function closePreviewGpuStream(streamId: string): Promise<void> {
   const prefix = `${streamId}:`
+  // Wake frame handlers waiting for a dynamic slot: the session is closing, so
+  // the correct outcome is "no import", not a 500 ms stall.
+  resolveStreamSlotWaiters(streamId)
   for (const [key, imp] of importedByKey) {
     if (key.startsWith(prefix)) {
       imp.release()
@@ -502,7 +546,9 @@ ipcRenderer.on('evt:previewGpu:barrier', (_e, { streamId, mode }: { streamId: st
 sharedTexture.setSharedTextureReceiver(async (data) => {
   const a = announceQueue.shift()
   if (a && !importsClosed) {
-    importedByKey.set(`${a.streamId}:${a.slot}`, data.importedSharedTexture)
+    const key = `${a.streamId}:${a.slot}`
+    importedByKey.set(key, data.importedSharedTexture)
+    resolveSlotWaiters(key, data.importedSharedTexture)
   } else {
     try { data.importedSharedTexture.release() } catch { /* already torn down */ }
   }
@@ -853,15 +899,18 @@ ipcRenderer.on(
     // Free: a frame arriving IS the wake-up the pending acks were waiting for,
     // and doing it here costs no scheduling. The pump only covers the gaps.
     drainFenceAcks()
-    const imp = importedByKey.get(`${streamId}:${slot}`)
-    // Snapshot the port into a const so its non-null narrowing survives the await
-    // below (a fresh Map read after the await could see a closed session).
-    const port = portByStream.get(streamId)
+    const slotKey = `${streamId}:${slot}`
     // No port = the session is closed or mid-close (closePreviewGpuStream drops
     // the port + imports BEFORE awaiting main's close, exactly so a late poke
     // short-circuits here). Stay silent: acking into a mid-closing session is
     // what that ordering exists to avoid, and native is being torn down anyway.
+    const port = portByStream.get(streamId)
     if (!port) return
+    // macOS announces an IOSurface on first sight, so this frame's import may
+    // still be in flight. Wait briefly; if the session closes meanwhile, the
+    // port is dropped and we must not ack into it.
+    const imp = importedByKey.get(slotKey) ?? await waitForSlotImport(slotKey, 500)
+    if (!portByStream.get(streamId)) return
     // Port but no import = a LIVE session whose slot never got paired (see
     // announceQueue). Nothing was read out of the slot, so native still owns it —
     // but we must ack or it is stranded until native's finite AcquireSync times

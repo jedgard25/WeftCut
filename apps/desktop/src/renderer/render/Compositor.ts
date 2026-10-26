@@ -34,6 +34,7 @@ import {
 } from "./decoder/previewDecodePriority";
 import { MotifFrameService } from "./motifs/MotifFrameService";
 import { useAppSettingsStore } from "../settings/appSettingsStore";
+import { rendererOS } from "../platform";
 import { Nv12Ingest } from "./nv12/Nv12Ingest";
 import { TenBitIngest } from "./tenbit/TenBitIngest";
 import { loadBundledFontBytes } from "./fonts/registry";
@@ -425,6 +426,12 @@ export class Compositor {
   /// (1 | 2 | 4). Pure passthrough — the pool owns both the value and the
   /// in-place transport re-open. Optional-chained because the export pool has
   /// no such method (export always decodes full size).
+  /// macOS-only feature flag. No-op in export and off-platform.
+  setSharedTextureDecode(enabled: boolean): void {
+    if (this.mode !== "preview" || rendererOS !== "mac") return;
+    this.pool.setSharedTextureDecode?.(enabled);
+  }
+
   setPlaybackScaleDiv(div: number): void {
     this.pool.setPlaybackScaleDiv?.(div);
   }

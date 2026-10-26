@@ -576,6 +576,52 @@ describe("FfmpegSource — I420P10 profile for a 10-bit source on the videotoolb
   });
 });
 
+describe("FfmpegSource — macOS shared-texture feature flag", () => {
+  const vtSource = (preferSharedTexture: boolean) => {
+    const gpu = fakeTransport();
+    const sw = fakeTransport();
+    const src = new FfmpegSource(
+      {
+        layerId: "vt",
+        mediaId: "m-vt",
+        sourcePath: "clip.mov",
+        codec: "h264",
+        pixFmt: "yuv420p",
+        width: 1920,
+        height: 1080,
+        componentAvailable: true,
+        preferSharedTexture,
+      },
+      {
+        makeGpu: () => gpu.t,
+        makeSw: () => sw.t,
+        pickLane: async () => ({ lane: "hardware" as const, hwLane: "videotoolbox", device: null }),
+      },
+    );
+    return { src, gpu, sw };
+  };
+
+  it("routes a videotoolbox lane through the shared-texture transport when enabled", async () => {
+    const { src, gpu, sw } = vtSource(true);
+    try {
+      await src.ensureReady();
+      expect(gpu.t.open).toHaveBeenCalledOnce();
+      expect(sw.t.open).not.toHaveBeenCalled();
+      expect(src.currentLane()).toBe("hardware");
+      expect(src.currentHwLane()).toBe("videotoolbox");
+    } finally { await src.disposeAndWait(); }
+  });
+
+  it("keeps the copy-back transport when the flag is off", async () => {
+    const { src, gpu, sw } = vtSource(false);
+    try {
+      await src.ensureReady();
+      expect(gpu.t.open).not.toHaveBeenCalled();
+      expect(sw.t.open).toHaveBeenCalledOnce();
+    } finally { await src.disposeAndWait(); }
+  });
+});
+
 describe("FfmpegSource — HW open failure: capacity vs capability", () => {
   // Locks the capacity/capability split: only a CAPABILITY failure may reach
   // `markHwUnusable` — see the LANDMINE in FfmpegSource.ts for why.

@@ -31,17 +31,29 @@ import {
 } from './previewGpuBudget.js'
 
 interface GpuSession {
-  // One imported texture per pool slot, indexed by the slot number the native
-  // side names in frameReady{slot}. Held for the session's lifetime and NEVER
-  // released mid-session — releasing would tear down the shared textures the
-  // decode thread keeps writing into. Released only in closePreviewGpu.
-  imported: SharedTextureImported[]
+  // One imported texture per shared slot, keyed by the slot number the native
+  // side names in frameReady{slot}. Windows pre-imports the whole pool at open;
+  // macOS announces each IOSurface on first sight. Held for the session's
+  // lifetime and NEVER released mid-session — releasing would tear down the
+  // shared textures the decode thread keeps writing into. Released only in
+  // closePreviewGpu.
+  imported: Map<number, SharedTextureImported>
   width: number
   height: number
   budgetLease: PreviewGpuBudgetLease
   bufferLifetime: ReturnType<typeof retainGpuBufferLease>
   releaseDecoder: () => void
   adapter: PreviewGpuAdapter | null
+  /// The renderer that owns this session's preload receiver. Dynamic macOS
+  /// slots announce/import/send through it after open.
+  win: BrowserWindow
+  /// Import tag for every slot. Windows: sRGB passthrough over native RGBA.
+  /// macOS: the source's real colorimetry over NV12/P010 — Chromium's
+  /// createImageBitmap is the color-correct reference for these (POC Result 7).
+  colorSpace: ColorSpace
+  /// Bytes per pixel of one slot, for the VRAM diagnostic: RGBA8 on Windows,
+  /// NV12/P010 on macOS.
+  bytesPerPixel: number
 }
 
 const sessions = new Map<string, GpuSession>()
@@ -73,7 +85,7 @@ const previewGpuBudget = createPreviewGpuBudget(performanceSettings, gpuBufferBu
 /// prevent the remaining imports from releasing. Admission release is owned by
 /// each caller's surrounding `finally`, so this helper never touches the lease.
 function releaseImports(
-  imported: readonly SharedTextureImported[],
+  imported: Iterable<SharedTextureImported>,
   streamId: string,
   phase: 'rollback' | 'close',
 ): void {
@@ -129,8 +141,12 @@ export function hwSessionCount(): number {
 /// buffer budget separately retains credits for retired imports and Motif pools.
 export function hwBudget(): PreviewGpuBudgetSnapshot {
   let usedBytes = 0
-  for (const s of sessions.values()) usedBytes += s.width * s.height * 4 * s.imported.length
-  return { ...previewGpuBudget.snapshot(), slotVram: { usedBytes, bytesPerPixel: 4 } }
+  let bytesPerPixel = 4
+  for (const s of sessions.values()) {
+    usedBytes += s.width * s.height * s.bytesPerPixel * s.imported.size
+    bytesPerPixel = s.bytesPerPixel
+  }
+  return { ...previewGpuBudget.snapshot(), slotVram: { usedBytes, bytesPerPixel } }
 }
 
 /// Tail of the open-serialisation chain. `openPreviewGpu` awaits inside its
@@ -186,14 +202,19 @@ async function doOpenPreviewGpu(
   // Reserve FIRST — before the barrier latch and before any native allocation.
   // Invalid/missing dimensions fail closed in the same transient capacity class:
   // a stale probe must never let main under-count decode load.
+  // macOS shares decoder-owned IOSurfaces (NV12/P010), not pool-allocated
+  // RGBA, and the native VT session is already charged through the shared
+  // resource ledger. Charge the buffer budget one surface, not a nonexistent
+  // RGBA pool, or 4K would be refused for a pool that was never allocated.
+  const budgetPoolSize = process.platform === 'darwin' ? 1 : poolSize
   const budgetLease = previewGpuBudget.reserve(streamId, {
     width: codedWidth,
     height: codedHeight,
-  }, poolSize)
+  }, budgetPoolSize)
   if (!budgetLease) throw new Error(HW_BUDGET_EXCEEDED)
   const bufferLifetime = retainGpuBufferLease(gpuBufferBudget, budgetLease.bufferLease)
   let releaseDecoder = () => {}
-  const imported: SharedTextureImported[] = []
+  const imported = new Map<number, SharedTextureImported>()
   let nativeOpened = false
   try {
     releaseDecoder = reserveResources(0, 64 + codedWidth * codedHeight * 24 / 1048576)
@@ -263,7 +284,7 @@ async function doOpenPreviewGpu(
       // reference from the moment it returns, per Electron docs) — BEFORE the
       // fallible send below, so the catch's release loop covers this slot too
       // if sendSharedTexture throws.
-      imported.push(imp)
+      imported.set(k, imp)
       // sendSharedTexture has its own internal timeout (~1000ms) and can reject.
       await sharedTexture.sendSharedTexture({ frame: win.webContents.mainFrame, importedSharedTexture: imp })
     }
@@ -275,6 +296,11 @@ async function doOpenPreviewGpu(
       bufferLifetime,
       releaseDecoder,
       adapter: info.adapter ?? null,
+      win,
+      colorSpace,
+      // Windows pre-imports native-converted RGBA8; macOS shares NV12 (1.5
+      // bytes/pixel) and upgrades to P010's 3 in the dynamic-slot path.
+      bytesPerPixel: process.platform === 'darwin' ? 1.5 : 4,
     })
     return {
       width: info.width,
@@ -296,7 +322,7 @@ async function doOpenPreviewGpu(
       }
     }
     try {
-      releaseImports(imported, streamId, 'rollback')
+      releaseImports(imported.values(), streamId, 'rollback')
     } finally {
       // A texture release may itself fail. Admission must still roll back or a
       // single partial open can permanently leak capacity.
@@ -306,6 +332,72 @@ async function doOpenPreviewGpu(
     }
     throw err
   }
+}
+
+export interface PreviewGpuSlotInfo {
+  streamId: string
+  slot: number
+  /// Hex of the native-endian IOSurfaceRef / NT-handle value.
+  handle: string
+  width: number
+  height: number
+  pixelFormat: 'nv12' | 'p010le' | 'rgba' | 'bgra' | 'rgbaf16'
+  fullRange: boolean
+}
+
+/// macOS: import one newly seen VideoToolbox IOSurface. Called from the
+/// `previewGpu:slotInfo` event before that surface's first frameReady reaches
+/// the renderer. The announce → import → send trio runs under the same global
+/// queue as opens, because the preload pairs announces to receiver callbacks
+/// through ONE FIFO.
+export function importPreviewGpuSlot(payload: PreviewGpuSlotInfo): Promise<void> {
+  return withSharedTextureQueue(async () => {
+    const session = sessions.get(payload.streamId)
+    if (!session) return
+    if (session.imported.has(payload.slot)) return
+    const releaseReference = session.bufferLifetime.reference()
+    let imp: SharedTextureImported
+    try {
+      imp = sharedTexture.importSharedTexture({
+        textureInfo: {
+          codedSize: { width: payload.width, height: payload.height },
+          visibleRect: { x: 0, y: 0, width: payload.width, height: payload.height },
+          pixelFormat: payload.pixelFormat,
+          colorSpace: session.colorSpace,
+          timestamp: 0,
+          handle: { ioSurface: Buffer.from(payload.handle, 'hex') },
+        },
+        allReferencesReleased: releaseReference,
+      })
+    } catch (error) {
+      releaseReference()
+      throw error
+    }
+    // A close can land while the import was resolving. If the session is gone,
+    // release this import instead of sending a texture no renderer owns.
+    if (sessions.get(payload.streamId) !== session) {
+      try { imp.release() } catch { /* already gone */ }
+      releaseReference()
+      return
+    }
+    session.imported.set(payload.slot, imp)
+    session.bytesPerPixel = payload.pixelFormat === 'p010le' ? 3 : 1.5
+    session.win.webContents.send('evt:previewGpu:slot', {
+      streamId: payload.streamId,
+      slot: payload.slot,
+    })
+    try {
+      await sharedTexture.sendSharedTexture({
+        frame: session.win.webContents.mainFrame,
+        importedSharedTexture: imp,
+      })
+    } catch (error) {
+      session.imported.delete(payload.slot)
+      try { imp.release() } catch { /* already gone */ }
+      releaseReference()
+      throw error
+    }
+  })
 }
 
 /// Move the session's decode anchor. targetUs is source microseconds; the addon
@@ -351,7 +443,7 @@ export function closePreviewGpu(backend: NativeDecode, streamId: string): void {
     backend.previewGpuClose(streamId)
   } finally {
     try {
-      releaseImports(session.imported, streamId, 'close')
+      releaseImports(session.imported.values(), streamId, 'close')
     } finally {
       previewGpuBudget.release(session.budgetLease, true)
       session.bufferLifetime.retire()

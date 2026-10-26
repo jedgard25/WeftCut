@@ -201,6 +201,13 @@ export interface ActiveClipProbe {
   /// lane-parameterized preview-hw conformance spec asserts this to prove WHICH
   /// HW lane engaged.
   hwLane: string | null;
+  /// True when the active hardware source shares GPU surfaces instead of
+  /// copying NV12 bytes back (Windows d3d11va; macOS VideoToolbox with the
+  /// shared-texture flag). False on software/copy-back/WebCodecs. E2E-only.
+  sharedTextureTransport: boolean;
+  /// Whether the source was constructed with the macOS shared-texture flag.
+  /// E2E-only diagnostic: false means the feature flag never reached the pool.
+  sharedTextureRequested: boolean;
   /// The resolver IDENTITY (`${engine}:${source}:${target}`) the active clip's
   /// source was built from — see `ActiveClip.builtFromKey`. Lets the decode-
   /// engine e2e spec assert the resolved ENGINE/SOURCE (the two
@@ -968,6 +975,8 @@ export class CompositionNode {
       boundFrameSourceKey: clip.boundFrameSourceKey,
       boundFrameKind: clip.boundFrameKind,
       hwLane: s instanceof FfmpegSource ? s.currentHwLane() : null,
+      sharedTextureTransport: s instanceof FfmpegSource ? s.isSharedTextureTransport() : false,
+      sharedTextureRequested: s instanceof FfmpegSource ? s.sharedTextureRequested() : false,
       builtFromKey: clip.builtFromKey,
     };
   }

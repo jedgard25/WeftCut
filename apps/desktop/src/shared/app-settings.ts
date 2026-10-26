@@ -90,6 +90,13 @@ export interface AppSettings {
   /// 12.44 MB per frame. Preview only — export always decodes full size.
   /// App-level, like `decode_engine`: it describes THIS machine's headroom.
   playback_resolution: PlaybackResolution;
+  /// macOS only, default off: preview VideoToolbox frames by importing the
+  /// decoder's IOSurface into Electron as a `VideoFrame` (Electron
+  /// `sharedTexture`), instead of copying NV12 bytes to the CPU. No CPU frame
+  /// copies and no per-frame pixel IPC. Falls back to the copy-back lane when
+  /// the import or the session fails. Machine-level because it depends on this
+  /// machine's GPU/Chromium build; it changes no pixel of an export.
+  experimental_macos_shared_texture: boolean;
   /// Media-pool card arrangement (see MediaPoolLayout). App-level: it's a
   /// browsing preference of this user, not a property of any project.
   media_pool_layout: MediaPoolLayout;
@@ -174,6 +181,7 @@ export interface AppSettingsPatch {
   preview_effects_enabled?: boolean;
   decode_engine?: "auto" | "ffmpeg" | "webcodecs";
   playback_resolution?: PlaybackResolution;
+  experimental_macos_shared_texture?: boolean;
   media_pool_layout?: MediaPoolLayout;
   timeline_wheel_axis?: TimelineWheelAxis;
   timeline_follow_playhead?: boolean;
@@ -218,6 +226,7 @@ export const APP_SETTINGS_DEFAULTS: AppSettings = {
   prebake_motifs: false,
   preview_effects_enabled: true,
   decode_engine: "auto",
+  experimental_macos_shared_texture: false,
   playback_resolution: "full",
   media_pool_layout: "large",
   // Horizontal, matching Premiere's `Timeline Mouse Scrolling` default and

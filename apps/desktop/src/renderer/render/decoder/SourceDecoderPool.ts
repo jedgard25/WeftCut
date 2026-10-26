@@ -623,6 +623,8 @@ export class SourceDecoderPool {
   /// app setting. `SourceHandle` (Lite/WebCodecs) has no such knob — it decodes
   /// in the browser, with no IPC ship stage to shrink.
   private playbackScaleDiv = 1;
+  /// macOS VideoToolbox IOSurface shared-texture transport (feature flag).
+  private sharedTextureDecode = false;
 
   constructor(private readonly deps: SourceDecoderPoolDeps = {}) {}
 
@@ -667,6 +669,7 @@ export class SourceDecoderPool {
         ...(init.height !== undefined ? { height: init.height } : {}),
         ...(init.poolSize !== undefined ? { poolSize: init.poolSize } : {}),
         ...(init.forceLane !== undefined ? { forceLane: init.forceLane } : {}),
+        preferSharedTexture: this.sharedTextureDecode,
       };
       const reclaimRetainedCapacity = () =>
         this.reclaimRetainedCapacity(init.layerId);
@@ -724,6 +727,17 @@ export class SourceDecoderPool {
     if (spilled.length === 0) return trim;
     const recycle = this.recyclePrioritySpills(spilled);
     return Promise.all([trim, recycle]).then(([trimmed, recycled]) => trimmed || recycled);
+  }
+
+  /// Adopt the macOS VideoToolbox IOSurface transport. Future sources are born
+  /// with the flag; live `videotoolbox` sources re-open their transport in
+  /// place so the change lands without a rebuild.
+  setSharedTextureDecode(enabled: boolean): void {
+    if (enabled === this.sharedTextureDecode) return;
+    this.sharedTextureDecode = enabled;
+    for (const h of this.handles.values()) {
+      if (h instanceof FfmpegSource) h.setPreferSharedTexture(enabled);
+    }
   }
 
   /// Adopt a new playback-resolution divisor (1 | 2 | 4): future sources are

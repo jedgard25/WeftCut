@@ -70,6 +70,7 @@ import { createAudioFxBaker, exportWindowFromArgs, type AudioFxBaker } from './a
 import { createFxCacheLayout, createNodeAudioFxFs, fxCacheRoot } from './audioFx/fxPaths.js'
 import { fxWaveformKey } from '../shared/audioEffects/status.js'
 import { installPreviewGpuIpc } from './previewGpuIpc.js'
+import { importPreviewGpuSlot, type PreviewGpuSlotInfo } from './previewGpu.js'
 import { recordFrameReadySent } from './previewGpuTiming.js'
 import { openPreviewSw, requestFrameAtPreviewSw, closePreviewSw, consumePreviewSw } from './previewSw.js'
 import { openExportSw, decodeRangeExportSw, returnCreditExportSw, closeExportSw, closeAllExportSw } from './exportSw.js'
@@ -703,6 +704,14 @@ app.whenReady().then(async () => {
       if (event === 'previewGpu:frameReady') {
         const p = payload as { streamId: string; slot: number }
         recordFrameReadySent(p.streamId, p.slot, performance.now())
+      }
+      if (event === 'previewGpu:slotInfo') {
+        // macOS dynamic IOSurface: import + send here, before the surface's
+        // first frameReady reaches the renderer. Never relayed as an event.
+        void importPreviewGpuSlot(payload as PreviewGpuSlotInfo).catch((err) => {
+          console.warn('[main] previewGpu dynamic slot import failed', err)
+        })
+        return
       }
       emitToRenderer(event, payload)
     } catch (e) {

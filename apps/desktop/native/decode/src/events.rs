@@ -7,7 +7,7 @@ use serde_json::Value;
 
 pub trait EventSink: Send + Sync {
     #[cfg_attr(
-        not(windows),
+        not(any(windows, target_os = "macos")),
         expect(
             dead_code,
             reason = "only the Windows-only preview_gpu lane emits today"
@@ -18,7 +18,7 @@ pub trait EventSink: Send + Sync {
 
 pub struct TsfnEventSink {
     #[cfg_attr(
-        not(windows),
+        not(any(windows, target_os = "macos")),
         expect(
             dead_code,
             reason = "read by `emit`, which only the Windows-only GPU lane calls"

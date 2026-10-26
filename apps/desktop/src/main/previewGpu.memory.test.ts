@@ -32,7 +32,10 @@ afterEach(() => {
 });
 
 describe('preview shared buffer lifetime', () => {
-  it('refuses oversized pools before native allocation', async () => {
+  // The pool-size byte gate is the Windows RGBA pool's. macOS shares
+  // decoder-owned surfaces and deliberately reserves one surface, so a large
+  // poolSize is inert there (the native session ignores it).
+  it.skipIf(process.platform === 'darwin')('refuses oversized pools before native allocation', async () => {
     await expect(openPreviewGpu(backend, win, 'video', 'video.mp4', 16, color, 3840, 2160)).rejects.toThrow('hw-budget-exceeded');
     expect(backend.previewGpuOpen).not.toHaveBeenCalled();
     expect(gpuBufferBudget.snapshot().used_bytes).toBe(0);
@@ -40,12 +43,16 @@ describe('preview shared buffer lifetime', () => {
 
   it('charges a closed video until all imported slot references are gone', async () => {
     await openPreviewGpu(backend, win, 'video', 'video.mp4', 3, color, 3840, 2160);
-    const bytes = 3840 * 2160 * 4 * 3;
+    // macOS reserves one decoder-owned surface for the shared buffer budget
+    // (the VT session is charged through the resource ledger); Windows reserves
+    // the whole RGBA pool. See openPreviewGpu's budgetPoolSize.
+    const bytes = 3840 * 2160 * 4 * (process.platform === 'darwin' ? 1 : 3);
     expect(gpuBufferBudget.snapshot().preview_bytes).toBe(bytes);
     closePreviewGpu(backend, 'video');
     expect(backend.previewGpuClose).toHaveBeenCalledOnce();
     expect(gpuBufferBudget.snapshot().preview_bytes).toBe(bytes);
-    expect(gpuBufferBudget.reserve('motif', 40 * MIB)).toBeNull();
+    // macOS reserves one 4K surface (33 MiB), Windows the whole pool (100 MiB).
+    expect(gpuBufferBudget.reserve('motif', (process.platform === 'darwin' ? 120 : 40) * MIB)).toBeNull();
     callbacks[0]!(); callbacks[1]!();
     expect(gpuBufferBudget.snapshot().preview_bytes).toBe(bytes);
     callbacks[2]!();

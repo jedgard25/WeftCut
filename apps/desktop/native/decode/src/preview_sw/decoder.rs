@@ -786,6 +786,43 @@ impl SwVideoStream {
         }
     }
 
+    /// macOS zero-copy: decode the next VideoToolbox frame and retain its
+    /// CVPixelBuffer/IOSurface instead of transferring it to CPU planes. The
+    /// caller owns the retained surface and must release it after the renderer
+    /// acks. Same packet-pump/EOF contract as [`next_frame`].
+    #[cfg(target_os = "macos")]
+    pub fn next_frame_surface(
+        &mut self,
+    ) -> Result<Option<crate::preview_vt::VtFrameSurface>, String> {
+        let map = |e: ffmpeg_next::Error| e.to_string();
+        loop {
+            if self.decoder.receive_frame(&mut self.frame).is_ok() {
+                let surface = unsafe {
+                    crate::preview_vt::retain_surface_from_frame(
+                        self.frame.as_ptr(),
+                        self.time_base,
+                        self.start_pts_us,
+                    )
+                }?;
+                return Ok(Some(surface));
+            }
+            if self.eof_sent {
+                return Ok(None);
+            }
+            match self.ictx.packets().next() {
+                Some((s, p)) => {
+                    if s.index() == self.stream_index {
+                        self.decoder.send_packet(&p).map_err(map)?;
+                    }
+                }
+                None => {
+                    self.decoder.send_eof().map_err(map)?;
+                    self.eof_sent = true;
+                }
+            }
+        }
+    }
+
     /// Seek to the keyframe at or before target_us, flush the decoder, and arm
     /// forward decode. AVSEEK_FLAG_BACKWARD lands on a key packet <= target.
     /// ProRes is intra-frame, so a single decode after seek yields the target.

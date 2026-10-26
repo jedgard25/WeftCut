@@ -11,6 +11,8 @@ mod media_time;
 #[cfg(windows)]
 mod preview_gpu;
 mod preview_sw;
+#[cfg(target_os = "macos")]
+mod preview_vt;
 mod recover;
 #[cfg(test)]
 mod test_wait;

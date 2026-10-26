@@ -2141,6 +2141,9 @@ const zhCN: Resources = {
     playback_resolution_smooth: "流畅",
     playback_resolution_sharp: "清晰",
     playback_resolution_export_note: "导出始终按完整分辨率渲染。",
+    experimental_shared_texture: "零拷贝 VideoToolbox 预览（macOS，实验性）",
+    experimental_shared_texture_hint:
+      "直接把解码器的 IOSurface 交给渲染器，而不是复制帧。默认关闭；失败时会自动回退。",
     decode_unsupported_title: "不支持的格式",
     decode_unsupported_body: "轻量引擎无法解码该片段。切换到标准引擎即可播放。",
     decode_unsupported_body_lite: "轻量引擎无法解码该片段。切换到标准引擎即可播放。",

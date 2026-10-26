@@ -123,6 +123,62 @@ pub struct PreviewSwFrame {
 /// Verdict of a one-frame SW decode probe. `codec`/`pix_fmt` echo what
 /// libavformat identified — main derives the capability-cache class key from
 /// these (probe-informed, not caller-guessed).
+/// macOS VideoToolbox one-frame probe: the decoded frame's IOSurface, retained
+/// until `previewVtRelease`. `handle` is the 8-byte `IOSurfaceRef` value
+/// Electron's `SharedTextureHandle.ioSurface` expects (local to the main
+/// process, which is where this addon runs).
+#[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code, reason = "napi export root"))]
+#[napi(object)]
+pub struct PreviewVtProbeInfo {
+    pub id: String,
+    pub handle: Buffer,
+    pub io_surface_id: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Electron import pixel format: "nv12" | "p010le".
+    pub pixel_format: String,
+    pub full_range: bool,
+    pub pts_us: f64,
+    pub dur_us: f64,
+    pub color_matrix: Option<String>,
+    pub color_range: Option<String>,
+    pub color_primaries: Option<String>,
+    pub color_transfer: Option<String>,
+}
+
+#[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code, reason = "napi export root"))]
+#[napi]
+pub fn preview_vt_probe(path: String) -> Result<PreviewVtProbeInfo> {
+    let surface =
+        crate::preview_vt::decode_first_surface(&path).map_err(napi::Error::from_reason)?;
+    Ok(PreviewVtProbeInfo {
+        id: surface.id.to_string(),
+        handle: (surface.io_surface as u64).to_le_bytes().to_vec().into(),
+        io_surface_id: surface.io_surface_id,
+        width: surface.width,
+        height: surface.height,
+        pixel_format: surface.pixel_format.to_string(),
+        full_range: surface.full_range,
+        pts_us: surface.pts_us as f64,
+        dur_us: surface.dur_us as f64,
+        color_matrix: surface.color.matrix,
+        color_range: surface.color.range,
+        color_primaries: surface.color.primaries,
+        color_transfer: surface.color.transfer,
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code, reason = "napi export root"))]
+#[napi]
+pub fn preview_vt_release(id: String) {
+    if let Ok(id) = id.parse::<u64>() {
+        crate::preview_vt::release_surface(id);
+    }
+}
+
 #[napi(object)]
 pub struct PreviewSwProbeResult {
     pub ok: bool,
@@ -318,6 +374,8 @@ pub fn capabilities() -> Vec<String> {
 pub struct NativeDecode {
     #[cfg(windows)]
     preview_gpu: crate::preview_gpu::PreviewGpuRegistry,
+    #[cfg(target_os = "macos")]
+    preview_vt: crate::preview_vt::PreviewVtRegistry,
     preview_sw: crate::preview_sw::PreviewSwRegistry,
     preview_sw_sinks: Arc<Mutex<HashMap<String, ThreadsafeFunction<PreviewSwFrame>>>>,
     export_sw: crate::export_sw::ExportSwRegistry,
@@ -334,10 +392,10 @@ impl NativeDecode {
         // sink itself is platform-neutral and is constructed everywhere so the
         // next channel can wire in without touching the constructor.
         #[cfg_attr(
-            not(windows),
+            not(any(windows, target_os = "macos")),
             expect(
                 unused_variables,
-                reason = "only the Windows-only GPU lane emits today"
+                reason = "only the Windows and macOS GPU lanes emit today"
             )
         )]
         let events: Arc<dyn EventSink> = Arc::new(TsfnEventSink::new(on_event));
@@ -377,6 +435,73 @@ impl NativeDecode {
                         );
                     }
                     PreviewGpuPoke::Error { stream_id, message } => {
+                        sink_events.emit(
+                            "previewGpu:error",
+                            serde_json::json!({ "streamId": stream_id, "message": message }),
+                        );
+                    }
+                }
+            }));
+            registry
+        };
+        // macOS VideoToolbox → IOSurface preview. Same poke vocabulary and
+        // event names as the Windows GPU lane, plus a one-time `slotInfo` for
+        // each new decoded IOSurface. Main imports each surface once; frames
+        // themselves are only pokes.
+        #[cfg(target_os = "macos")]
+        let preview_vt = {
+            let registry = crate::preview_vt::PreviewVtRegistry::new();
+            let sink_events = events.clone();
+            registry.set_poke_sink(Box::new(move |poke| {
+                use crate::preview_vt::VtPoke;
+                match poke {
+                    VtPoke::Slot {
+                        stream_id,
+                        slot,
+                        handle,
+                        width,
+                        height,
+                        pixel_format,
+                        full_range,
+                    } => {
+                        sink_events.emit(
+                            "previewGpu:slotInfo",
+                            serde_json::json!({
+                                "streamId": stream_id,
+                                "slot": slot,
+                                "handle": handle,
+                                "width": width,
+                                "height": height,
+                                "pixelFormat": pixel_format,
+                                "fullRange": full_range,
+                            }),
+                        );
+                    }
+                    VtPoke::FrameReady {
+                        stream_id,
+                        slot,
+                        gen,
+                        pts_us,
+                        dur_us,
+                    } => {
+                        sink_events.emit(
+                            "previewGpu:frameReady",
+                            serde_json::json!({
+                                "streamId": stream_id,
+                                "slot": slot,
+                                "gen": gen,
+                                "ptsUs": pts_us,
+                                "durUs": dur_us,
+                            }),
+                        );
+                    }
+                    VtPoke::Eof { stream_id } => {
+                        sink_events.emit(
+                            "previewGpu:eof",
+                            serde_json::json!({ "streamId": stream_id }),
+                        );
+                    }
+                    VtPoke::Error { stream_id, message } => {
                         sink_events.emit(
                             "previewGpu:error",
                             serde_json::json!({ "streamId": stream_id, "message": message }),
@@ -492,6 +617,8 @@ impl NativeDecode {
         NativeDecode {
             #[cfg(windows)]
             preview_gpu,
+            #[cfg(target_os = "macos")]
+            preview_vt,
             preview_sw,
             preview_sw_sinks,
             export_sw,
@@ -661,10 +788,122 @@ fn to_napi_timing_summary(s: crate::preview_gpu::TimingSummary) -> PreviewGpuTim
     }
 }
 
+/// macOS VideoToolbox shared-IOSurface preview command surface. Same method
+/// names/signatures as the Windows GPU lane so main and the renderer stay
+/// strategy-agnostic. `previewGpuOpen` returns NO slots: each IOSurface is
+/// announced once, on first sight, through `previewGpu:slotInfo`.
+#[cfg(target_os = "macos")]
+fn zero_timing_summary() -> PreviewGpuTimingSummary {
+    PreviewGpuTimingSummary {
+        count: 0,
+        mean_ms: 0.0,
+        p50_ms: 0.0,
+        p95_ms: 0.0,
+        max_ms: 0.0,
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[napi]
+impl NativeDecode {
+    #[napi]
+    pub fn preview_gpu_open(
+        &self,
+        stream_id: String,
+        path: String,
+        _pool_size: u32,
+        _matrix: String,
+        _full_range: bool,
+    ) -> napi::Result<PreviewGpuOpenInfo> {
+        let info = self
+            .preview_vt
+            .open(&stream_id, &path)
+            .map_err(napi::Error::from_reason)?;
+        Ok(PreviewGpuOpenInfo {
+            width: info.width,
+            height: info.height,
+            slots: Vec::new(),
+            adapter: None,
+        })
+    }
+
+    #[napi]
+    pub fn preview_gpu_request_frame_at(
+        &self,
+        stream_id: String,
+        target_us: f64,
+    ) -> napi::Result<()> {
+        self.preview_vt
+            .request_frame_at(&stream_id, target_us as i64)
+            .map_err(napi::Error::from_reason)
+    }
+
+    #[napi]
+    pub fn preview_gpu_consume_ack(
+        &self,
+        stream_id: String,
+        slot: u32,
+        gen: u32,
+    ) -> napi::Result<()> {
+        self.preview_vt
+            .consume_ack(&stream_id, slot, gen)
+            .map_err(napi::Error::from_reason)
+    }
+
+    #[napi]
+    pub fn preview_gpu_close(&self, stream_id: String) -> napi::Result<()> {
+        self.preview_vt
+            .close(&stream_id)
+            .map_err(napi::Error::from_reason)
+    }
+
+    #[napi]
+    pub fn preview_gpu_take_timings(
+        &self,
+        _stream_id: String,
+    ) -> napi::Result<PreviewGpuTimingReport> {
+        Ok(PreviewGpuTimingReport {
+            coord_rtt: zero_timing_summary(),
+            decode_copy: zero_timing_summary(),
+            convert_gpu: zero_timing_summary(),
+            ack_to_emit: zero_timing_summary(),
+            lookahead_gated_skips: 0,
+            late_frame_drops: 0,
+            inter_emit: zero_timing_summary(),
+            inter_ack: zero_timing_summary(),
+            recv_block: zero_timing_summary(),
+            recv_timeout_ticks: 0,
+            recv_ack_msgs: 0,
+            recv_req_msgs: 0,
+            eof_returns: 0,
+            pool_full_returns: 0,
+            acquire_failed: 0,
+            final_free_slots: 0,
+            final_eof: false,
+            lease_timeouts: 0,
+            stale_gen_acks: 0,
+            pool_slot_bytes: 0.0,
+        })
+    }
+
+    /// The d3d11va probe is not advertised on macOS; a call is a clean verdict.
+    #[napi]
+    pub fn preview_gpu_probe(
+        &self,
+        _path: String,
+        _timeout_ms: u32,
+    ) -> napi::Result<PreviewGpuProbeResult> {
+        Ok(PreviewGpuProbeResult {
+            ok: false,
+            reason: Some("preview-gpu is d3d11va-only; videotoolbox uses previewHwProbe".into()),
+        })
+    }
+}
+
 /// Fallback surface when the addon wasn't built with GPU preview support
-/// (non-Windows): the methods still exist so JS callers get a clean rejection
-/// instead of a missing-method TypeError.
-#[cfg(not(windows))]
+/// (neither Windows nor macOS): the methods still exist so JS callers get a
+/// clean rejection instead of a missing-method TypeError.
+#[cfg(all(not(windows), not(target_os = "macos")))]
 #[napi]
 impl NativeDecode {
     #[napi]

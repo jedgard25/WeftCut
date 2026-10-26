@@ -202,7 +202,7 @@ export type PreviewGpuBudgetSnapshot = {
   /// × that session's slot count, from main's session records. Closed imports
   /// still held by Chromium remain in performanceResources.info's aggregate
   /// byte accounting until their final references are released.
-  slotVram: { usedBytes: number; bytesPerPixel: 4 }
+  slotVram: { usedBytes: number; bytesPerPixel: number }
 }
 
 /// Per-metric ms summary from the native preview timing accumulator. Field

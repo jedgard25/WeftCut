@@ -2383,6 +2383,9 @@ const enUS = {
     playback_resolution_smooth: "Smooth",
     playback_resolution_sharp: "Sharp",
     playback_resolution_export_note: "Export always renders at full resolution.",
+    experimental_shared_texture: "Zero-copy VideoToolbox preview (macOS, experimental)",
+    experimental_shared_texture_hint:
+      "Hands the decoder's IOSurface directly to the renderer instead of copying frames. Off by default; falls back automatically if the path fails.",
     decode_unsupported_title: "Unsupported format",
     decode_unsupported_body:
       "The Lite engine can't decode this clip. Switch to the Standard engine to play it.",

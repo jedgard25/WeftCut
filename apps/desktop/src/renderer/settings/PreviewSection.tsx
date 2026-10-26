@@ -6,8 +6,10 @@ import { Slider } from "@base-ui/react/slider";
 import {
   setAppSettings,
   useDecodeEngine,
+  useExperimentalMacosSharedTexture,
   usePlaybackResolution,
 } from "./appSettingsStore";
+import { isMac } from "../platform";
 import {
   useDecodeComponentAvailable,
   useDecodeComponentReason,
@@ -28,6 +30,7 @@ export function PreviewSection({
     <>
       <DecodeEngineCards onError={onError} />
       <PlaybackResolutionSlider onError={onError} />
+      <MacosSharedTextureToggle onError={onError} />
     </>
   );
 }
@@ -97,6 +100,41 @@ function DecodeEngineCards({ onError }: { onError: (msg: string) => void }) {
         </p>
       )}
     </div>
+  );
+}
+
+/// macOS-only experimental transport. Default off: it hands the renderer the
+/// decoder's IOSurface instead of copying NV12, but it depends on this
+/// machine's GPU/Chromium path, so it must be opted into per machine.
+function MacosSharedTextureToggle({ onError }: { onError: (msg: string) => void }) {
+  const { t } = useTranslation();
+  const enabled = useExperimentalMacosSharedTexture();
+  if (!isMac) return null;
+  return (
+    <label className="settings-control-row">
+      <div className="settings-performance-copy">
+        <span className="settings-toggle-label">
+          {t("settings.experimental_shared_texture")}
+        </span>
+        <p className="settings-toggle-hint">
+          {t("settings.experimental_shared_texture_hint")}
+        </p>
+      </div>
+      <input
+        type="checkbox"
+        checked={enabled}
+        onChange={async (e) => {
+          onError("");
+          try {
+            await setAppSettings({
+              experimental_macos_shared_texture: e.target.checked,
+            });
+          } catch (err) {
+            onError(String(err));
+          }
+        }}
+      />
+    </label>
   );
 }
 

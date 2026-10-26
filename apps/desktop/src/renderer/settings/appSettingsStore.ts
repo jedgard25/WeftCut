@@ -97,6 +97,10 @@ export const useDecodeEngine = (): AppSettings["decode_engine"] =>
 /// re-rendering the React tree. This is for the settings UI.
 export const usePlaybackResolution = (): AppSettings["playback_resolution"] =>
   useAppSettingsStore((s) => s.settings.playback_resolution);
+
+/// macOS-only experimental VideoToolbox IOSurface preview transport.
+export const useExperimentalMacosSharedTexture = (): boolean =>
+  useAppSettingsStore((s) => s.settings.experimental_macos_shared_texture);
 /// Media-pool card arrangement: `large` (one card per row), `grid`
 /// (fixed-size cards, adaptive columns), `list` (compact rows).
 export const useMediaPoolLayout = (): AppSettings["media_pool_layout"] =>

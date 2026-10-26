@@ -449,6 +449,11 @@ export const PixiPreview = forwardRef<PixiPreviewHandle, Props>(function PixiPre
       compositor.setPlaybackScaleDiv(
         playbackScaleDiv(useAppSettingsStore.getState().settings.playback_resolution),
       );
+      // Seed the macOS shared-texture feature BEFORE the first acquire so the
+      // very first VideoToolbox clip opens on the chosen transport.
+      compositor.setSharedTextureDecode(
+        useAppSettingsStore.getState().settings.experimental_macos_shared_texture === true,
+      );
       // Export can start while PIXI Application is still initializing.
       compositor.setSuspended(exportSuspendedRef.current);
       compositor.setPresentationVisible(visibleRef.current);
@@ -785,6 +790,21 @@ export const PixiPreview = forwardRef<PixiPreviewHandle, Props>(function PixiPre
       const logical = logicalSizeRef.current;
       if (app && logical) {
         applyPreviewFit(app, logical, s.settings.playback_resolution, hostBoxRef.current);
+      }
+    });
+  }, []);
+
+  // macOS shared-texture toggle: live re-open of a videotoolbox transport,
+  // without rebuilding clips or touching the WebCodecs/export paths.
+  useEffect(() => {
+    return useAppSettingsStore.subscribe((s, prev) => {
+      if (
+        s.settings.experimental_macos_shared_texture
+        !== prev.settings.experimental_macos_shared_texture
+      ) {
+        compositorRef.current?.setSharedTextureDecode(
+          s.settings.experimental_macos_shared_texture === true,
+        );
       }
     });
   }, []);

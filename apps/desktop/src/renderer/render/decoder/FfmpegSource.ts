@@ -62,6 +62,10 @@ export interface FfmpegSourceInit {
   width?: number | null;
   height?: number | null;
   componentAvailable: boolean;
+  /// macOS feature flag: when true, a resolved `videotoolbox` hardware lane
+  /// uses the IOSurface shared-texture transport instead of copy-back. On
+  /// failure the ordinary hardware-open path still falls back to copy-back.
+  preferSharedTexture?: boolean;
   poolSize?: number;
   /// Playback-resolution divisor (1 | 2 | 4) for the SOFTWARE transport: native
   /// ships frames at `src / n`, cutting the per-frame IPC bytes a 4K source
@@ -136,6 +140,9 @@ export class FfmpegSource implements PreviewDecodeSession {
   /// Dimension drift and capability failures may also fall back to software,
   /// but must keep the ordinary software profile.
   private budgetSpill = false;
+  /// macOS live feature flag. `init.preferSharedTexture` seeds it; the setter
+  /// lets a settings toggle re-open the transport in place.
+  private preferSharedTexture: boolean;
 
   constructor(init: FfmpegSourceInit, deps: FfmpegSourceDeps = {}) {
     this.init = init;
@@ -143,6 +150,7 @@ export class FfmpegSource implements PreviewDecodeSession {
     this.mediaId = init.mediaId;
     this.layerId = init.layerId;
     this.scaleDiv = init.playbackScaleDiv ?? 1;
+    this.preferSharedTexture = init.preferSharedTexture === true;
   }
 
   get disposed(): boolean { return this._disposed; }
@@ -164,6 +172,18 @@ export class FfmpegSource implements PreviewDecodeSession {
   /// conformance spec reads this (via `ActiveClipProbe.hwLane`) to assert WHICH
   /// HW lane engaged.
   currentHwLane(): string | null { return this.hwPlan?.lane ?? null; }
+  /// True when the live hardware transport shares GPU surfaces instead of
+  /// copying bytes back: Windows d3d11va, or macOS VideoToolbox with the
+  /// shared-texture feature flag. E2E/PerfHUD only.
+  isSharedTextureTransport(): boolean {
+    return this.lane === "hardware" && this.transport !== null && !this.usesSwTransport();
+  }
+  /// Whether this source was constructed with the macOS shared-texture flag.
+  /// Distinguishes "the feature flag never reached the source" from "the
+  /// transport opened but the lane is not videotoolbox". E2E-only.
+  sharedTextureRequested(): boolean {
+    return this.preferSharedTexture;
+  }
   isDowngraded(): boolean { return this.startedHardware && this.lane === "software"; }
   /// True only for this decode session's transient admission spill. Runtime
   /// device/capability failures remain sticky and must never be recycled by
@@ -518,6 +538,13 @@ export class FfmpegSource implements PreviewDecodeSession {
   /// falls to the GPU transport.
   private makeHardwareTransport(): DecodeTransport {
     const hw = this.hwPlan;
+    // macOS feature flag: VideoToolbox can hand the decoded IOSurface to
+    // Electron's sharedTexture importer, so the frame never crosses IPC as
+    // pixels. Off by default; an open failure falls back to the copy-back
+    // transport below (same lane, same ring).
+    if (hw && hw.lane === "videotoolbox" && this.preferSharedTexture) {
+      return this.deps.makeGpu?.() ?? new GpuTransport();
+    }
     if (hw && isCopyBackHwLane(hw.lane)) {
       // The copy-back lanes ship the same NV12 bytes over the same IPC, so they
       // want the playback-resolution divisor just as much as software does.
@@ -559,7 +586,57 @@ export class FfmpegSource implements PreviewDecodeSession {
   private usesSwTransport(): boolean {
     if (this.lane === "software") return true;
     const hw = this.hwPlan;
+    // VideoToolbox is copy-back normally, but the iOSurface shared-texture
+    // feature flag swaps that same lane onto the GPU transport. Every caller
+    // (scale re-open, HW-lease reclaim, transport diagnostics) must agree.
+    if (hw?.lane === "videotoolbox" && this.preferSharedTexture) return false;
     return hw !== null && isCopyBackHwLane(hw.lane);
+  }
+
+  /// Adopt the macOS shared-texture toggle on a LIVE source. If this source is
+  /// already on a `videotoolbox` hardware lane, re-open the transport in place
+  /// (same ring, same lane) so the choice lands without a clip rebuild. A
+  /// failure falls back to the copy-back transport; it never changes the
+  /// resolved engine or the media's capability state.
+  setPreferSharedTexture(enabled: boolean): void {
+    if (this.preferSharedTexture === enabled) return;
+    this.preferSharedTexture = enabled;
+    if (
+      this._disposed
+      || !this.ready
+      || this.lane !== "hardware"
+      || this.hwPlan?.lane !== "videotoolbox"
+      || this.transport === null
+    ) return;
+    const currentlyShared = !this.usesSwTransport();
+    if (currentlyShared === enabled) return;
+    const dead = this.transport;
+    this.transport = null;
+    this.openedTransport = null;
+    void (async () => {
+      try {
+        await dead.dispose();
+        if (this._disposed) return;
+        await this.openLane("hardware");
+      } catch (e) {
+        if (this._disposed) return;
+        if (isFfmpegCapacityRefusal(e)) {
+          this.ready = false;
+          this.capacityError = e;
+          this.capacityRetryAfter = performance.now() + this.capacityBackoffMs;
+          this.capacityBackoffMs = Math.min(this.capacityBackoffMs * 2, CAPACITY_BACKOFF_MAX_MS);
+          this.scheduleCapacityRetry();
+          return;
+        }
+        // Keep the picture alive on the copy-back transport rather than
+        // turning a settings toggle into a black clip.
+        try {
+          await this.openLane("software", { from: "hardware", reason: `shared-texture toggle: ${String(e)}` });
+        } catch (swErr) {
+          this.fireFatal(String(swErr));
+        }
+      }
+    })();
   }
 
   /// Adopt a new playback-resolution divisor on a LIVE source, without a

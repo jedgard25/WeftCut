@@ -35,6 +35,7 @@ import { requestPrebake } from "../render/motifs/prebakeBus";
 import { mergeSettings, type ExportSettings } from "../render/exportSettings";
 import { getGizmoProbe } from "../preview/gizmoProbeRegistry";
 import { playheadTimeUs } from "../state/playheadStore";
+import { setAppSettings } from "../settings/appSettingsStore";
 import { settleProjectStore, rootCompositionOf, useProjectStore } from "../state/projectStore";
 import {
   openComposition,
@@ -388,6 +389,9 @@ export interface E2EHook {
   /// `proxyIntent`/`resolveSource` read, so a raw `update_project_settings`
   /// patch would leave the clip decoding off its old source.
   setProxyOverride(mediaId: string, value: boolean | null): Promise<void>;
+  /// Machine-level macOS VideoToolbox shared-texture transport toggle. Drives
+  /// the REAL renderer settings setter so the preview subscription runs.
+  setExperimentalMacosSharedTexture(enabled: boolean): Promise<unknown>;
   /// Render the REAL buildPanGraph + constantPanGains in an OfflineAudioContext
   /// and return the mean L/R RMS energy. Drives the actual Web Audio graph
   /// wiring (splitter/4-gain/merger topology) that the headless math goldens
@@ -789,6 +793,8 @@ export function installPlaybackBenchHooks(): void {
   // its doc comment).
   hookSlot().setProxyOverride = (mediaId: string, value: boolean | null) =>
     setProxyOverride(mediaId, value);
+  hookSlot().setExperimentalMacosSharedTexture = (enabled: boolean) =>
+    setAppSettings({ experimental_macos_shared_texture: enabled });
 }
 
 /// Root-side: install Motif test hooks (prebake, cache ops, sprite frames,

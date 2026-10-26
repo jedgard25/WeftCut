@@ -70,6 +70,9 @@ export interface SourceHandleInit {
   /// FFmpeg native-decode component DLLs loaded on this machine. Gates the
   /// FFmpeg HW lane (`FfmpegSource`/`pickInitialLane`).
   componentAvailable?: boolean;
+  /// macOS, feature-flagged: use the VideoToolbox IOSurface shared-texture
+  /// lane instead of copy-back for the resolved `videotoolbox` lane.
+  preferSharedTexture?: boolean;
   /// Bench-only lane pin, forwarded to `FfmpegSource`.
   forceLane?: import("./decodeEngine").FfmpegLane;
   /// Export-only: route this handle through the native `NativeExportSourceHandle`
@@ -211,4 +214,8 @@ export interface DecoderPool {
   /// plus the bounded upcoming cut window; the pool may reclaim only retained
   /// native sessions when main reports transient admission pressure.
   setPriorityKeys?(keys: readonly string[]): boolean | Promise<boolean>;
+  /// macOS preview-only: adopt the VideoToolbox IOSurface transport for
+  /// `videotoolbox` hardware lanes. Live sources re-open their transport in
+  /// place; new sources are born with it.
+  setSharedTextureDecode?(enabled: boolean): void;
 }

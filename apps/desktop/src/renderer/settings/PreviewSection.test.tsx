@@ -20,6 +20,7 @@ vi.mock("./appSettingsStore", () => ({
   setAppSettings: stores.setAppSettings,
   useDecodeEngine: () => stores.decodeEngine,
   usePlaybackResolution: () => stores.playbackResolution,
+  useExperimentalMacosSharedTexture: () => false,
 }));
 
 vi.mock("./decodeComponentStore", () => ({
