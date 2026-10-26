@@ -317,13 +317,10 @@ export function useLayerDrag(opts: {
         );
         if (narrowed.length < link.layer_ids.length) candidateIds = narrowed;
       }
-      const targetEdgeUs =
-        seed.kind === "trim-start"
-          ? seed.originalTStart
-          : seed.kind === "trim-end"
-            ? seed.originalTEnd
-            : null;
-
+      // A trim carries the WHOLE link (the actor fans out to every sibling), so
+      // every member is a subject here — no edge-coincidence filter. The live
+      // geometry adds the same delta to each, matching the commit.
+      //
       // Named once per gesture, at pointerdown, through the imperative bundle
       // — the same event-time read `search/searchIndexStore.ts` makes. A
       // subject's name is the string its own block shows, resolved where the
@@ -338,11 +335,6 @@ export function useLayerDrag(opts: {
         const entry = layerEntryById.get(layerId);
         if (!entry) continue;
         const layer = entry.layer;
-        if (targetEdgeUs !== null) {
-          const edgeUs =
-            seed.kind === "trim-start" ? layer.t_start_us : layer.t_end_us;
-          if (layerId !== seed.layerId && edgeUs !== targetEdgeUs) continue;
-        }
         subjects.push({
           layerId,
           trackId: entry.trackId,

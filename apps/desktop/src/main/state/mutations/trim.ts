@@ -87,8 +87,10 @@ export function trimEdgeWindowUs(
   }
 }
 
-/** Trim one edge. Unless `escapeLink`, every link sibling whose matching edge
- *  sits at the same t moves with it, clamped to the tightest member's window.
+/** Trim one edge. Unless `escapeLink`, the WHOLE link moves with it: every
+ *  sibling shifts by the same delta on its own lattice, clamped to the tightest
+ *  member's window, so a deliberate A/V offset is preserved rather than
+ *  collapsed.
  *
  *  `strict` is the AGENT's mode (the MCP arm sets it): a target outside the
  *  legal window is refused with that window, rather than clamped to its
@@ -105,15 +107,15 @@ export function applyTrimLayer(p: Project, id: Uuid, edge: LayerEdge, newTUs: nu
   const curStart = target.t_start_us, curEnd = target.t_end_us
   const curEdgeT = edge === 'In' ? curStart : curEnd
 
-  // Aligned set: the target + every link sibling whose MATCHING edge sits at the
-  // same t as the target's pre-trim edge.
+  // The linked set: the target plus EVERY sibling. A trim moves the whole link,
+  // each member shifting by the same delta on its own lattice. A "matching edge
+  // must coincide" gate silently dropped auto-paired audio, whose Out edge lands
+  // on the sample lattice while the picture's lands on the frame grid, so the
+  // pair never trimmed together. `escape_link` is the per-op opt-out.
   const aligned: Uuid[] = [id]
   if (!escapeLink) {
     for (const sid of linkSiblingsExcluding(c, id)) {
-      const sl = locateLayerIn(c, sid); if (!sl) continue
-      const s = sl.layer
-      const sEdgeT = edge === 'In' ? s.t_start_us : s.t_end_us
-      if (sEdgeT === curEdgeT) aligned.push(sid)
+      if (locateLayerIn(c, sid)) aligned.push(sid)
     }
     checkLinkLock(c, id, aligned)
   }
@@ -121,36 +123,35 @@ export function applyTrimLayer(p: Project, id: Uuid, edge: LayerEdge, newTUs: nu
   const requestedDelta = snapped - curEdgeT
   if (requestedDelta === 0) return // no-op early return
 
-  // Clamp against every aligned member: intersect their grid windows so the
-  // tightest member governs. The windows are absolute times yet share one delta
-  // basis because every aligned member's matching edge sits at `curEdgeT` — that
-  // is what "aligned" means. Both `snapped` and every window end are canonical, so
-  // whichever the clamp picks keeps the moved edge on the grid.
+  // Clamp against every member's grid window, each expressed on the shared DELTA
+  // basis by subtracting that member's OWN edge. The tightest member governs while
+  // each keeps its offset: a member already offset by d contributes the same delta
+  // bound as a coincident one, and lands d away again.
   let lo = -INF
   let hi = INF
   for (const mid of aligned) {
     const m = locateLayerIn(c, mid)!.layer
+    const mEdgeT = edge === 'In' ? m.t_start_us : m.t_end_us
     const w = trimEdgeWindowUs(m, edge, gridForLayerKind(m.params.kind, fps), sourceDurationUs(p, m.params))
-    lo = Math.max(lo, w.lo)
-    hi = Math.min(hi, w.hi)
+    lo = Math.max(lo, w.lo - mEdgeT)
+    if (w.hi < INF) hi = Math.min(hi, w.hi - mEdgeT)
   }
-  const clamped = clampSigned(requestedDelta, lo - curEdgeT, hi - curEdgeT)
-  const window = { lo, hi: hi >= INF ? Number.MAX_SAFE_INTEGER : hi }
+  const clamped = clampSigned(requestedDelta, lo, hi)
+  // The refused window is reported in the TARGET's own edge time.
+  const window = { lo: curEdgeT + lo, hi: hi >= INF ? Number.MAX_SAFE_INTEGER : curEdgeT + hi }
   if (clamped === 0 || (strict && clamped !== requestedDelta))
     throw new CommandFailure({ error: 'TrimEdgeOutOfRange', layer: id, new_t: snapped, cur_start: curStart, cur_end: curEnd, edge, window })
 
   for (const mid of aligned) {
     const m = locateLayerIn(c, mid)!.layer
     const params = m.params
-    // Re-derive the delta on each member's OWN grid. Aligned members share one
-    // `curEdgeT` (that is what "aligned" means), so at the six rates where the frame
-    // lattice is an exact sublattice of 48 kHz this is exactly `clamped`. It differs
-    // only when a video and an audio edge coincide at 29.97 / 59.94, where the shared
-    // time is a frame boundary that is NOT a sample boundary: then the audio member
-    // adjusts by ≤ half a sample so its endpoint stays canonical instead of the whole
-    // trim being rejected by the grid backstop. `src_*` shifts by the SAME per-member
-    // delta, so content stays glued to the edge.
-    const delta = snapOnGrid(curEdgeT + clamped, gridForLayerKind(params.kind, fps)) - curEdgeT
+    // Shift by the clamped delta, resolved on THIS member's own lattice so its
+    // endpoint stays canonical (at 29.97 / 59.94 a video and an audio edge land
+    // within half a sample of each other; each snaps to its own grid, so the
+    // relative offset survives). `src_*` shifts by the same per-member delta, so
+    // content stays glued to the edge.
+    const mEdgeT = edge === 'In' ? m.t_start_us : m.t_end_us
+    const delta = snapOnGrid(mEdgeT + clamped, gridForLayerKind(params.kind, fps)) - mEdgeT
     if (hasSourceWindow(params) || params.kind === 'Motif' || params.kind === 'ImageOverlay') {
       writeSourceWindow(params, edge === 'In' ? contentAt(params, exactTime(delta)) : sourceIn(params),
         edge === 'Out' ? addTime(sourceOut(m), multiplyTime(exactTime(delta), layerRate(params))) : sourceOut(m));

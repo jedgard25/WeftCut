@@ -484,12 +484,13 @@ resulting offset is **derived from the geometry, never stored**: it is
 slip. With no field, nothing can disagree with where the clips actually are.
 
 A non-zero offset shows as a badge on the audio clip (`+3 smp`, `−2.00 ms`).
-The two existing fan-out rules already behave correctly for it, and this is
-worth stating because it looks like an inconsistency and is not: a
-**whole-link move preserves the offset** (every member shifts by the same
-delta, then lands on its own lattice), while a **video trim does not drag
-slipped audio** (the aligned set requires coinciding edges — which is the
-right outcome for a deliberately slipped track).
+A **whole-link move preserves the offset** (every member shifts by the same
+delta, then lands on its own lattice), and a **trim moves the whole link too**:
+every member shifts by the same delta on its own lattice, so the offset is
+preserved rather than collapsed. (This is why auto-paired audio trims with its
+picture even though the two edges resolve on different lattices — the video on
+the frame grid, the audio on the 48 kHz sample grid.) `Alt` on a trim handle,
+or the Links-off toggle, is the per-op opt-out.
 
 `Alt+←/→` nudges a selected audio layer one sample, `Alt+Shift+←/→` one
 millisecond (48 samples), and `Alt+Shift+S` re-syncs it to its video. All five

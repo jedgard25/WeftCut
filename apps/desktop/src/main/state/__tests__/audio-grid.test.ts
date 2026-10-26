@@ -13,7 +13,7 @@ import { blankProject, type Project } from '../model'
 import { createActor } from '../actor'
 import { parseProject, serializeProject, type GridRepair } from '../serialize'
 import { serializeProjectToJson } from '../persistence'
-import { AUDIO_GRID, frameGrid, gridIndex, snapFrameRound, timeUsAtGridIndex } from '../snap'
+import { AUDIO_GRID, frameGrid, gridIndex, snapFrameRound, snapOnGrid, timeUsAtGridIndex } from '../snap'
 import { root } from './fixtures/project'
 
 // 29.97 is the discriminating rate: 48000 * 1001/30000 = 1601.6 samples per frame, so
@@ -293,19 +293,42 @@ describe('audio grid — the 48 kHz mix lattice', () => {
     expect(findLayer(after, videoLayer).t_start_us).toBe(videoStart)
   })
 
-  it('trimming the video member after a slip leaves the audio where it is', () => {
-    // `trim.ts`'s aligned set requires COINCIDING edges, so once the audio is slipped
-    // the video's In trim no longer pulls it — which is the right outcome for a
-    // deliberately slipped track, and is documented rather than "fixed" (R2-D7).
+  it('trimming the video member carries the slipped audio by the same delta (offset preserved)', () => {
+    // A trim moves the WHOLE link: the slipped audio shifts by the same delta,
+    // resolved on its own lattice, so the deliberate slip survives (R2-D7).
     const { actor, videoLayer, audioLayer, audioTrack } = pairedFixture()
     const slipped = sample(gridIndex(frame(V_START_FRAME()), AUDIO_GRID) + 7)
     expect(actor.dispatch('move_layer', { layer: audioLayer, to_track: audioTrack, t_start_us: slipped, escape_link: true }).ok).toBe(true)
+    const vBefore = findLayer(actor.snapshot(), videoLayer).t_start_us
 
     const trimTo = frame(V_START_FRAME() + 10)
     expect(actor.dispatch('trim_layer', { layer: videoLayer, edge: 'in', new_t_us: trimTo, escape_link: false }).ok).toBe(true)
     const after = actor.snapshot()
-    expect(findLayer(after, videoLayer).t_start_us).toBe(trimTo)
-    expect(findLayer(after, audioLayer).t_start_us).toBe(slipped)
+    const vAfter = findLayer(after, videoLayer).t_start_us
+    const aAfter = findLayer(after, audioLayer).t_start_us
+    expect(vAfter).toBe(trimTo)
+    // The audio shifted by the video's delta, snapped on the sample lattice...
+    expect(aAfter).toBe(snapOnGrid(slipped + (vAfter - vBefore), AUDIO_GRID))
+    // ...so the offset's sample index is unchanged.
+    expect(gridIndex(aAfter - vAfter, AUDIO_GRID)).toBe(gridIndex(slipped - vBefore, AUDIO_GRID))
+  })
+
+  it('an Out trim of an auto-paired video drags its audio along (edges sit on different lattices)', () => {
+    // Regression: the old coincident-edge gate compared the two Out edges for
+    // equality; the picture's lands on the frame grid and the audio's on the
+    // sample lattice, so the pair silently never trimmed together.
+    const { actor, videoLayer, audioLayer } = pairedFixture()
+    const before = actor.snapshot()
+    const vEnd = findLayer(before, videoLayer).t_end_us
+    const aEnd = findLayer(before, audioLayer).t_end_us
+    expect(aEnd).not.toBe(vEnd)
+    const trimTo = frame(V_START_FRAME() + 20)
+    expect(actor.dispatch('trim_layer', { layer: videoLayer, edge: 'out', new_t_us: trimTo, escape_link: false }).ok).toBe(true)
+    const after = actor.snapshot()
+    expect(findLayer(after, videoLayer).t_end_us).toBe(trimTo)
+    const aAfter = findLayer(after, audioLayer).t_end_us
+    expect(aAfter).toBe(snapOnGrid(aEnd + (trimTo - vEnd), AUDIO_GRID))
+    expect(aAfter).not.toBe(aEnd)
   })
 
   it('composition.sample_rate is untouched by all of this (export target, not a grid)', () => {
