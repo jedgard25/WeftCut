@@ -1,5 +1,6 @@
 // Renderer mirror of the proxy-preference ProjectSettings fields
-// (prefer_proxies + proxy_overrides + generate_preview_proxies). PixiPreview reads it live per
+// (prefer_proxies + proxy_overrides + generate_preview_proxies +
+// build_export_masters). PixiPreview reads it live per
 // ensureClip; the UI subscribes via atomic selectors. Setters write
 // through the unrecorded update_project_settings mutation, then update
 // the store optimistically (updateProjectSettings returns void). Follows
@@ -15,10 +16,15 @@ interface ProxyPrefState {
   /// When false the import/open fan-out skips building the preview (quick)
   /// proxy. Mirrors `ProjectSettings.generate_preview_proxies`.
   generatePreviewProxies: boolean;
+  /// When false a proxied source exports from its original, and its export
+  /// master is built only on demand. Mirrors
+  /// `ProjectSettings.build_export_masters`.
+  buildExportMasters: boolean;
   overrides: Record<string, boolean>;
   hydrate: (v: {
     preferProxies: boolean;
     generatePreviewProxies: boolean;
+    buildExportMasters: boolean;
     overrides: Record<string, boolean>;
   }) => void;
 }
@@ -26,11 +32,13 @@ interface ProxyPrefState {
 export const useProxyPrefStore = create<ProxyPrefState>((set) => ({
   preferProxies: false,
   generatePreviewProxies: true,
+  buildExportMasters: true,
   overrides: {},
   hydrate: (v) =>
     set({
       preferProxies: v.preferProxies,
       generatePreviewProxies: v.generatePreviewProxies,
+      buildExportMasters: v.buildExportMasters,
       overrides: v.overrides,
     }),
 }));
@@ -51,6 +59,11 @@ export async function setGeneratePreviewProxies(v: boolean): Promise<void> {
   useProxyPrefStore.setState({ generatePreviewProxies: v });
 }
 
+export async function setBuildExportMasters(v: boolean): Promise<void> {
+  await updateProjectSettings({ build_export_masters: v });
+  useProxyPrefStore.setState({ buildExportMasters: v });
+}
+
 export async function setProxyOverride(mediaId: string, value: boolean | null): Promise<void> {
   await updateProjectSettings({ proxy_override: { media_id: mediaId, value } });
   useProxyPrefStore.setState((s) => {
@@ -67,6 +80,7 @@ async function rehydrate(): Promise<void> {
     useProxyPrefStore.getState().hydrate({
       preferProxies: v.prefer_proxies,
       generatePreviewProxies: v.generate_preview_proxies,
+      buildExportMasters: v.build_export_masters,
       overrides: v.proxy_overrides,
     });
   } catch {

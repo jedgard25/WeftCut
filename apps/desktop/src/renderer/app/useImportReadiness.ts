@@ -15,6 +15,7 @@ import {
   type ProjectSummary,
 } from "../ipc";
 import { type ProxyState } from "../panels/mediaReadiness";
+import { useProxyPrefStore } from "../state/proxyPreferenceStore";
 import {
   classifyWebcodecsDecodability,
 } from "../render/decoder/probeSourceDecodable";
@@ -223,6 +224,9 @@ export function useImportReadiness(deps: {
       markWebcodecsUnusable(media.id, 'webcodecs cannot decode original');
       if (resolveDecode(media).route === 'direct-export') {
         routeCorrected.current.add(media.id);
+        // With export masters off the project defers the master to export:
+        // the export gate (`prepareExportMedia`) re-probes and builds it then.
+        if (!useProxyPrefStore.getState().buildExportMasters) return;
         void ensureFullProxy(media.id).catch(error => console.error('[weftcut] route correction failed', error));
       }
     },

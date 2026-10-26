@@ -47,7 +47,7 @@ import {
   useAutoInstallUpdatesOnQuit,
 } from "./appSettingsStore";
 import { FontSelect } from "../components/FontSelect";
-import { setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
+import { setBuildExportMasters, setPreferProxies, setGeneratePreviewProxies, useProxyPrefStore } from "../state/proxyPreferenceStore";
 import {
   FPS_OPTIONS,
   RESOLUTION_PRESETS,
@@ -368,6 +368,7 @@ export function SettingsPanel({
                 <h3>{t("settings.playback_heading")}</h3>
                 <PreferProxiesToggle onError={setError} />
                 <GeneratePreviewProxiesToggle onError={setError} />
+                <BuildExportMastersToggle onError={setError} />
               </section>
             </div>
           )}
@@ -726,6 +727,45 @@ function GeneratePreviewProxiesToggle({
         </span>
         <span className="settings-toggle-hint">
           {t("settings.generate_preview_proxies_hint")}
+        </span>
+      </span>
+    </label>
+  );
+}
+
+/// Per-project toggle (`Project.settings.build_export_masters`) — stops the
+/// import/open fan-out from building the full export master for a source that
+/// previews from a proxy (4K HEVC, VP9, 10-bit...). Such a source then exports
+/// from its original; the export gate builds the master on demand only if this
+/// machine cannot decode that original. WebCodecs-blind sources (ProRes,
+/// DNxHD, MPEG-2) keep their master.
+function BuildExportMastersToggle({
+  onError,
+}: {
+  onError: (msg: string) => void;
+}) {
+  const { t } = useTranslation();
+  const enabled = useProxyPrefStore((s) => s.buildExportMasters);
+
+  return (
+    <label className="settings-toggle-row">
+      <AppSwitch
+        checked={enabled}
+        onCheckedChange={async (next) => {
+          onError("");
+          try {
+            await setBuildExportMasters(next);
+          } catch (err) {
+            onError(String(err));
+          }
+        }}
+      />
+      <span>
+        <span className="settings-toggle-label">
+          {t("settings.build_export_masters")}
+        </span>
+        <span className="settings-toggle-hint">
+          {t("settings.build_export_masters_hint")}
         </span>
       </span>
     </label>

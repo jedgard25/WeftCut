@@ -468,6 +468,17 @@ have no settings access. Export masters are unaffected — a source whose export
 needs a full proxy still gets one, built directly rather than chained off a
 quick proxy — and so is an explicit per-clip **Generate proxy**.
 
+A fourth, **Build export masters on import** (`build_export_masters`, default
+on), gates the full master the same way. Off, a source that would route
+`QuickThenFull` (4K HEVC, VP9, 10-bit) is routed DirectExport instead
+(`proxy_decision::defer_export_master`): export reads the original, and the
+export gate's probe (`prepareExportMedia`) builds the master on demand only on
+a definitive "unsupported" verdict. The import sweep marks such a source
+route-corrected but leaves the build to export. WebCodecs-blind sources
+(ProRes, DNxHD, MPEG-2; native-ffmpeg preview) keep their master, since export
+has no other way to read them. With both settings off, nothing is proxied
+automatically. Both cross into the job layer as one `jobs::ProxyPolicy`.
+
 The effective per-clip intent is `proxy_overrides[mediaId] ?? prefer_proxies`.
 Preview uses the proxy only when that intent is true **and** the clip's quick
 proxy exists on disk (`quickProxyPath`); otherwise it decodes the original.

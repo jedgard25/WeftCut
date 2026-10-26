@@ -158,6 +158,15 @@ pub struct ProjectSettings {
     /// `enqueue_jobs_for_media`. Default `true`.
     #[serde(default = "default_generate_preview_proxies")]
     pub generate_preview_proxies: bool,
+    /// When `false`, the automatic import/open fan-out does NOT build the full
+    /// export master for a source that previews from a proxy: the source
+    /// exports from its ORIGINAL (DirectExport), and the export gate builds the
+    /// master on demand only if this machine cannot decode that original.
+    /// WebCodecs-blind sources (ProRes, DNxHD, MPEG-2, ...) keep their master,
+    /// since export has no other way to read them. **TS owns it**; mirrored
+    /// like `generate_preview_proxies`. Default `true`.
+    #[serde(default = "default_build_export_masters")]
+    pub build_export_masters: bool,
 }
 
 /// Twin of TS `ShotReviewSettings`: the threshold and minimum shot length a
@@ -187,6 +196,10 @@ fn default_auto_pair_audio_on_import() -> bool {
 }
 
 fn default_generate_preview_proxies() -> bool {
+    true
+}
+
+fn default_build_export_masters() -> bool {
     true
 }
 
@@ -232,6 +245,7 @@ impl Default for ProjectSettings {
             shot_review: None,
             pause_review: None,
             generate_preview_proxies: true,
+            build_export_masters: true,
         }
     }
 }
@@ -291,6 +305,29 @@ mod generate_preview_proxies_tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert!(!back.settings.generate_preview_proxies);
+    }
+
+    /// Same backfill for `build_export_masters`: an older project keeps
+    /// building its export masters.
+    #[test]
+    fn missing_build_export_masters_reads_as_true() {
+        let p = Project::new_blank("t");
+        let mut v = serde_json::to_value(&p).unwrap();
+        v["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("build_export_masters");
+        let back: Project = serde_json::from_value(v).unwrap();
+        assert!(back.settings.build_export_masters);
+    }
+
+    #[test]
+    fn build_export_masters_round_trips_false() {
+        let mut p = Project::new_blank("t");
+        p.settings.build_export_masters = false;
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert!(!back.settings.build_export_masters);
     }
 }
 

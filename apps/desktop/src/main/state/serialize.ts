@@ -529,7 +529,7 @@ export function parseProject(json: unknown, opts: ParseProjectOptions = {}): Pro
     if (problem) throw new Error('parseProject: ' + problem)
   })
   refuseRetiredKeyframeShape(o)
-  // Additive settings fields (prefer_proxies/proxy_overrides/shot_review/generate_preview_proxies, added
+  // Additive settings fields (prefer_proxies/proxy_overrides/shot_review/generate_preview_proxies/build_export_masters, added
   // later WITHOUT a schema bump) deserialize as absent on projects saved before
   // they existed.
   // Backfill here, or a consumer that reads a field as non-optional (e.g.

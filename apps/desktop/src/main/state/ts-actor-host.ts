@@ -7,7 +7,7 @@ import { buildProjectSummary } from './summary'
 import { routeChannel } from './router'
 import { CommandFailure } from './errors'
 import { createAutosave, type AutosaveController, type AutosaveFs } from './autosave'
-import { openProject, saveProjectAs, newWorkspace, makeEnqueueDerivatives, type WorkspaceNapi, type OrchestratorFs, type SchemaUpgradeReport } from './workspace-orchestrator'
+import { openProject, saveProjectAs, newWorkspace, makeEnqueueDerivatives, proxyPolicyOf, type WorkspaceNapi, type OrchestratorFs, type SchemaUpgradeReport } from './workspace-orchestrator'
 import type { RelinkFs, RelinkReport } from './relink'
 import { serializeProjectToJson } from './persistence'
 import { currentEditTrace, editTraceId, EDIT_TRACE_ARG, runEditTrace } from '../../shared/editTrace'
@@ -353,7 +353,7 @@ export function createTsActorHost(deps: TsActorHostDeps): TsActorHost {
     beginImport: deps.beginImport,
     actor,
     compute: deps.compute,
-    enqueueDerivatives: async (items) => { await deps.napi.enqueueJobsForMedia(JSON.stringify(items), actor.snapshot().settings.generate_preview_proxies) },
+    enqueueDerivatives: async (items) => { await deps.napi.enqueueJobsForMedia(JSON.stringify(items), proxyPolicyOf(actor.snapshot().settings)) },
     enqueueWorkspaceCopy: deps.enqueueWorkspaceCopy,
     workspaceDir: deps.workspaceDir,
     importGeneration: () => importGeneration,

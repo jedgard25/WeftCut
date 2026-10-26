@@ -339,19 +339,38 @@ pub fn enqueue_quick_proxy(
     spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
 }
 
+/// The project's automatic-proxy settings, crossed in from the TS actor: the
+/// job layer has no settings access. `preview_proxies` is
+/// `ProjectSettings.generate_preview_proxies` (false: no quick proxy), and
+/// `export_masters` is `ProjectSettings.build_export_masters` (false: a
+/// proxied source exports from its original and the master is built only if
+/// the export gate finds that original undecodable; see
+/// `proxy_decision::defer_export_master`). Neither affects an explicit
+/// "Generate proxy" or the export gate's `ensure_full_proxy`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProxyPolicy {
+    pub preview_proxies: bool,
+    pub export_masters: bool,
+}
+
+impl Default for ProxyPolicy {
+    fn default() -> Self {
+        Self {
+            preview_proxies: true,
+            export_masters: true,
+        }
+    }
+}
+
 /// Look at a freshly imported `MediaItem` and fan out the appropriate
-/// background jobs. Returns immediately; jobs run on tokio::spawn.
-///
-/// `generate_preview_proxies` is the project's
-/// `ProjectSettings.generate_preview_proxies`. When false the automatic fan-out
-/// builds no preview (quick) proxy; export masters and the explicit
-/// `enqueue_quick_proxy` ("Generate proxy") are unaffected.
+/// background jobs. Returns immediately; jobs run on tokio::spawn. `policy`
+/// is the project's automatic-proxy settings (see `ProxyPolicy`).
 pub fn enqueue_for_media(
     events: Arc<dyn EventSink>,
     log_slot: LogBusSlot,
     cache: CacheLayout,
     media: MediaItem,
-    generate_preview_proxies: bool,
+    policy: ProxyPolicy,
 ) {
     if media.file_hash_blake3.starts_with("pending-") {
         return;
@@ -371,7 +390,7 @@ pub fn enqueue_for_media(
         && !decision_pending
         && !matches!(media.decode_route, DecodeRoute::Bypass)
     {
-        if generate_preview_proxies {
+        if policy.preview_proxies {
             planned.push("quick_proxy");
         }
         if matches!(
@@ -404,7 +423,7 @@ pub fn enqueue_for_media(
             );
         }
         if proxy_decision::route_needs_decision(&media.decode_route) {
-            spawn_proxy_decision(events, log_slot, cache, media, generate_preview_proxies);
+            spawn_proxy_decision(events, log_slot, cache, media, policy);
         } else if !matches!(media.decode_route, DecodeRoute::Bypass) {
             if matches!(
                 media.decode_route,
@@ -417,7 +436,7 @@ pub fn enqueue_for_media(
                     media.clone(),
                 );
             }
-            if generate_preview_proxies {
+            if policy.preview_proxies {
                 spawn_quick_proxy(events, log_slot, cache, media, false, None);
             }
         }
@@ -574,7 +593,7 @@ fn spawn_proxy_decision(
     log_slot: LogBusSlot,
     cache: CacheLayout,
     media: MediaItem,
-    generate_preview_proxies: bool,
+    policy: ProxyPolicy,
 ) {
     let cache = cache.snapshot();
     let log_slot = log_slot.snapshot();
@@ -623,7 +642,7 @@ fn spawn_proxy_decision(
                 // re-chaining the
                 // full build. `None` GOP forces the safe transcode path,
                 // matching the on-demand build.
-                if generate_preview_proxies {
+                if policy.preview_proxies {
                     diagnostics::plan(&events, media_id, &["quick_proxy"], false);
                     spawn_quick_proxy(events, log_slot, cache, media, false, None);
                 }
@@ -660,7 +679,12 @@ fn spawn_proxy_decision(
             return;
         }
         let route = proxy_decision::decide(&media, source_gop_secs);
-        let planned: &[&str] = match (proxy_decision::job_for(route), generate_preview_proxies) {
+        let route = if policy.export_masters {
+            route
+        } else {
+            proxy_decision::defer_export_master(route)
+        };
+        let planned: &[&str] = match (proxy_decision::job_for(route), policy.preview_proxies) {
             (proxy_decision::ProxyJob::None, _) => &[],
             (proxy_decision::ProxyJob::QuickOnly, true) => &["quick_proxy"],
             (proxy_decision::ProxyJob::QuickOnly, false) => &[],
@@ -722,14 +746,14 @@ fn spawn_proxy_decision(
                 // background WITHOUT chaining a full proxy — unless the project
                 // turned preview proxies off, in which case export already reads
                 // the original and there is nothing to build.
-                if generate_preview_proxies {
+                if policy.preview_proxies {
                     spawn_quick_proxy(events, log_slot, cache, media, false, source_gop_secs);
                 } else {
                     info!("preview proxies disabled; skipping quick proxy for {media_id}");
                 }
             }
             proxy_decision::ProxyJob::QuickThenFull => {
-                if generate_preview_proxies {
+                if policy.preview_proxies {
                     spawn_quick_proxy(events, log_slot, cache, media, true, source_gop_secs);
                 } else {
                     // No preview proxy, but export still needs its master: build
@@ -1284,7 +1308,7 @@ mod tests {
             crate::logs::LogBusSlot::new(),
             cache.clone(),
             media,
-            true,
+            ProxyPolicy::default(),
         );
 
         // The adopt commit is the first thing the spawned task does; poll for it.
@@ -1495,7 +1519,13 @@ mod tests {
             )
             .await
             .unwrap();
-            enqueue_for_media(sink.clone(), LogBusSlot::new(), cache.clone(), media, true);
+            enqueue_for_media(
+                sink.clone(),
+                LogBusSlot::new(),
+                cache.clone(),
+                media,
+                ProxyPolicy::default(),
+            );
         }
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {

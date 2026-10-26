@@ -1959,6 +1959,10 @@ export interface ProjectSettingsView {
   /// When false, the import/open fan-out skips building the preview (quick)
   /// proxy; export masters are unaffected. Default true.
   generate_preview_proxies: boolean;
+  /// When false, a source that previews from a proxy exports from its
+  /// original and its full export master is built only if the export gate
+  /// finds that original undecodable. Default true.
+  build_export_masters: boolean;
   /// `null` on a project nobody has tuned — read as "whatever the detector
   /// defaults to", which is what keeps every threshold literal in Rust.
   shot_review: ShotReviewSettings | null;
@@ -1970,6 +1974,7 @@ export interface ProjectSettingsPatch {
   correction_script?: string;
   prefer_proxies?: boolean;
   generate_preview_proxies?: boolean;
+  build_export_masters?: boolean;
   proxy_override?: { media_id: string; value: boolean | null };
   /// `null` clears the tuning and restores the detection defaults. Refused
   /// whole if `sensitivity` is outside [0, 1] or `min_shot_us` is not a

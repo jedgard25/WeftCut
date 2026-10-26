@@ -64,6 +64,7 @@ import { ComputeCancelledError, ComputeJobs } from './compute/jobs.js'
 import { COMPUTE_CANCELLED_FIELD, COMPUTE_JOB_CANCEL_CHANNEL, COMPUTE_JOBS_SNAPSHOT_CHANNEL, COMPUTE_REQUEST_ID_ARG } from '../shared/compute-jobs.js'
 import { SINGLE_MEDIA_CHANNELS, WAVEFORM_KEY_CHANNELS, resolveSingleMediaArgs, resolveWaveformKeyArg } from './state/single-media-forward.js'
 import { EXPORT_PROJECT_CHANNELS, injectProjectArgs } from './state/export-project-forward.js'
+import type { ProxyPolicy } from './state/workspace-orchestrator.js'
 import { createAudioFxBaker, exportWindowFromArgs, type AudioFxBaker } from './audioFx/baker.js'
 import { createFxCacheLayout, createNodeAudioFxFs, fxCacheRoot } from './audioFx/fxPaths.js'
 import { fxWaveformKey } from '../shared/audioEffects/status.js'
@@ -802,7 +803,7 @@ app.whenReady().then(async () => {
     commitWorkspace: (p: string) => backend!.commitWorkspace(p),
     pushRecent: (p: string, n: string) => recents.push(p, n),
     setLastNewProjectParent: (p: string) => recents.setLastNewProjectParent(p),
-    enqueueJobsForMedia: (j: string, generatePreviewProxies: boolean) => backend!.enqueueJobsForMedia(j, workspaceEvents.requireCurrent(), generatePreviewProxies),
+    enqueueJobsForMedia: (j: string, policy: ProxyPolicy) => backend!.enqueueJobsForMedia(j, workspaceEvents.requireCurrent(), policy.generate_preview_proxies, policy.build_export_masters),
   }
 
   // Workspace dir cache — seeded once at boot; refreshed after each persistence call

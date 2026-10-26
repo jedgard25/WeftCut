@@ -279,13 +279,18 @@ describe('makeEnqueueDerivatives', () => {
     expect(JSON.parse(calls[0])).toEqual([])
   })
 
-  it('passes the project\'s generate_preview_proxies to the napi', () => {
-    const flags: boolean[] = []
-    const enqueue = makeEnqueueDerivatives({ enqueueJobsForMedia: (_json, generate) => { flags.push(generate) } })
+  it('passes the project\'s proxy policy to the napi', () => {
+    const policies: unknown[] = []
+    const enqueue = makeEnqueueDerivatives({ enqueueJobsForMedia: (_json, policy) => { policies.push(policy) } })
     const project = blankProject(seededGen(), 'D')
     enqueue(project)
     enqueue({ ...project, settings: { ...project.settings, generate_preview_proxies: false } })
-    expect(flags).toEqual([true, false])
+    enqueue({ ...project, settings: { ...project.settings, build_export_masters: false } })
+    expect(policies).toEqual([
+      { generate_preview_proxies: true, build_export_masters: true },
+      { generate_preview_proxies: false, build_export_masters: true },
+      { generate_preview_proxies: true, build_export_masters: false },
+    ])
   })
 
   it('openProject runs the injected enqueueDerivatives after replaceState', async () => {

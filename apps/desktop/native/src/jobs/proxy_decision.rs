@@ -149,6 +149,27 @@ pub fn route_needs_decision(route: &DecodeRoute) -> bool {
     }
 }
 
+/// Apply `ProjectSettings.build_export_masters = false` to a decided route: a
+/// source that previews from a proxy exports from its ORIGINAL instead
+/// (DirectExport), so no master is built at import. The export gate
+/// (`prepareExportMedia`) probes the original and builds the master on demand
+/// only on a definitive "unsupported" verdict. A native-preview source
+/// (`PreviewSource::NativeFfmpeg`, the WebCodecs-blind family) keeps its
+/// master: export has no other way to read it, so deferring would only move
+/// the same encode to export time behind a probe that is certain to fail.
+pub fn defer_export_master(route: ProxyRoute) -> ProxyRoute {
+    match route {
+        ProxyRoute {
+            export: ExportSource::FullProxy,
+            preview: PreviewSource::Proxy,
+        } => ProxyRoute {
+            export: ExportSource::Original,
+            preview: PreviewSource::Proxy,
+        },
+        other => other,
+    }
+}
+
 /// Map a route to the background proxy job to run.
 pub fn job_for(route: ProxyRoute) -> ProxyJob {
     match (route.export, route.preview) {
@@ -276,6 +297,31 @@ mod tests {
     use super::*;
     use crate::state::{new_id, DecodeRoute, MediaKind, MediaMetadata, VideoStreamMeta};
     use chrono::Utc;
+
+    #[test]
+    fn deferring_masters_routes_proxied_sources_to_direct_export() {
+        let proxied = ProxyRoute {
+            export: ExportSource::FullProxy,
+            preview: PreviewSource::Proxy,
+        };
+        let deferred = defer_export_master(proxied);
+        assert_eq!(deferred.export, ExportSource::Original);
+        assert_eq!(job_for(deferred), ProxyJob::QuickOnly);
+    }
+
+    #[test]
+    fn deferring_masters_keeps_native_preview_and_bypass_routes() {
+        let native = ProxyRoute {
+            export: ExportSource::FullProxy,
+            preview: PreviewSource::NativeFfmpeg,
+        };
+        assert_eq!(defer_export_master(native), native);
+        let bypass = ProxyRoute {
+            export: ExportSource::Original,
+            preview: PreviewSource::Original,
+        };
+        assert_eq!(defer_export_master(bypass), bypass);
+    }
 
     fn video(over: impl FnOnce(&mut MediaItem)) -> MediaItem {
         let mut item = MediaItem {

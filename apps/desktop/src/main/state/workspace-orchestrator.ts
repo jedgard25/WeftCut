@@ -12,7 +12,7 @@ import type { ActorHandle } from './actor'
 import { isCommandFailure, ValidationFailure } from './errors'
 import { validate } from './validate'
 import type { IdGen } from './ids'
-import type { Project } from './model'
+import type { Project, ProjectSettings } from './model'
 import { blankProject, rootComposition } from './model'
 import { loadProjectFromJson, serializeProjectToJson, PROJECT_FILE, preUpgradeBackupFile } from './persistence'
 import { relinkMissingMedia, type RelinkDeps, type RelinkReport } from './relink'
@@ -21,6 +21,13 @@ import type { MigrationContext, PositionBakeReport } from './migrate'
 
 /** The Rust-native workspace bookkeeping, exposed over napi (Backend methods
  *  commit_workspace / push_recent / set_last_new_project_parent). */
+/** The `ProjectSettings` fields the Rust job layer's `ProxyPolicy` mirrors. */
+export type ProxyPolicy = Pick<ProjectSettings, 'generate_preview_proxies' | 'build_export_masters'>
+
+export function proxyPolicyOf(settings: ProjectSettings): ProxyPolicy {
+  return { generate_preview_proxies: settings.generate_preview_proxies, build_export_masters: settings.build_export_masters }
+}
+
 export interface WorkspaceNapi {
   /** cache.set_workspace → workspace.set → agent_session end → LogBus rotate. */
   commitWorkspace(path: string): Promise<number | void>
@@ -32,8 +39,10 @@ export interface WorkspaceNapi {
   setLastNewProjectParent(parent: string): Promise<void> | void
   /** jobs::enqueue_for_media per media item (open-time derivative re-fan-out +
    *  stale-proxy invalidation). mediaItemsJson = JSON array of serialized
-   *  MediaItem. Async napi binding → Promise; the factory fire-and-forgets it. */
-  enqueueJobsForMedia(mediaItemsJson: string, generatePreviewProxies: boolean): Promise<void> | void
+   *  MediaItem. `policy` is the project's automatic-proxy settings (the job
+   *  layer has no settings access). Async napi binding → Promise; the factory
+   *  fire-and-forgets it. */
+  enqueueJobsForMedia(mediaItemsJson: string, policy: ProxyPolicy): Promise<void> | void
 }
 
 /** Filesystem shell, injected so the orchestrator stays unit-testable. */
@@ -231,7 +240,7 @@ export function makeEnqueueDerivatives(
     const items = Object.values((serializeProject(project) as { media_pool: Record<string, { file_hash_blake3: string }> }).media_pool)
       .filter(item => !item.file_hash_blake3.startsWith('pending-'))
     try {
-      void Promise.resolve(napi.enqueueJobsForMedia(JSON.stringify(items), project.settings.generate_preview_proxies)).catch(error => {
+      void Promise.resolve(napi.enqueueJobsForMedia(JSON.stringify(items), proxyPolicyOf(project.settings))).catch(error => {
         console.warn('[media] derivative recovery could not start', error)
       })
     } catch (error) { console.warn('[media] derivative recovery could not start', error) }
