@@ -25,7 +25,7 @@ use crate::speech::transcriber::{TranscribeRequest, Transcriber};
 pub const WHISPER_MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
 
 const WHISPER_ENDPOINT: &str = "https://api.openai.com/v1/audio/transcriptions";
-const WHISPER_MODEL: &str = "whisper-1";
+pub(crate) const WHISPER_MODEL: &str = "whisper-1";
 
 /// Whisper transcription client. Carries the API key resolved from the
 /// in-memory cache at construction time.

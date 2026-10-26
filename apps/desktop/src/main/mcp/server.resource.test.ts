@@ -150,6 +150,15 @@ describe('read_project picture views answer an image block from the media reader
     expect(noId.isError).toBe(true)
     expect(noId.content[0].text).toContain('media id')
   })
+  it('media_transcript reads media://{id}/transcript and answers its JSON as text', async () => {
+    const ts = host()
+    const body = '{"media_id":"m","time_basis":"source","transcripts":[]}'
+    const spy = vi.fn(async (_u: string, _s?: string) => JSON.stringify({ ok: true, result: { contents: [{ uri: 'u', mimeType: 'application/json', text: body }] } }))
+    const out = await handleCallTool(fakeBackend(spy), () => ts, 'read_project', { view: 'media_transcript', id: MID }) as { content: Array<Record<string, unknown>> }
+    expect(spy.mock.calls[0][0]).toBe(`media://${MID}/transcript`)
+    expect(JSON.parse(spy.mock.calls[0][1] as string).media.id).toBe(MID)
+    expect(out.content[0]).toEqual({ type: 'text', text: body })
+  })
 })
 
 describe('effects://catalog: the effect vocabulary is readable, not learned from refusals', () => {

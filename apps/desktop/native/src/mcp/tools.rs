@@ -1436,6 +1436,8 @@ struct TranscribeClipResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<&'a str>,
     word_timing: speech::WordTiming,
+    /// True when the durable transcript answered: no extraction, no engine.
+    cached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_normalization: Option<&'a speech::audio_normalize::NormalizationReport>,
 }
@@ -1479,6 +1481,8 @@ async fn transcribe_clip_job(
     args: TranscribeClipArgs,
     job: &JobReporter,
 ) -> Result<ToolResult, McpToolError> {
+    use crate::speech::transcript_cache;
+
     let layer_id = parse_uuid(&args.layer_id, "layer_id")?;
     let resolved = resolve_clip_audio_source(
         args.layer.as_ref(),
@@ -1516,9 +1520,9 @@ async fn transcribe_clip_job(
             .find(|b| b.as_str() == tag)
     });
 
-    let (used_backend, transcriber) = {
+    let (used_backend, transcriber, model) = {
         let cfg = b.speech_config.lock().expect("speech_config poisoned");
-        match explicit.or(preferred) {
+        let (used, transcriber) = match explicit.or(preferred) {
             Some(b) => (
                 b,
                 // Strict-resolution failures are the caller's/config's to fix
@@ -1538,64 +1542,109 @@ async fn transcribe_clip_job(
                     None,
                 )
             })?,
-        }
+        };
+        let model = transcript_cache::model_identity(used, cfg.get(used.as_str()));
+        (used, transcriber, model)
     };
 
-    // One slice, so extraction counts 0/1 once admitted and 1/1 when the WAV
-    // is ready; a cache hit skips straight to 1/1.
-    let audio_path = speech::audio_extract::extract_audio_window_with_observer(
-        &b.cache,
-        &resolved.source_path,
+    // The durable transcript (ADR 0142): keyed by source content and the view
+    // the request names, so a window already heard under the same engine,
+    // model, language hint and word-timing request answers with NO extraction
+    // and NO engine spawn. Stored source-absolute, placed per call.
+    let want_words = args.word_timestamps.unwrap_or(true);
+    let language_hint = transcript_cache::language_key(args.language.as_deref());
+    let key = transcript_cache::cache_key(
         &resolved.source_hash,
-        resolved.source_in_us,
-        resolved.source_out_us,
-        job.admission(ComputePhase::Extracting { done: 0, total: 1 }),
-    )
-    .await
-    .map_err(|e| McpToolError::internal_error(format!("audio extract: {e:#}"), None))?;
-    job.phase(ComputePhase::Extracting { done: 1, total: 1 });
-
-    // Keep the private copy alive until inference has consumed it. Original
-    // mode returns the exact cached WAV without processing or cache mutation,
-    // and reports no normalizing phase.
-    let prepared = speech::audio_normalize::prepare(
-        audio_path,
-        args.normalize_audio,
-        job.admission(ComputePhase::Normalizing),
-    )
-    .await
-    .map_err(|e| McpToolError::internal_error(format!("transcription audio: {e:#}"), None))?;
-    let raw = transcriber
-        .transcribe_observed(
-            speech::TranscribeRequest {
-                audio_path: prepared.path.clone(),
-                language: args.language,
-                want_word_timing: args.word_timestamps.unwrap_or(true),
-            },
-            &|phase| job.model(phase),
+        used_backend,
+        &model,
+        &language_hint,
+        want_words,
+    );
+    let dest = b.cache.transcript(&resolved.source_hash, &key);
+    let mut cache: transcript_cache::TranscriptCache = match tokio::fs::read(&dest).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Default::default(),
+    };
+    // A normalized run is the explicit "hear it again, louder" request, so it
+    // never answers from the cache — but what it hears replaces the window.
+    let cached =
+        !args.normalize_audio && cache.covers(resolved.source_in_us, resolved.source_out_us);
+    let mut normalization = None;
+    if cached {
+        crate::cache::touch_if_stale(&dest);
+    } else {
+        // One slice, so extraction counts 0/1 once admitted and 1/1 when the WAV
+        // is ready; a cache hit skips straight to 1/1.
+        let audio_path = speech::audio_extract::extract_audio_window_with_observer(
+            &b.cache,
+            &resolved.source_path,
+            &resolved.source_hash,
+            resolved.source_in_us,
+            resolved.source_out_us,
+            job.admission(ComputePhase::Extracting { done: 0, total: 1 }),
         )
         .await
-        .map_err(map_speech_error)?;
+        .map_err(|e| McpToolError::internal_error(format!("audio extract: {e:#}"), None))?;
+        job.phase(ComputePhase::Extracting { done: 1, total: 1 });
 
-    // Normalize the backend's raw style → one Transcript, then place the
-    // audio-slice-relative times on the timeline.
-    let mut transcript = speech::parse_raw(raw).map_err(map_speech_error)?;
-    for segment in &mut transcript.segments {
-        segment.t_start_us = (segment.t_start_us as f64 / resolved.playback_rate).round() as i64;
-        segment.t_end_us = (segment.t_end_us as f64 / resolved.playback_rate).round() as i64;
-        for word in &mut segment.words {
-            word.t_start_us = (word.t_start_us as f64 / resolved.playback_rate).round() as i64;
-            word.t_end_us = (word.t_end_us as f64 / resolved.playback_rate).round() as i64;
-        }
+        // Keep the private copy alive until inference has consumed it. Original
+        // mode returns the exact cached WAV without processing or cache mutation,
+        // and reports no normalizing phase.
+        let prepared = speech::audio_normalize::prepare(
+            audio_path,
+            args.normalize_audio,
+            job.admission(ComputePhase::Normalizing),
+        )
+        .await
+        .map_err(|e| McpToolError::internal_error(format!("transcription audio: {e:#}"), None))?;
+        let raw = transcriber
+            .transcribe_observed(
+                speech::TranscribeRequest {
+                    audio_path: prepared.path.clone(),
+                    language: args.language.clone(),
+                    want_word_timing: want_words,
+                },
+                &|phase| job.model(phase),
+            )
+            .await
+            .map_err(map_speech_error)?;
+        normalization = prepared.normalization;
+
+        // Normalize the backend's raw style → one Transcript. Its times are
+        // slice-relative SOURCE time; the cache keeps them source-absolute.
+        let mut transcript = speech::parse_raw(raw).map_err(map_speech_error)?;
+        transcript.shift(resolved.source_in_us);
+        cache.backend = used_backend.as_str().to_string();
+        cache.model = model;
+        cache.language_hint = language_hint;
+        cache.word_timestamps = want_words;
+        cache.merge_window(
+            resolved.source_in_us,
+            resolved.source_out_us,
+            transcript.segments,
+            transcript.language,
+            transcript.word_timing,
+        );
+        // A write that fails costs the NEXT call an engine run; failing this
+        // one would throw away a transcript already heard (and maybe billed).
+        let _ = write_json_atomic(&dest, &cache).await;
     }
-    transcript.shift(resolved.timeline_start_us);
 
+    let mut segments = cache.segments_in(resolved.source_in_us, resolved.source_out_us);
+    transcript_cache::place_on_timeline(
+        &mut segments,
+        resolved.source_in_us,
+        resolved.timeline_start_us,
+        resolved.timeline_end_us,
+        resolved.playback_rate,
+    );
     let result = TranscribeClipResult {
         backend: used_backend.as_str(),
-        segments: &transcript.segments,
-        language: transcript.language.as_deref(),
-        word_timing: transcript.word_timing,
-        input_normalization: prepared.normalization.as_ref(),
+        segments: &segments,
+        language: cache.language.as_deref(),
+        word_timing: cache.word_timing,
+        cached,
+        input_normalization: normalization.as_ref(),
     };
     ToolResult::json(&result)
 }
@@ -1787,12 +1836,13 @@ fn map_vlm_error(e: crate::vlm::VlmError) -> McpToolError {
     }
 }
 
-/// Persist a `DescriptionCache` JSON atomically (temp → promote), mirroring
+/// Persist a range-lazy cache value (a `DescriptionCache`, a
+/// `TranscriptCache`) as JSON atomically (temp → promote), mirroring
 /// `write_voiceover_atomic`.
 #[cfg(feature = "speech")]
-async fn write_description_atomic(
+async fn write_json_atomic<T: Serialize>(
     dest: &std::path::Path,
-    cache: &crate::vlm::DescriptionCache,
+    cache: &T,
 ) -> Result<(), anyhow::Error> {
     use crate::cache::{cached_ok, discard_temp, promote_temp, temp_path};
     use anyhow::Context;
@@ -1801,7 +1851,7 @@ async fn write_description_atomic(
             .await
             .with_context(|| format!("ensure {}", parent.display()))?;
     }
-    let body = serde_json::to_vec_pretty(cache).context("serialize description cache")?;
+    let body = serde_json::to_vec_pretty(cache).context("serialize cache value")?;
     let tmp = temp_path(dest);
     let _ = tokio::fs::remove_file(&tmp).await;
     tokio::fs::write(&tmp, &body)
@@ -1809,7 +1859,7 @@ async fn write_description_atomic(
         .with_context(|| format!("write {}", tmp.display()))?;
     if !cached_ok(&tmp) {
         discard_temp(dest);
-        anyhow::bail!("description cache is empty after write");
+        anyhow::bail!("cache value is empty after write");
     }
     promote_temp(dest)?;
     Ok(())
@@ -1963,7 +2013,7 @@ async fn describe_clip_job(
         vlm::shift_segments(&mut fresh, resolved.source_in_us);
 
         cache.merge_window(resolved.source_in_us, resolved.source_out_us, fresh);
-        write_description_atomic(&dest, &cache).await.map_err(|e| {
+        write_json_atomic(&dest, &cache).await.map_err(|e| {
             McpToolError::internal_error(format!("persist description: {e:#}"), None)
         })?;
     }
@@ -2084,6 +2134,169 @@ pub(super) async fn synthesize_speech(
         "synthesize_speech is handled by the host process (TS actor hybrid)".to_string(),
         None,
     ))
+}
+
+// ============================================================
+// Durable transcripts through the real tool path, on every platform: a stored
+// window answers without an engine (the configured "binary" is not even
+// executable, so a spawn would fail the call).
+// ============================================================
+
+#[cfg(all(test, feature = "speech", feature = "mcp"))]
+mod transcript_cache_tests {
+    use serde_json::{json, Value};
+
+    use crate::napi_backend::Backend;
+    use crate::speech::transcript::Word;
+    use crate::speech::transcript_cache::{self, TranscriptCache};
+    use crate::speech::{Segment, SpeechBackend, WordTiming};
+    use crate::state::{new_id, AudioParams, Layer, LayerParams, MediaItem, MediaKind};
+
+    fn fixture(dir: &std::path::Path) -> (Backend, Layer, MediaItem, String) {
+        use crate::state::{AudioStreamMeta, DecodeRoute, MediaMetadata};
+        let binary = dir.join("whisper-cli");
+        let model = dir.join("ggml-test.bin");
+        std::fs::write(&binary, b"not an engine").unwrap();
+        std::fs::write(&model, b"weights").unwrap();
+        let cfg = crate::speech::config::BackendConfig::Local {
+            binary,
+            model,
+            tokens: None,
+            device: None,
+            threads: None,
+        };
+        let identity = transcript_cache::model_identity(SpeechBackend::WhisperCpp, Some(&cfg));
+        let b = Backend::new_for_test(std::sync::Arc::new(crate::events::VecEventSink::new()));
+        b.speech_config
+            .lock()
+            .unwrap()
+            .insert("whisper_cpp".into(), cfg);
+        let media = MediaItem {
+            id: new_id(),
+            label: None,
+            path_abs: dir.join("missing.wav"),
+            path_rel: None,
+            kind: MediaKind::Audio,
+            metadata: MediaMetadata {
+                duration_us: Some(10_000_000),
+                audio: Some(AudioStreamMeta {
+                    sample_rate: 48_000,
+                    channels: 1,
+                    codec: "pcm_s16le".into(),
+                    start_pts_us: None,
+                }),
+                ..Default::default()
+            },
+            decode_route: DecodeRoute::Bypass,
+            waveform_path: None,
+            conform_path: None,
+            thumbnails_dir: None,
+            file_hash_blake3: format!("transcript-hit-{}", new_id()),
+            file_size: 0,
+            file_mtime: 0,
+            imported_at: chrono::Utc::now(),
+        };
+        // Source [1 s, 3 s) placed at timeline 2 s.
+        let layer = Layer {
+            id: new_id(),
+            label: None,
+            t_start_us: 2_000_000,
+            t_end_us: 4_000_000,
+            enabled: true,
+            locked: false,
+            metadata: Default::default(),
+            params: LayerParams::Audio(AudioParams {
+                timing: Default::default(),
+                media: media.id,
+                src_in_us: 1_000_000,
+                src_out_us: 3_000_000,
+                gain_db: Default::default(),
+                pan: Default::default(),
+                fade_in_us: 0,
+                fade_out_us: 0,
+                mute: false,
+                role: Default::default(),
+            }),
+            effects: Vec::new(),
+        };
+        (b, layer, media, identity)
+    }
+
+    #[tokio::test]
+    async fn a_covered_window_answers_from_the_store_on_the_timeline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (b, layer, media, identity) = fixture(dir.path());
+        let key = transcript_cache::cache_key(
+            &media.file_hash_blake3,
+            SpeechBackend::WhisperCpp,
+            &identity,
+            "auto",
+            true,
+        );
+        let mut cache = TranscriptCache {
+            backend: "whisper_cpp".into(),
+            model: identity,
+            language_hint: "auto".into(),
+            ..Default::default()
+        };
+        // Heard by an earlier call over the WHOLE source.
+        cache.merge_window(
+            0,
+            10_000_000,
+            vec![
+                Segment {
+                    t_start_us: 1_500_000,
+                    t_end_us: 1_800_000,
+                    text: "hello".into(),
+                    words: vec![Word {
+                        t_start_us: 1_500_000,
+                        t_end_us: 1_800_000,
+                        text: "hello".into(),
+                    }],
+                },
+                Segment {
+                    t_start_us: 5_000_000,
+                    t_end_us: 6_000_000,
+                    text: "later".into(),
+                    words: vec![],
+                },
+            ],
+            Some("en".into()),
+            WordTiming::Exact,
+        );
+        let path = b.cache.transcript(&media.file_hash_blake3, &key);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&cache).unwrap()).unwrap();
+
+        let args = json!({ "layer_id": layer.id.to_string(), "backend": "whisper_cpp", "layer": layer, "media": media });
+        let reply: Value = serde_json::from_str(
+            &b.mcp_call_tool("transcribe_clip".into(), args.to_string())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        let body: Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["cached"], true);
+        assert_eq!(body["language"], "en");
+        let segments = body["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), 1, "only the layer's window: {body}");
+        assert_eq!(segments[0]["t_start_us"], 2_500_000);
+        assert_eq!(segments[0]["words"][0]["t_end_us"], 2_800_000);
+
+        // Another language hint is another view: it misses, and the engine that
+        // is not one fails the call rather than answering out of the wrong entry.
+        let mut other = args.clone();
+        other["language"] = json!("de");
+        let reply: Value = serde_json::from_str(
+            &b.mcp_call_tool("transcribe_clip".into(), other.to_string())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(reply["ok"], true, "{reply}");
+    }
 }
 
 // ============================================================
@@ -2260,7 +2473,7 @@ echo "whisper_print_progress_callback: progress =  50%" >&2
 printf '1\n00:00:00,000 --> 00:00:00,500\nhello\n\n' > out.srt"#;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn transcribe_reports_each_phase_in_order_and_a_cache_hit_skips_extraction() {
+    async fn transcribe_reports_each_phase_in_order_and_a_cache_hit_runs_nothing() {
         let Some(t) = transcription(WHISPER).await else {
             return;
         };
@@ -2279,12 +2492,14 @@ printf '1\n00:00:00,000 --> 00:00:00,500\nhello\n\n' > out.srt"#;
         first.extend(model.clone());
         assert_eq!(phases(&t.sink, "first"), first);
 
-        // The slice is cached now: extraction is done before it starts.
+        // The transcript is durable now: the same request runs nothing at all —
+        // no extraction, no engine — and says so.
         let reply = call(b, "transcribe_clip", &with_job(&t.args, "second")).await;
         assert_eq!(reply["ok"], true, "{reply}");
-        let mut second = vec![json!({ "kind": "extracting", "done": 1, "total": 1 })];
-        second.extend(model);
-        assert_eq!(phases(&t.sink, "second"), second);
+        assert!(phases(&t.sink, "second").is_empty());
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"cached\":true"), "{text}");
+        let _ = model;
 
         // Without a job id: same answer, no events, nothing registered.
         let before = t.sink.names().len();

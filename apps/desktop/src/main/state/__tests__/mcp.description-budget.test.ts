@@ -76,7 +76,10 @@ const PROPERTY_DESCRIPTION_CAP = 260
 // role's Motif without copying colours and fonts by hand.
 // +1 KB: `render_frames` (H3-D3) — the agent sees the composed frame export
 // renders; H2 placed titles over faces and cards off frame without it.
-const CATALOG_BYTE_BUDGET = 157_000
+// +0.5 KB: durable transcripts (ADR 0142) — `cached` in transcribe_clip's
+// return shape with the rule that decides it, and the `media_transcript` view a
+// client without resources reads a later session's transcript through.
+const CATALOG_BYTE_BUDGET = 157_500
 
 function compact(v: unknown): string { return JSON.stringify(v) }
 

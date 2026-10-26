@@ -60,6 +60,8 @@ export const HOST_RESOURCE_TEMPLATES = [
     description: 'The audio peaks file of a media item (binary, base64). 404 with a hint until generated.' },
   { uriTemplate: 'media://{id}/analysis', name: 'Media shot analysis', mimeType: APP_JSON,
     description: 'The deterministic shot report of a media item — { shots, cut_scores }, source-absolute — computed on a miss, shared with analyze_clip.' },
+  { uriTemplate: 'media://{id}/transcript', name: 'Media transcripts', mimeType: APP_JSON,
+    description: 'Every transcript transcribe_clip has stored for a media item, newest first — { media_id, time_basis: "source", transcripts: [{ backend, model, language_hint, word_timestamps, language, word_timing, covered_ranges, segments }] }, source-absolute µs; 404 until transcribe_clip has run. Never runs speech.' },
   { uriTemplate: 'media://{id}/description', name: 'Media scene descriptions', mimeType: APP_JSON,
     description: 'Cached scene descriptions of a media item under the app\'s current view — { covered_ranges, segments }; 404 until describe_clip has run.' },
   { uriTemplate: 'media://{id}/shot-description', name: 'Media shot descriptions', mimeType: APP_JSON,

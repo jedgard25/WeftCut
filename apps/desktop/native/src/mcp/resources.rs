@@ -170,6 +170,12 @@ pub(crate) async fn read_resource(
             )
             .await;
         }
+        // /transcript — the durable transcripts, never computed on a miss; see
+        // `read_transcript_resource`.
+        #[cfg(feature = "speech")]
+        if let Some(id_part) = tail.strip_suffix("/transcript") {
+            return read_transcript_resource(b, uri, id_part, state.media).await;
+        }
         // /analysis — always computable, computes on miss; see
         // `read_analysis_resource`.
         #[cfg(feature = "jobs")]
@@ -409,6 +415,76 @@ async fn read_description_resource(
         .map_err(|e| McpToolError::internal_error(format!("read {}: {e}", path.display()), None))?;
     let body: Value = serde_json::from_slice(&bytes)
         .map_err(|e| McpToolError::internal_error(format!("parse description cache: {e}"), None))?;
+    text_resource(uri, &body)
+}
+
+/// Serve `media://{id}/transcript` — every durable transcript stored for the
+/// media's source content (ADR 0142), newest first: `{ media_id, time_basis:
+/// "source", transcripts: [{ backend, model, language_hint, word_timestamps,
+/// language, word_timing, covered_ranges, segments }] }`, all times
+/// source-absolute.
+///
+/// A LIST, unlike `media://{id}/description`'s one entry: a description's view
+/// is the app's settings, which the host can inject, while a transcript's view
+/// is what each `transcribe_clip` call asked for — engine, language hint, word
+/// timing — and no URI carries that. So the reader names no view and returns
+/// them all, each labelled with its own. Never runs speech: an empty source is
+/// a `404` that names the tool that fills it.
+#[cfg(feature = "speech")]
+async fn read_transcript_resource(
+    b: &Backend,
+    uri: &str,
+    id_part: &str,
+    media: Option<crate::state::MediaItem>,
+) -> Result<ResourceResult, McpToolError> {
+    use crate::speech::transcript_cache::TranscriptCache;
+
+    let media_id = Uuid::parse_str(id_part).map_err(|_| {
+        McpToolError::resource_not_found(format!("media URI has invalid UUID: {id_part}"), None)
+    })?;
+    let media = media.ok_or_else(|| {
+        McpToolError::resource_not_found(format!("media {media_id} not found"), None)
+    })?;
+    let dir = b.cache.transcripts_for(&media.file_hash_blake3);
+    let mut found: Vec<(std::time::SystemTime, TranscriptCache)> = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json")
+                || !crate::cache::cached_ok(&path)
+            {
+                continue;
+            }
+            // An entry that no longer parses (a cache from another build) is
+            // skipped, not fatal: the others still answer.
+            let Ok(bytes) = tokio::fs::read(&path).await else {
+                continue;
+            };
+            let Ok(cache) = serde_json::from_slice::<TranscriptCache>(&bytes) else {
+                continue;
+            };
+            let modified = entry
+                .metadata()
+                .await
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            found.push((modified, cache));
+        }
+    }
+    if found.is_empty() {
+        return Err(McpToolError::resource_not_found(
+            format!(
+                "no transcript stored yet for media {media_id} — call transcribe_clip on a layer of it (this read never runs speech)",
+            ),
+            None,
+        ));
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    let body = serde_json::json!({
+        "media_id": media_id,
+        "time_basis": "source",
+        "transcripts": found.into_iter().map(|(_, c)| c).collect::<Vec<_>>(),
+    });
     text_resource(uri, &body)
 }
 
@@ -695,6 +771,72 @@ mod stateless_tests {
     /// diagnose. The reader itself needs a `Backend` and a cache on disk, so
     /// what is pinned here is the shape it reads from.
     #[cfg(feature = "speech")]
+    #[cfg(feature = "speech")]
+    #[tokio::test]
+    async fn transcript_resource_lists_every_stored_view_and_never_computes() {
+        use crate::speech::transcript_cache::{cache_key, TranscriptCache};
+        use crate::speech::SpeechBackend;
+        let b = Backend::new_for_test(std::sync::Arc::new(crate::events::VecEventSink::new()));
+        let id = Uuid::now_v7();
+        let hash = format!("transcript-test-{id}");
+        let state = serde_json::json!({
+            "media": {
+                "id": id, "label": null, "path_abs": "/nonexistent", "path_rel": null,
+                "kind": "Audio", "metadata": crate::state::MediaMetadata::default(),
+                "decode_route": { "route": "bypass" }, "waveform_path": null,
+                "conform_path": null, "thumbnails_dir": null,
+                "file_hash_blake3": hash, "file_size": 0, "file_mtime": 0,
+                "imported_at": chrono::Utc::now(),
+            },
+        })
+        .to_string();
+        let uri = format!("media://{id}/transcript");
+        let error = read_resource(&b, &uri, &state).await.unwrap_err();
+        assert!(
+            error.message.contains("call transcribe_clip"),
+            "{}",
+            error.message
+        );
+
+        for (language, text) in [("auto", "hello"), ("en", "hello there")] {
+            let key = cache_key(&hash, SpeechBackend::WhisperCpp, "m", language, true);
+            let mut cache = TranscriptCache {
+                backend: "whisper_cpp".into(),
+                model: "m".into(),
+                language_hint: language.into(),
+                ..Default::default()
+            };
+            cache.merge_window(
+                0,
+                1_000_000,
+                vec![crate::speech::Segment {
+                    t_start_us: 0,
+                    t_end_us: 500_000,
+                    text: text.into(),
+                    words: vec![],
+                }],
+                None,
+                crate::speech::WordTiming::Exact,
+            );
+            let path = b.cache.transcript(&hash, &key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
+        }
+        let res = read_resource(&b, &uri, &state).await.unwrap();
+        let ResourceContent::Text { text, .. } = &res.contents[0] else {
+            panic!("expected text content");
+        };
+        let body: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["time_basis"], "source");
+        let hints: std::collections::BTreeSet<_> = body["transcripts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["language_hint"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(hints, ["auto".to_string(), "en".to_string()].into());
+    }
+
     #[test]
     fn resource_state_reads_the_injected_describe_view() {
         let state: ResourceState = serde_json::from_str(

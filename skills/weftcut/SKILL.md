@@ -154,7 +154,10 @@ descriptions:
 - Captions: `transcribe_clip` → inspect the returned `segments` → `apply_transcripts`,
   passing the envelope's `segments` and `word_timing` through (also
   `/auto-caption`). The cues come out within the style's caption limits, so
-  do not break lines or split cues by hand. A subtitle FILE the user already has: `import_media` it,
+  do not break lines or split cues by hand. Transcripts are kept per source: a
+  window already heard answers `cached: true` without the engine, and a later
+  session reads what was said with `read_project` view `media_transcript`
+  (source-absolute times) instead of transcribing again. A subtitle FILE the user already has: `import_media` it,
   then `apply_subtitles { media_id, t_start_us? }` — the whole document, its
   time 0 at `t_start_us`. Correcting names and jargon: put the script or
   notes in `set_project_settings { correction_script }`, then

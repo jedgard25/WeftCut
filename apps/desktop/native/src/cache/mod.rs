@@ -416,6 +416,27 @@ impl CacheLayout {
         self.transcribe_audio_dir().join(format!("{hash}.wav"))
     }
 
+    /// Durable transcripts (`speech::transcript_cache`), one directory per
+    /// source: `transcripts/<source_hash>/<key>.json`, where `key` is
+    /// `transcript_cache::cache_key` (source hash + {backend, model, language
+    /// hint, word-timing request, cache version}). Per source rather than flat,
+    /// because the key's axes are request arguments a `media://{id}/transcript`
+    /// URI cannot carry: the resource lists the source's directory instead of
+    /// resolving one key. Re-pays an engine run (or an API bill) on eviction, so
+    /// the disk-LRU sweep never touches it.
+    pub fn transcripts_dir(&self) -> PathBuf {
+        self.current_root().join("transcripts")
+    }
+
+    pub fn transcripts_for(&self, source_hash: &str) -> PathBuf {
+        self.transcripts_dir().join(source_hash)
+    }
+
+    pub fn transcript(&self, source_hash: &str, key: &str) -> PathBuf {
+        self.transcripts_for(source_hash)
+            .join(format!("{key}.json"))
+    }
+
     /// Cached scene descriptions for the video-understanding sidecar (`vlm`).
     /// A SEPARATE namespace from the shot layer's `VSHOT` sidecar so the cheap
     /// deterministic layer and the expensive opt-in layer never block each
@@ -514,6 +535,7 @@ impl CacheLayout {
             self.filmstrip_root(),
             self.inline_subs_dir(),
             self.transcribe_audio_dir(),
+            self.transcripts_dir(),
             self.descriptions_dir(),
             self.shots_dir(),
             self.shot_stats_dir(),

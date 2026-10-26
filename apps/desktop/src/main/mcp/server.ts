@@ -477,9 +477,13 @@ async function dispatchTool(
     // Rust reader `media://{id}/thumbnail` and `media://{id}/frame/{t_us}` use,
     // and answered as an IMAGE content block, which is what a model can look at.
     // A derivative not yet generated refuses with the reader's own hint.
-    if (name === 'read_project' && (args.view === 'media_thumbnail' || args.view === 'media_frame')) {
+    // `media_transcript` rides the same branch: the stored transcripts are a
+    // Rust read too, answered as the JSON text the resource serves.
+    if (name === 'read_project' && (args.view === 'media_thumbnail' || args.view === 'media_frame' || args.view === 'media_transcript')) {
       const p = mcpDef('read_project').parseDedicated!(args)
-      const uri = p.view === 'media_frame' ? `media://${p.id as string}/frame/${p.t_us as number}` : `media://${p.id as string}/thumbnail`
+      const uri = p.view === 'media_frame' ? `media://${p.id as string}/frame/${p.t_us as number}`
+        : p.view === 'media_transcript' ? `media://${p.id as string}/transcript`
+        : `media://${p.id as string}/thumbnail`
       // The resource reader answers a missing id with the resource vocabulary
       // (`not_found`, which over tools means "no such tool"); as a tool call it
       // is a bad argument, and the reader's own sentence says which.

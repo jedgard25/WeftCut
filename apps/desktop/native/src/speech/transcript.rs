@@ -12,13 +12,13 @@
 //! tool layer calls [`Transcript::shift`] to place them on the timeline before
 //! returning to the agent.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Provenance of the per-word timestamps in a [`Transcript`]. Downstream
 /// text-editing reads this to know whether a word boundary is frame-trustworthy
 /// (`Exact`, straight from an engine's token offsets) or approximate
 /// (`InterpolatedFromCue`, derived by splitting a cue span across its words).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WordTiming {
     /// Word times come straight from the engine's per-token offsets.
@@ -31,7 +31,7 @@ pub enum WordTiming {
 }
 
 /// One word with its own `[t_start_us, t_end_us]` span.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Word {
     pub t_start_us: i64,
     pub t_end_us: i64,
@@ -40,7 +40,7 @@ pub struct Word {
 
 /// One transcript segment — an SRT cue, or a whisper `transcription[]` entry:
 /// a timed span of text plus its constituent [`Word`]s.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Segment {
     pub t_start_us: i64,
     pub t_end_us: i64,

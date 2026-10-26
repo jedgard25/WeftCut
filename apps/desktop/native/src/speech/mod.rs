@@ -30,6 +30,7 @@ pub mod parse;
 pub mod synthesizer;
 pub mod transcriber;
 pub mod transcript;
+pub mod transcript_cache;
 
 pub use backend::{Capabilities, Locality, SpeechBackend, DEFAULT_ORDER};
 pub use config::{availability, Availability, BackendConfig};
