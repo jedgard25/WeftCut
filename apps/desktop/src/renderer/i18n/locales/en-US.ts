@@ -2386,6 +2386,12 @@ const enUS = {
     decode_unsupported_title: "Unsupported format",
     decode_unsupported_body:
       "The Lite engine can't decode this clip. Switch to the Standard engine to play it.",
+    decode_unsupported_body_lite:
+      "The Lite engine can't decode this clip. Switch to the Standard engine to play it.",
+    decode_unsupported_body_standard:
+      "The Standard engine can't decode this clip with the current settings. Generate a proxy, or check the decode engine setting.",
+    decode_unsupported_body_generic:
+      "No available decode engine can play this clip with the current settings. Generate a proxy to play it.",
     decode_unsupported_switch: "Switch to Standard",
     decode_unsupported_body_no_component:
       "This clip's format isn't supported by the Lite engine, and the Standard engine isn't installed.",

@@ -36,18 +36,30 @@ afterEach(() => {
 describe("UnsupportedClipCard", () => {
   it("shows the Switch-to-Standard button when the ffmpeg component is available, and dispatches the patch on click", async () => {
     useDecodeComponentStore.setState({ available: true });
-    render(<UnsupportedClipCard mediaId={MEDIA_ID} />);
+    render(<UnsupportedClipCard mediaId={MEDIA_ID} reason="webcodecs cannot decode this original" />);
 
     expect(screen.getByText("Unsupported format")).toBeTruthy();
+    expect(screen.getByText("The Lite engine can't decode this clip. Switch to the Standard engine to play it.")).toBeTruthy();
+    expect(screen.getByTestId("unsupported-clip-reason").textContent).toBe("webcodecs cannot decode this original");
     const button = screen.getByRole("button", { name: "Switch to Standard" });
     await userEvent.click(button);
 
     expect(setAppSettings).toHaveBeenCalledWith({ decode_engine: "ffmpeg" });
   });
 
+  it("names the Standard engine, not Lite, when the Standard engine was the one that failed", () => {
+    useDecodeComponentStore.setState({ available: true });
+    render(<UnsupportedClipCard mediaId={MEDIA_ID} reason="Standard (ffmpeg) engine failed for this source" />);
+    expect(
+      screen.getByText(
+        "The Standard engine can't decode this clip with the current settings. Generate a proxy, or check the decode engine setting.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("shows the no-component body and no Switch-to-Standard button when the ffmpeg component is unavailable", () => {
     useDecodeComponentStore.setState({ available: false });
-    render(<UnsupportedClipCard mediaId={MEDIA_ID} />);
+    render(<UnsupportedClipCard mediaId={MEDIA_ID} reason="Standard (ffmpeg) engine unavailable — component not loaded" />);
 
     expect(
       screen.getByText(

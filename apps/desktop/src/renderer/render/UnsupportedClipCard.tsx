@@ -12,7 +12,24 @@ import { useDecodeComponentStore } from "../settings/decodeComponentStore";
 import { generateQuickProxy } from "../ipc";
 import { setProxyOverride } from "../state/proxyPreferenceStore";
 
-export function UnsupportedClipCard({ mediaId }: { mediaId: string }) {
+function bodyKey(reason: string | undefined, componentAvailable: boolean): string {
+  if (!componentAvailable) return "settings.decode_unsupported_body_no_component";
+  const r = (reason ?? "").toLowerCase();
+  if (r.includes("webcodecs") || r.includes("lite")) return "settings.decode_unsupported_body_lite";
+  if (r.includes("ffmpeg") || r.includes("standard")) return "settings.decode_unsupported_body_standard";
+  return "settings.decode_unsupported_body_generic";
+}
+
+export function UnsupportedClipCard({
+  mediaId,
+  reason,
+}: {
+  mediaId: string;
+  /// The resolver's actual reason. The card used to always blame the Lite
+  /// engine, even when the Standard engine was the one that failed or was
+  /// missing. Optional so older hosts/tests still render.
+  reason?: string | undefined;
+}) {
   const { t } = useTranslation();
   const componentAvailable = useDecodeComponentStore((s) => s.available);
   return (
@@ -23,12 +40,13 @@ export function UnsupportedClipCard({ mediaId }: { mediaId: string }) {
       <div className="max-w-sm space-y-3 p-4">
         <div className="font-medium">{t("settings.decode_unsupported_title")}</div>
         <div className="text-white/70">
-          {t(
-            componentAvailable
-              ? "settings.decode_unsupported_body"
-              : "settings.decode_unsupported_body_no_component",
-          )}
+          {t(bodyKey(reason, componentAvailable))}
         </div>
+        {reason && (
+          <div className="text-xs text-white/45 break-words" data-testid="unsupported-clip-reason">
+            {reason}
+          </div>
+        )}
         <div className="flex justify-center gap-2">
           {componentAvailable && (
             <Button

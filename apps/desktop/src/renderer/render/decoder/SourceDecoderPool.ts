@@ -26,6 +26,13 @@ import { FfmpegSource, type FfmpegSourceInit } from "./FfmpegSource";
 import type { SourceHandleInit, PreviewDecodeDevice } from "./session";
 
 const IDLE_DISPOSE_MS = 5_000;
+/// How many NON-priority preview sessions the pool keeps warm beyond the live
+/// demand plan (active + bounded lookahead). Two makes a back-and-forth scrub
+/// across a cut instant without letting a pass over twenty clips mint twenty
+/// decoders: every visited clip used to stay resident for the full 5 s idle
+/// timeout, which is what exhausted a 4K source's admission budget. The plan
+/// itself bounds the rest; this is only the cache in front of the idle sweep.
+const MAX_RETAINED_PREVIEW_SESSIONS = 2;
 
 /// Shared per-source state: the opened mediabunny `Input` (lazily-read
 /// proxy) + its `EncodedPacketSink`, plus the once-per-source decoder
@@ -507,6 +514,11 @@ export class SourceHandle {
     return this.lastUseMs > 0 && nowMs - this.lastUseMs > IDLE_DISPOSE_MS;
   }
 
+  /// Last user-request time, for the pool's retention LRU.
+  lastUsedMs(): number {
+    return this.lastUseMs;
+  }
+
   /// Live decoder queue depth — `VideoDecoder.decodeQueueSize`. Returns
   /// 0 when no decoder is active yet (or after dispose). Read by the
   /// dev `PerfHUD`; not on the playback hot path.
@@ -601,6 +613,11 @@ export class SourceDecoderPool {
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private priorityKeys = new Set<string>();
   private prioritySignature = "";
+  /// Close promises started by a retention trim. They are no longer in
+  /// `handles` (so a new open cannot receive them), but their native lease may
+  /// still be draining; the capacity reclaim awaits these before reporting that
+  /// no capacity was freed.
+  private pendingCloses = new Set<Promise<void>>();
   /// Current playback-resolution divisor (1 | 2 | 4), stamped onto every
   /// `FfmpegSource` this pool creates. 1 until the preview seeds it from the
   /// app setting. `SourceHandle` (Lite/WebCodecs) has no such knob — it decodes
@@ -626,6 +643,11 @@ export class SourceDecoderPool {
     if (init.engine === "ffmpeg") {
       const existingFfmpeg = this.handles.get(init.layerId);
       if (existingFfmpeg) return existingFfmpeg;
+      // Keep the retained cache bounded BEFORE minting another native session.
+      // Not awaited: acquire is synchronous and the old session's lease drains
+      // in the background; if admission still refuses, FfmpegSource's capacity
+      // path awaits the same closes via `reclaimRetainedCapacity`.
+      void this.trimRetainedSessions(init.layerId);
       const sourceInit: FfmpegSourceInit = {
         layerId: init.layerId,
         mediaId: init.mediaId,
@@ -647,7 +669,7 @@ export class SourceDecoderPool {
         ...(init.forceLane !== undefined ? { forceLane: init.forceLane } : {}),
       };
       const reclaimRetainedCapacity = () =>
-        this.reclaimRetainedHardwareCapacity(init.layerId);
+        this.reclaimRetainedCapacity(init.layerId);
       const ffmpegHandle = this.deps.makeFfmpegSource
         ? this.deps.makeFfmpegSource(sourceInit, reclaimRetainedCapacity)
         : new FfmpegSource(sourceInit, { reclaimRetainedCapacity });
@@ -657,6 +679,7 @@ export class SourceDecoderPool {
     }
     const existing = this.handles.get(init.layerId);
     if (existing) return existing;
+    void this.trimRetainedSessions(init.layerId);
     const media = this.acquireMedia(
       init.mediaId,
       init.proxyAssetUrl,
@@ -697,8 +720,10 @@ export class SourceDecoderPool {
         spilled.push([key, handle]);
       }
     }
-    if (spilled.length === 0) return false;
-    return this.recyclePrioritySpills(spilled);
+    const trim = this.trimRetainedSessions();
+    if (spilled.length === 0) return trim;
+    const recycle = this.recyclePrioritySpills(spilled);
+    return Promise.all([trim, recycle]).then(([trimmed, recycled]) => trimmed || recycled);
   }
 
   /// Adopt a new playback-resolution divisor (1 | 2 | 4): future sources are
@@ -713,6 +738,10 @@ export class SourceDecoderPool {
       if (h instanceof FfmpegSource) h.setPlaybackScaleDiv(div);
     }
   }
+
+  /// Diagnostics: live decoder session count (PerfHUD/tests). This is the
+  /// number the 4K-scrub regression bounds; it is not a policy input.
+  liveSessionCount(): number { return this.handles.size; }
 
   /// Public alias for `releaseHandle`.
   release(layerId: string): void {
@@ -781,41 +810,92 @@ export class SourceDecoderPool {
     }
   }
 
-  /// Release lower-priority native hardware sessions and wait until main has
-  /// closed each one (therefore released its admission lease). Called only
-  /// from a priority FfmpegSource after authoritative `previewGpu:open`
-  /// returned `hw-budget-exceeded`.
-  private async reclaimRetainedHardwareCapacity(requesterKey: string): Promise<boolean> {
-    if (!this.priorityKeys.has(requesterKey)) return false;
-    const retained: Array<[string, FfmpegSource]> = [];
+  /// Track a retention close so an admission retry waits for the native lease
+  /// it just gave up. Without this, a fire-and-forget trim could report success
+  /// while `previewSw:open` still sees the old lease charged and refuses the
+  /// replacement.
+  private trackClose(p: Promise<void>): Promise<void> {
+    this.pendingCloses.add(p);
+    void p.finally(() => this.pendingCloses.delete(p));
+    return p;
+  }
+
+  /// Release NON-priority sessions beyond the retention allowance, oldest
+  /// first. Called on every priority change and before a new acquire. Keeps the
+  /// active + bounded-lookahead plan plus `MAX_RETAINED_PREVIEW_SESSIONS`;
+  /// returns true only when a session was actually removed.
+  private trimRetainedSessions(exceptKey?: string): Promise<boolean> {
+    const retained: Array<[string, SourceHandle | FfmpegSource, number]> = [];
     for (const [key, handle] of this.handles) {
-      if (
-        key !== requesterKey
-        && !this.priorityKeys.has(key)
-        && handle instanceof FfmpegSource
-        // Lease holders only, not "lane says hardware": mid-fallback the lane
-        // name survives a nulled transport, and the copy-back lanes hold no
-        // previewGpu lease at all. Reclaiming either tears down a live clip,
-        // frees nothing, and reports success — so the requester retries into
-        // the same full budget and spills anyway.
-        && handle.holdsHwSessionLease()
-      ) {
+      if (key === exceptKey || this.priorityKeys.has(key)) continue;
+      retained.push([key, handle, handle.lastUsedMs()]);
+    }
+    if (retained.length <= MAX_RETAINED_PREVIEW_SESSIONS) return Promise.resolve(false);
+    retained.sort((a, b) => a[2] - b[2]);
+    const victims = retained.slice(0, retained.length - MAX_RETAINED_PREVIEW_SESSIONS);
+    const closes: Array<Promise<void>> = [];
+    let released = false;
+    for (const [key, handle] of victims) {
+      if (this.handles.get(key) !== handle) continue;
+      if (handle instanceof FfmpegSource) {
+        // Remove synchronously so acquire cannot hand out the disposed handle;
+        // the native close drains in the background and is tracked.
+        this.handles.delete(key);
+        closes.push(this.trackClose(handle.disposeAndWait()));
+      } else {
+        this.releaseHandle(key);
+      }
+      released = true;
+    }
+    if (!released) return Promise.resolve(false);
+    return Promise.all(closes).then(() => true);
+  }
+
+  /// Release lower-priority sessions and wait until their native leases are
+  /// gone. Called only from a priority FfmpegSource after an authoritative
+  /// admission refusal (main's HW budget or the shared resource ledger).
+  ///
+  /// Deliberately lane-agnostic: on macOS the VideoToolbox preview lane is a
+  /// `previewSw` copy-back session with no shared-texture HW slot, so the old
+  /// `holdsHwSessionLease`-only victim set could never free the capacity a 4K
+  /// scrub actually exhausts. WebCodecs handles hold renderer memory too and
+  /// are equally reclaimable when they are outside the demand plan.
+  private async reclaimRetainedCapacity(requesterKey: string): Promise<boolean> {
+    if (!this.priorityKeys.has(requesterKey)) return false;
+    // Closes already started by a trim are still holding their leases.
+    const pending = [...this.pendingCloses];
+    if (pending.length > 0) await Promise.all(pending);
+    const retained: Array<[string, FfmpegSource | SourceHandle]> = [];
+    for (const [key, handle] of this.handles) {
+      if (key === requesterKey || this.priorityKeys.has(key)) continue;
+      if (handle instanceof FfmpegSource) {
+        // A budget-spilled SW transport still holds a resource lease even
+        // though its lane no longer names hardware.
+        if (handle.holdsDecoderResources() || handle.isBudgetSpill()) retained.push([key, handle]);
+      } else {
         retained.push([key, handle]);
       }
     }
-    if (retained.length === 0) return false;
+    if (retained.length === 0) return pending.length > 0;
     // True only if a release actually happened: a victim that lost an identity
     // race (already released elsewhere) must not count as freed capacity.
-    const released = await Promise.all(retained.map(async ([key, handle]) => {
-      return this.releaseFfmpegHandleAndWait(key, handle);
-    }));
-    return released.some(Boolean);
+    let released = pending.length > 0;
+    for (const [key, handle] of retained) {
+      if (this.handles.get(key) !== handle) continue;
+      if (handle instanceof FfmpegSource) {
+        released = (await this.releaseFfmpegHandleAndWait(key, handle)) || released;
+      } else {
+        this.releaseHandle(key);
+        released = true;
+      }
+    }
+    return released;
   }
 
   private async recyclePrioritySpills(
     spilled: Array<[string, FfmpegSource]>,
   ): Promise<boolean> {
-    const reclaimed = await this.reclaimRetainedHardwareCapacity(spilled[0]![0]);
+    const reclaimed = await this.reclaimRetainedCapacity(spilled[0]![0]);
     if (!reclaimed) return false;
     await Promise.all(spilled.map(async ([key, handle]) => {
       // Priority may change while main joins the old decode threads. Never

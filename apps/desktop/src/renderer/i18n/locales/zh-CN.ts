@@ -2143,6 +2143,11 @@ const zhCN: Resources = {
     playback_resolution_export_note: "导出始终按完整分辨率渲染。",
     decode_unsupported_title: "不支持的格式",
     decode_unsupported_body: "轻量引擎无法解码该片段。切换到标准引擎即可播放。",
+    decode_unsupported_body_lite: "轻量引擎无法解码该片段。切换到标准引擎即可播放。",
+    decode_unsupported_body_standard:
+      "标准引擎在当前设置下无法解码该片段。请生成代理，或检查解码引擎设置。",
+    decode_unsupported_body_generic:
+      "当前设置下没有可用的解码引擎能播放该片段。请生成代理后播放。",
     decode_unsupported_switch: "切换到标准",
     decode_unsupported_body_no_component:
       "轻量引擎不支持该片段的格式，且未安装标准引擎。",

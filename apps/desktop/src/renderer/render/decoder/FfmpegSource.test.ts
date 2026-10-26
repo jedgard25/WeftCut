@@ -13,7 +13,7 @@ vi.mock("./transports/GpuTransport", () => ({
 }));
 
 import { FfmpegSource } from "./FfmpegSource";
-import { pickInitialLane, resetFfmpegCapabilitySession } from "./ffmpegCapability";
+import { pickInitialLane, resetFfmpegCapabilitySession, isFfmpegUnusable } from "./ffmpegCapability";
 import { resetFfmpegLaneTrail } from "./ffmpegLaneTrail";
 import { RESOURCE_CAPACITY_EXCEEDED } from '../../../shared/resource-policy';
 import {
@@ -676,6 +676,43 @@ describe("FfmpegSource — HW open failure: capacity vs capability", () => {
       cadenceDiv: 1,
     });
     expect(await nextOpenLane("m-cap")).toEqual({ lane: "hardware", probed: true });
+  });
+
+  it("retries a RUNTIME capacity error in place: no fatal, no sticky marker, ring kept", async () => {
+    const opened: Array<ReturnType<typeof fakeTransport>> = [];
+    let failFirst!: (reason: string) => void;
+    const makeSw = vi.fn(() => {
+      const t = fakeTransport();
+      opened.push(t);
+      if (opened.length === 1) failFirst = t.fail;
+      return t.t;
+    });
+    const fatal = vi.fn();
+    const src = new FfmpegSource(
+      { layerId: "runtime-cap", mediaId: "m-runtime-cap", sourcePath: "fixture", componentAvailable: true },
+      {
+        makeSw,
+        pickLane: async () => ({ lane: "software" as const, hwLane: null, device: null }),
+      },
+    );
+    src.onFatalError(fatal);
+    try {
+      await src.ensureReady();
+      const frame = { width: 16, height: 16, close: vi.fn() } as unknown as ImageBitmap;
+      src.ring.push(frame, 1_000, 33_000);
+      failFirst(`${RESOURCE_CAPACITY_EXCEEDED}: 21 live 4K sessions`);
+      // The source closes the transport, backs off, and re-opens the SAME lane.
+      await vi.waitFor(() => expect(opened.length).toBeGreaterThanOrEqual(2), {
+        timeout: 2_000,
+        interval: 25,
+      });
+      expect(fatal).not.toHaveBeenCalled();
+      expect(isFfmpegUnusable("m-runtime-cap")).toBe(false);
+      expect(src.currentLane()).toBe("software");
+      expect(src.ring.frameAt(1_000)).toBe(frame);
+    } finally {
+      await src.disposeAndWait();
+    }
   });
 
   it("still records a genuine capability failure (device lost at open)", async () => {

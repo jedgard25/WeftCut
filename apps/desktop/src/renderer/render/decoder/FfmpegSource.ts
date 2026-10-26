@@ -11,7 +11,7 @@ import type { DecodeTransport } from "./transports/DecodeTransport";
 import type { HandoffTimingSummary } from "./transports/handoffTimings";
 import { GpuTransport } from "./transports/GpuTransport";
 import { SwTransport } from "./transports/SwTransport";
-import { pickInitialLane, markHwUnusable } from "./ffmpegCapability";
+import { pickInitialLane, markHwUnusable, isFfmpegCapacityRefusal } from "./ffmpegCapability";
 import { isResourceCapacityError } from '../../../shared/resource-policy';
 import { isTenBitPixFmt } from "../../../shared/hwLaneEligibility";
 import type { FfmpegLaneResolution } from "./ffmpegCapability";
@@ -27,6 +27,13 @@ import {
 } from "./budgetSpillProfile";
 
 const IDLE_DISPOSE_MS = 5_000;
+/// Bounded exponential backoff for a transient capacity refusal. The first
+/// retry is deliberately quick (a scrub normally frees a session in one tick),
+/// and the cap keeps an offscreen source from churning forever. The timer never
+/// touches `lastUseMs`, so the pool's idle sweep still retires a source nobody
+/// is looking at.
+const CAPACITY_BACKOFF_MIN_MS = 250;
+const CAPACITY_BACKOFF_MAX_MS = 4_000;
 // Both native lanes autonomously fill 500 ms after a request. Refill with
 // 150 ms still available instead of sending a round trip every display tick.
 // Ring anchors/eviction still advance every tick; seeks bypass this gate when
@@ -102,6 +109,8 @@ export class FfmpegSource implements PreviewDecodeSession {
   private startedHardware = false;
   private capacityError: unknown = null;
   private capacityRetryAfter = 0;
+  private capacityBackoffMs = CAPACITY_BACKOFF_MIN_MS;
+  private capacityRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private readyP: Promise<void> | null = null;
   private ready = false;
   private _disposed = false;
@@ -198,6 +207,13 @@ export class FfmpegSource implements PreviewDecodeSession {
   decodedFrameCount(): number { return this.ring.pushCount; }
   isLookaheadFull(): boolean { return this.ring.isLookaheadFull(); }
   isIdle(nowMs: number): boolean { return this.lastUseMs > 0 && nowMs - this.lastUseMs > IDLE_DISPOSE_MS; }
+  /// Last user-request time, for the pool's retention LRU. Deliberately not
+  /// touched by a capacity retry: a source nobody is looking at must remain
+  /// eligible for the idle sweep.
+  lastUsedMs(): number { return this.lastUseMs; }
+  /// True while this source owns a live native decoder session — the pool's
+  /// "can reclaim this" signal, independent of which lane/transport it is.
+  holdsDecoderResources(): boolean { return !this._disposed && this.transport !== null; }
 
   onFirstFrame(cb: () => void): void {
     if (this.firedFirstFrame) { cb(); return; }
@@ -209,16 +225,73 @@ export class FfmpegSource implements PreviewDecodeSession {
     this.lastUseMs = performance.now();
     if (this.ready) return;
     if (this.readyP) return this.readyP;
-    if (this.capacityError && performance.now() < this.capacityRetryAfter) throw this.capacityError;
-    this.readyP = this._doEnsureReady().catch(async error => {
-      if (isResourceCapacityError(error)) {
-        await this.closeTransportForFallback();
-        this.capacityError = error; this.capacityRetryAfter = performance.now() + 1000;
-        this.readyP = null;
+    if (this.capacityError) {
+      if (performance.now() < this.capacityRetryAfter) {
+        this.scheduleCapacityRetry();
+        throw this.capacityError;
       }
-      throw error;
-    });
+      this.capacityError = null;
+    }
+    return this.startEnsure();
+  }
+
+  /// Begin one open attempt. Separated from `ensureReady` so the backoff timer
+  /// can retry WITHOUT stamping `lastUseMs` (an idle source must not be kept
+  /// alive by its own retry loop).
+  private startEnsure(): Promise<void> {
+    this.readyP = this._doEnsureReady()
+      .then(() => {
+        this.capacityError = null;
+        this.capacityBackoffMs = CAPACITY_BACKOFF_MIN_MS;
+        this.readyP = null;
+        this.clearCapacityRetry();
+      })
+      .catch(async (error: unknown) => {
+        this.ready = false;
+        if (isResourceCapacityError(error)) {
+          await this.closeTransportForFallback();
+          this.openedTransport = null;
+          this.capacityError = error;
+          this.capacityRetryAfter = performance.now() + this.capacityBackoffMs;
+          this.capacityBackoffMs = Math.min(this.capacityBackoffMs * 2, CAPACITY_BACKOFF_MAX_MS);
+          this.readyP = null;
+          this.scheduleCapacityRetry();
+        }
+        throw error;
+      });
     return this.readyP;
+  }
+
+  private clearCapacityRetry(): void {
+    if (this.capacityRetryTimer !== null) {
+      clearTimeout(this.capacityRetryTimer);
+      this.capacityRetryTimer = null;
+    }
+  }
+
+  /// Re-open after a transient capacity refusal. Stops when the source has been
+  /// idle past the pool's disposal window (then the next real request owns the
+  /// retry), or when it was disposed. The retry never marks the engine
+  /// unusable and never changes the resolved lane.
+  private scheduleCapacityRetry(): void {
+    if (this._disposed || this.capacityRetryTimer !== null || !this.capacityError) return;
+    const delay = Math.max(0, this.capacityRetryAfter - performance.now());
+    this.capacityRetryTimer = setTimeout(() => {
+      this.capacityRetryTimer = null;
+      if (this._disposed || !this.capacityError || this.readyP) return;
+      if (this.lastUseMs > 0 && performance.now() - this.lastUseMs > IDLE_DISPOSE_MS) return;
+      this.capacityError = null;
+      void this.startEnsure()
+        .then(() => {
+          if (this._disposed) return;
+          const target = this.requestedTargetUs ?? this.lastTargetUs;
+          if (target !== null) void this.requestFrameAt(target);
+        })
+        .catch(() => {
+          // `startEnsure` scheduled the next attempt (or the failure was not
+          // capacity and is already visible to the caller's failure path).
+        });
+    }, delay);
   }
 
   private async _doEnsureReady(): Promise<void> {
@@ -251,8 +324,41 @@ export class FfmpegSource implements PreviewDecodeSession {
     } catch (err) {
       if (this._disposed) return;
       // Global pressure is neither hardware capability nor a request to reduce
-      // preview quality. Leave the source retryable on every platform.
-      if (isResourceCapacityError(err)) throw err;
+      // preview quality. Before refusing, give the owning pool one ordered
+      // chance to release sessions that are no longer visible/upcoming — on
+      // macOS every VideoToolbox preview session is a `previewSw` lease, so the
+      // old HW-lease-only reclaim could not free the capacity this open needs.
+      // Retry the SAME lane once; capacity is transient and must not spill the
+      // clip to a lower-quality lane.
+      if (isResourceCapacityError(err)) {
+        await this.closeTransportForFallback();
+        this.openedTransport = null;
+        let reclaimed = false;
+        if (this.deps.reclaimRetainedCapacity) {
+          try {
+            reclaimed = await this.deps.reclaimRetainedCapacity();
+          } catch (reclaimErr) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[weftcut/ffmpeg] capacity reclaim failed for ${this.layerId}`,
+              reclaimErr,
+            );
+          }
+        }
+        if (this._disposed) return;
+        if (!reclaimed) throw err;
+        try {
+          await this.openLane(this.lane);
+          if (!this._disposed) this.ready = true;
+          return;
+        } catch (retryErr) {
+          if (this._disposed) return;
+          if (isResourceCapacityError(retryErr)) throw retryErr;
+          // The reclaim freed the lease, but the retry exposed a real lane
+          // failure. Let the ordinary recovery path decide (hardware → SW).
+          err = retryErr;
+        }
+      }
       // A HARDWARE open failure (budget full, device lost at open) is recoverable
       // the same way a runtime HW error is — fall to SW in place, keeping the ring.
       // Not for a forced lane (bench) or a software open (that IS total failure).
@@ -324,7 +430,7 @@ export class FfmpegSource implements PreviewDecodeSession {
           await this.openLane("software", { from: "hardware", reason });
         } catch (swErr) {
           if (this._disposed) return;
-          if (isResourceCapacityError(swErr)) throw swErr;
+          if (isFfmpegCapacityRefusal(swErr)) throw swErr;
           this.fireFatal(swErr instanceof Error ? swErr.message : String(swErr));
           throw swErr;
         }
@@ -477,6 +583,15 @@ export class FfmpegSource implements PreviewDecodeSession {
     this.transport = null;
     dead.dispose();
     void this.openLane(this.lane).catch((e) => {
+      if (isFfmpegCapacityRefusal(e)) {
+        this.ready = false;
+        this.openedTransport = null;
+        this.capacityError = e;
+        this.capacityRetryAfter = performance.now() + this.capacityBackoffMs;
+        this.capacityBackoffMs = Math.min(this.capacityBackoffMs * 2, CAPACITY_BACKOFF_MAX_MS);
+        this.scheduleCapacityRetry();
+        return;
+      }
       this.fireFatal(`playback-resolution reopen failed: ${e instanceof Error ? e.message : String(e)}`);
     });
   }
@@ -487,6 +602,31 @@ export class FfmpegSource implements PreviewDecodeSession {
   /// surfaces the single engine-level fatal.
   private onTransportError(lane: FfmpegLane, reason: string): void {
     if (this._disposed) return;
+    // A runtime capacity refusal is not a decode failure. Keep the lane and the
+    // ring: close the transport, back off, and let the pool reclaim a session
+    // that is no longer on screen before the next attempt. Marking either the
+    // media or the HW lane here was the production bug that turned one 4K scrub
+    // into a session-wide "unsupported" verdict.
+    if (isFfmpegCapacityRefusal(reason)) {
+      this.ready = false;
+      this.openedTransport = null;
+      this.budgetSpill = false;
+      this.capacityError = new Error(reason);
+      this.capacityRetryAfter = performance.now() + this.capacityBackoffMs;
+      this.capacityBackoffMs = Math.min(this.capacityBackoffMs * 2, CAPACITY_BACKOFF_MAX_MS);
+      const dead = this.transport;
+      this.transport = null;
+      void (async () => {
+        try {
+          await dead?.dispose();
+        } catch (closeErr) {
+          // eslint-disable-next-line no-console
+          console.warn(`[weftcut/ffmpeg] capacity-refused transport close failed for ${this.layerId}`, closeErr);
+        }
+        if (!this._disposed) this.scheduleCapacityRetry();
+      })();
+      return;
+    }
     if (lane === "hardware" && this.startedHardware && this.transport) {
       // Console too, not just the LogBus lane-trail row: the trail names the
       // transition but bench harnesses read the PAGE console, and a HW lane
@@ -576,6 +716,8 @@ export class FfmpegSource implements PreviewDecodeSession {
     if (this.disposeP) return this.disposeP;
     if (this._disposed) return Promise.resolve();
     this._disposed = true;
+    this.clearCapacityRetry();
+    this.capacityError = null;
     const transport = this.transport;
     this.transport = null;
     this.ring.dispose();

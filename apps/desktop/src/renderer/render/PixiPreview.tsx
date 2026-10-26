@@ -230,8 +230,8 @@ export const PixiPreview = forwardRef<PixiPreviewHandle, Props>(function PixiPre
   // react to a decode_engine / component-availability change, trigger a
   // re-composite (the `scheduleRepaint()` effect below) and let the
   // Compositor's next resolve fire the correction.
-  const [unsupportedIds, setUnsupportedIds] = useState<ReadonlySet<string>>(
-    () => new Set(),
+  const [unsupportedIds, setUnsupportedIds] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
   );
 
   useImperativeHandle(
@@ -920,7 +920,11 @@ export const PixiPreview = forwardRef<PixiPreviewHandle, Props>(function PixiPre
   // The card is a single overlay: with multiple simultaneously-unsupported
   // clips it targets one representative id (Set iteration order, i.e.
   // first-inserted this composite) — an accepted simplification.
-  const unsupportedMediaId = unsupportedIds.values().next().value;
+  const unsupportedEntry = unsupportedIds.entries().next().value as
+    | [string, string]
+    | undefined;
+  const unsupportedMediaId = unsupportedEntry?.[0];
+  const unsupportedReason = unsupportedEntry?.[1];
 
   return (
     <div
@@ -969,7 +973,7 @@ export const PixiPreview = forwardRef<PixiPreviewHandle, Props>(function PixiPre
         <PerfTelemetryBridge compositorRef={compositorRef} engineRef={engineRef} />
       )}
       {unsupportedMediaId !== undefined && (
-        <UnsupportedClipCard mediaId={unsupportedMediaId} />
+        <UnsupportedClipCard mediaId={unsupportedMediaId} reason={unsupportedReason} />
       )}
     </div>
   );

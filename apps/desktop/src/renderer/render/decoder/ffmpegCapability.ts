@@ -7,6 +7,27 @@
 import type { FfmpegLane } from "./decodeEngine";
 import { hwEligibleOnAnyLane } from "../../../shared/hwLaneEligibility";
 import { notifyDecodeCapabilityChange } from './capabilityChanges';
+import { isResourceCapacityError } from '../../../shared/resource-policy';
+import { HW_BUDGET_EXCEEDED, HW_BUDGET_RESERVATION_MISMATCH } from '../../../shared/ipc';
+
+/// Transient admission pressure, as distinct from a decoder capability verdict.
+/// These refusals are owned by the application resource authority (or main's
+/// preview HW budget): they describe how busy the machine is right now, not
+/// whether this engine can decode this media. Treating one as capability is the
+/// production failure this module exists to prevent — it pinned a whole media
+/// item to "unsupported" after a 4K scrub exhausted the session budget, and the
+/// verdict survived the freed capacity for the rest of the session.
+export function isFfmpegCapacityRefusal(reason: unknown): boolean {
+  if (isResourceCapacityError(reason)) return true;
+  const text = String(reason);
+  return text.includes(HW_BUDGET_EXCEEDED) || text.includes(HW_BUDGET_RESERVATION_MISMATCH);
+}
+
+/// Only a genuine capability failure may become sticky. Capacity is retryable
+/// and must clear itself when the ledger has room again.
+export function shouldMarkFfmpegUnusable(reason: unknown): boolean {
+  return !isFfmpegCapacityRefusal(reason);
+}
 
 /// TWIN of main's `classKeyOf` (src/main/decode-capability.ts) — MUST produce a
 /// BYTE-IDENTICAL format string so a renderer-derived key hits the exact cache
@@ -52,7 +73,11 @@ export function markHwUnusable(mediaId: string, _reason: string): void {
 /// `ffmpegUsable` input), keeping the pure resolver untouched.
 const ffmpegUnusable = new Set<string>();
 
-export function markFfmpegUnusable(mediaId: string, _reason: string): void {
+export function markFfmpegUnusable(mediaId: string, reason: string): void {
+  // Defence in depth: every caller already filters capacity, but this marker is
+  // session-sticky per media, so one unfiltered call would reproduce the
+  // production bug for every clip of that media. Refuse it here too.
+  if (!shouldMarkFfmpegUnusable(reason)) return;
   if (!ffmpegUnusable.has(mediaId)) { ffmpegUnusable.add(mediaId); notifyDecodeCapabilityChange(); }
 }
 

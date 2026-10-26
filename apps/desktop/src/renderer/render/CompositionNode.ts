@@ -48,7 +48,7 @@ import { SourceHandle } from "./decoder/SourceDecoderPool";
 import type { DecodeSession, DecoderPool } from "./decoder/session";
 import type { HandoffTimingSummary } from "./decoder/transports/handoffTimings";
 import { FfmpegSource } from "./decoder/FfmpegSource";
-import { markFfmpegUnusable } from "./decoder/ffmpegCapability";
+import { markFfmpegUnusable, shouldMarkFfmpegUnusable, isFfmpegCapacityRefusal } from "./decoder/ffmpegCapability";
 import { exportHandleKey } from "./decoder/ExportDecoderPool";
 import { ColorSprite } from "./sprite/ColorSprite";
 import { CompositionRefSprite } from "./sprite/CompositionRefSprite";
@@ -101,6 +101,10 @@ export interface ResolvedRendererSource {
   status: "ok" | "pending" | "unsupported";
   target: string | null;
   key: string | null;
+  /// Human/diagnostic reason from the pure resolver. Carried to the
+  /// Unsupported card so it names the engine that actually failed instead of
+  /// always blaming the Lite engine.
+  reason?: string;
 }
 
 /// Export mode has exactly one source (the proxy/master, decoded via
@@ -109,7 +113,7 @@ export interface ResolvedRendererSource {
 /// the real engine resolver instead.
 function rsFromExportProxy(url: string | null): ResolvedRendererSource | null {
   return url
-    ? { engine: "webcodecs", source: "proxy", status: "ok", target: url, key: `webcodecs:proxy:${url}` }
+    ? { engine: "webcodecs", source: "proxy", status: "ok", target: url, key: `webcodecs:proxy:${url}`, reason: "webcodecs on proxy" }
     : null;
 }
 
@@ -280,8 +284,9 @@ export interface CompositionNodeHost {
   /// Drop both ingests' per-clip state for a pool key that is going away.
   releaseIngest(key: string): void;
   scheduleRepaint(): void;
-  /// A media no engine can decode was met during this composite's sweep.
-  noteUnsupported(mediaId: string): void;
+  /// A media no engine can decode was met during this composite's sweep,
+  /// with the resolver's reason for the card.
+  noteUnsupported(mediaId: string, reason: string): void;
   /// A visible VideoClip painted a stale or missing frame this sweep.
   noteLateLayer(): void;
   noteFrameTiming?(startUs: number | null, endUs: number | null): void;
@@ -1102,7 +1107,7 @@ export class CompositionNode {
           // clip would sit on screen forever with no card. Mirrors the fresh-
           // acquire unsupported path (and the teardown in `setComposition`).
           this.evictClip(layer.id, existing);
-          host.noteUnsupported(layer.params.media_id);
+          host.noteUnsupported(layer.params.media_id, rs?.reason ?? "unsupported decode source");
           return null;
         }
         if (rs?.status === "ok" && rs.key !== null && rs.key !== existing.builtFromKey) {
@@ -1129,7 +1134,7 @@ export class CompositionNode {
       // ADD here; reset + fire are the Compositor's job (see its
       // `unsupportedMedia`). Export never wires `onUnsupported`, so the add
       // is inert there.
-      host.noteUnsupported(mediaId);
+      host.noteUnsupported(mediaId, rs.reason ?? "unsupported decode source");
       return null;
     }
     if (rs.status !== "ok" || rs.target === null) {
@@ -1193,15 +1198,25 @@ export class CompositionNode {
       host.scheduleRepaint();
     });
     // Sticky runtime failure: an ffmpeg-engine handle that dies at runtime
-    // (GPU decode error, device loss, session crash, budget-rejected open)
-    // fires `onFatalError`. Mark the engine unusable for this media (sticky
-    // this session — `isFfmpegUnusable`) and repaint: the next `ensureClip`
-    // re-resolves, so "auto" falls through to webcodecs and a pinned "ffmpeg"
-    // resolves "unsupported". Either way the key changes and the no-flash
-    // swap rebuilds onto the new source. WebCodecs' `SourceHandle` has no
-    // `onFatalError` (it downgrades to software internally) — no-op there.
+    // (GPU decode error, device loss, session crash) fires `onFatalError`.
+    // Mark the engine unusable for this media (sticky this session —
+    // `isFfmpegUnusable`) and repaint: the next `ensureClip` re-resolves, so
+    // "auto" falls through to webcodecs and a pinned "ffmpeg" resolves
+    // "unsupported". Either way the key changes and the no-flash swap rebuilds
+    // onto the new source. WebCodecs' `SourceHandle` has no `onFatalError` (it
+    // downgrades to software internally) — no-op there.
+    //
+    // CAPACITY IS NOT CAPABILITY. A resource-ledger refusal (the 4K scrub /
+    // many-clip case) must never become this sticky marker: `FfmpegSource`
+    // keeps the session alive, backs off and retries, and the next tick must
+    // see the same engine. The guard is repeated here because this callback
+    // outlives any single `FfmpegSource` instance.
     if (source.onFatalError) {
       source.onFatalError((reason) => {
+        if (isFfmpegCapacityRefusal(reason) || !shouldMarkFfmpegUnusable(reason)) {
+          host.scheduleRepaint();
+          return;
+        }
         markFfmpegUnusable(mediaId, reason);
         host.scheduleRepaint();
       });

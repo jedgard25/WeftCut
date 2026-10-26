@@ -134,14 +134,15 @@ export interface CompositorInit {
   /// Preview-only: called when `resolveSource` reports `status: "unsupported"`
   /// for a media — no engine can decode it (e.g. a pinned Standard engine with
   /// no usable component, or WebCodecs failing the original with no proxy
-  /// underway). Drives PixiPreview's `UnsupportedClipCard`; export omits it,
-  /// and an unsupported clip is skipped from the composite either way. Fires a
-  /// SNAPSHOT (`ReadonlySet<string>`) of every media unsupported AT THE
-  /// CURRENT COMPOSITE, and ONLY when membership changed vs. the previous
+  /// underway). The map value is the resolver's reason, so the card can name
+  /// the engine that actually failed. Drives PixiPreview's
+  /// `UnsupportedClipCard`; export omits it, and an unsupported clip is skipped
+  /// from the composite either way. Fires a SNAPSHOT of every media unsupported
+  /// AT THE CURRENT COMPOSITE, and ONLY when membership changed vs. the previous
   /// composite — never per-frame, which would drive React state above a leaf
   /// (feedback_playhead_gate_and_tiers). See `compositeFrame`'s
   /// reset/diff/fire around its layer sweep.
-  onUnsupported?: (unsupported: ReadonlySet<string>) => void;
+  onUnsupported?: (unsupported: ReadonlyMap<string, string>) => void;
   /// Preview-only: playback underrun (dropped + late-tick) state changes for
   /// the transport-bar indicator. Edge-triggered + throttled by
   /// `UnderrunTracker` (never per-frame — feedback_playhead_gate_and_tiers);
@@ -190,10 +191,10 @@ export class Compositor {
   /// membership change at the end; the nodes' `ensureClip` unsupported branch
   /// only ADDS. A clip the playhead scrolled off of (or a disabled layer) is
   /// never visited by the sweep, so it drops out instead of lingering.
-  private unsupportedMedia = new Set<string>();
+  private unsupportedMedia = new Map<string, string>();
   /// Anchor prewarm also calls ensureClip outside a visual sweep. Compare
   /// against the last published snapshot, never that mutable discovery set.
-  private publishedUnsupportedMedia = new Set<string>();
+  private publishedUnsupportedMedia = new Map<string, string>();
   /// Export-only borrowed pixels, keyed by Group instance path. See
   /// `setMotifFrames`; empty in preview mode.
   private motifFrames = new Map<string, InjectedMotifFrames>();
@@ -205,7 +206,7 @@ export class Compositor {
   private resolveSource: (mediaId: string) => ResolvedRendererSource | null;
   /// Preview-only unsupported-format notification (see `CompositorInit`).
   /// Undefined when the host doesn't wire it (export never does).
-  private onUnsupported: ((unsupported: ReadonlySet<string>) => void) | undefined;
+  private onUnsupported: ((unsupported: ReadonlyMap<string, string>) => void) | undefined;
   private originalAssetUrl: (mediaId: string) => string | null;
   private sourceColor: (mediaId: string) => VideoColorSpaceInit | undefined;
   private mediaById: (mediaId: string) => MediaSummary | undefined;
@@ -321,8 +322,8 @@ export class Compositor {
         this.nv12Ingest?.release(key);
       },
       scheduleRepaint: () => this.scheduleRepaint(),
-      noteUnsupported: (mediaId) => {
-        this.unsupportedMedia.add(mediaId);
+      noteUnsupported: (mediaId, reason) => {
+        this.unsupportedMedia.set(mediaId, reason);
       },
       noteLateLayer: () => {
         this.sweepLateLayers += 1;
@@ -645,7 +646,7 @@ export class Compositor {
     // ownership split documented on `unsupportedMedia`; the nodes only ADD
     // during the sweep below.
     const prevUnsupported = this.publishedUnsupportedMedia;
-    this.unsupportedMedia = new Set<string>();
+    this.unsupportedMedia = new Map<string, string>();
     // Same reset half for the underrun sweep; `updateClip` only ADDS.
     this.sweepLateLayers = 0;
     this.sync.begin(tUsSnapped);
@@ -658,16 +659,16 @@ export class Compositor {
     // (feedback_playhead_gate_and_tiers).
     let unsupportedChanged = this.unsupportedMedia.size !== prevUnsupported.size;
     if (!unsupportedChanged) {
-      for (const id of this.unsupportedMedia) {
-        if (!prevUnsupported.has(id)) {
+      for (const [id, reason] of this.unsupportedMedia) {
+        if (prevUnsupported.get(id) !== reason) {
           unsupportedChanged = true;
           break;
         }
       }
     }
     if (unsupportedChanged) {
-      this.publishedUnsupportedMedia = new Set(this.unsupportedMedia);
-      this.onUnsupported?.(new Set(this.unsupportedMedia));
+      this.publishedUnsupportedMedia = new Map(this.unsupportedMedia);
+      this.onUnsupported?.(new Map(this.unsupportedMedia));
     }
     // Underrun verdict for this sweep. Judged only while the master
     // clock is running and not scrubbing (a scrub deliberately paints

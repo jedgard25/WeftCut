@@ -101,7 +101,7 @@ describe("Compositor preview decode priority wiring", () => {
       width: 1920,
       height: 1080,
       mode: "preview",
-      resolveSource: () => ({ engine: "webcodecs", source: "original", status: "unsupported", target: null, key: null }),
+      resolveSource: () => ({ engine: "webcodecs", source: "original", status: "unsupported", target: null, key: null, reason: "webcodecs cannot decode this original" }),
       originalAssetUrl: () => null,
       sourceColor: () => undefined,
       mediaById: () => undefined,
@@ -113,11 +113,11 @@ describe("Compositor preview decode priority wiring", () => {
       compositor.setAnchorTime(1_000_000);
       expect(onUnsupported).not.toHaveBeenCalled();
       compositor.compositeFrame(1_000_000);
-      expect(onUnsupported).toHaveBeenCalledExactlyOnceWith(new Set(["media-unsupported"]));
+      expect(onUnsupported).toHaveBeenCalledExactlyOnceWith(new Map([["media-unsupported", "webcodecs cannot decode this original"]]));
       compositor.compositeFrame(1_100_000);
       expect(onUnsupported).toHaveBeenCalledTimes(1);
       compositor.compositeFrame(3_000_000);
-      expect(onUnsupported).toHaveBeenLastCalledWith(new Set());
+      expect(onUnsupported).toHaveBeenLastCalledWith(new Map());
       expect(onUnsupported).toHaveBeenCalledTimes(2);
     } finally {
       compositor.dispose();
