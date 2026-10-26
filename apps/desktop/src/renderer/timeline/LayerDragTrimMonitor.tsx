@@ -7,7 +7,10 @@ import { useEffect, useRef } from "react";
 import { boundaryDisplayFrameUs } from "../frames";
 import { transportPause, transportSeek } from "../state/playbackStore";
 import { setPlayheadTimeUs, playheadTimeUs } from "../state/playheadStore";
-import { previewLocalUs } from "../state/playheadProjection";
+import {
+  previewLocalUs,
+  setPreviewSeekOwnsCanvas,
+} from "../state/playheadProjection";
 import { useLayerDragStore } from "./layerDragStore";
 import { constrainedAnchorUs } from "./hooks/useLayerDrag";
 
@@ -61,6 +64,12 @@ export function LayerDragTrimMonitor({
       // preview seek beneath it is the trim boundary on the composition's own
       // clock, which is already the clock the engine runs on.
       trimRestoreUsRef.current = playheadTimeUs();
+      // The seeks below paint the boundary frame but must not move the playhead
+      // LINE — that is the user's park position, restored on release. Without
+      // this guard the engine's time emit wrote every boundary step into the
+      // playhead store, so the line flickered to the dragged edge for the whole
+      // gesture.
+      setPreviewSeekOwnsCanvas(true);
       // Trimming while playing would fight the running transport for the
       // monitor — park it first (Premiere stops playback on a trim drag too).
       transportPause();
@@ -77,10 +86,12 @@ export function LayerDragTrimMonitor({
       trimRestoreUsRef.current = null;
       if (restoreUs === null) return;
       // Optimistic store write + transport seek (the seekExact pattern in
-      // state/navigation.ts): engine emits during the preview may have moved
-      // the playhead line, so put both the line and the monitor back.
+      // state/navigation.ts): put both the line and the monitor back, THEN drop
+      // the guard so later emits (the rAF tick at the restored clock) agree with
+      // the store instead of being swallowed.
       setPlayheadTimeUs(restoreUs);
       transportSeek(previewLocalUs(restoreUs));
+      setPreviewSeekOwnsCanvas(false);
     };
   }, [trimPreviewActive]);
 

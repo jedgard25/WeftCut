@@ -4,7 +4,7 @@ import { ArrowLeftRight } from "lucide-react";
 import { boundaryDisplayFrameUs, formatTimecode } from "../frames";
 import { setTransitionSelection } from "../state/selectionStore";
 import { transportPause, transportSeek } from "../state/playbackStore";
-import { previewLocalUs } from "../state/playheadProjection";
+import { previewLocalUs, setPreviewSeekOwnsCanvas } from "../state/playheadProjection";
 import { playheadTimeUs, setPlayheadTimeUs } from "../state/playheadStore";
 import { useMediaById } from "../state/projectStore";
 import { DEFAULT_PX_PER_SEC, layerSliceRect, type LayerSlice } from "./geometry";
@@ -174,6 +174,10 @@ export function TransitionChip({
           // preview seek beneath it is the chip's edge on the composition's own
           // clock, which is already the clock the engine runs on.
           restoreUs = playheadTimeUs();
+          // Paint the edge frame without relocating the playhead line: the
+          // engine's emits would otherwise flicker it to the dragged edge on
+          // every pointer step (same guard as the trim monitor).
+          setPreviewSeekOwnsCanvas(true);
           transportPause();
         }
         // Left edge is an in-style boundary (show the boundary frame), right
@@ -199,9 +203,10 @@ export function TransitionChip({
         setGhost(null);
         if (restoreUs !== null) {
           // Optimistic store write + transport seek (the seekExact pattern):
-          // put both the playhead line and the monitor back.
+          // put both the playhead line and the monitor back, then drop the guard.
           setPlayheadTimeUs(restoreUs);
           transportSeek(previewLocalUs(restoreUs));
+          setPreviewSeekOwnsCanvas(false);
         }
         // A stationary pointer never commits.
         if (lastUs === initialUs) return;

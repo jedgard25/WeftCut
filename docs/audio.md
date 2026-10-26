@@ -48,9 +48,9 @@ Consequences worth stating:
 - **A grouped A/V pair carries its sync offset implicitly**, in each member's own
   `t_start_us`. There is no stored offset field, so nothing can disagree with the
   geometry. A whole-group move shifts every member by the same delta and each
-  lands on its own lattice, so the offset survives exactly; a video trim does
-  *not* drag slipped audio, because the trim's aligned set requires coinciding
-  edges.
+  lands on its own lattice, so the offset survives exactly; a trim moves the whole
+  link the same way (every member shifts by the same delta), so the offset
+  survives there too rather than the pair coming apart.
 - At 24, 25, 30, 50, 60 and 23.976 fps a frame boundary *is* a sample boundary
   (integer samples per frame), so a co-aligned pair is exact. At 29.97 and 59.94
   it is not, so a paired audio layer sits up to ~10 µs from the video frame —

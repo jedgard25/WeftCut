@@ -146,4 +146,34 @@ describe("useFollowPlayhead", () => {
     act(() => setPlayheadTimeUs(50_000_000));
     expect(rootRef.el.scrollLeft).toBe(0);
   });
+
+  // Every commit refreshes the summary, which rebuilds `anchorFrame` and so
+  // re-runs the subscription effect. The catch-up must not re-page a playhead
+  // that did not move — otherwise scrolling away and then editing (resizing a
+  // clip) snapped the view back to the playhead.
+  it("does not page a stationary off-screen playhead when the anchor frame changes", () => {
+    const rootRef = root();
+    setTimelineScrollLeftPx(null, 0);
+    usePlayheadStore.setState({ timeUs: 40_000_000 }); // 4000 px, well off screen
+    const { rerender } = renderHook(
+      (props: { anchorFrame: typeof ROOT_FRAME }) =>
+        useFollowPlayhead({ compositionId: null, rootRef, ...VIEW, anchorFrame: props.anchorFrame }),
+      { initialProps: { anchorFrame: ROOT_FRAME } },
+    );
+    // Mount's catch-up brings the playhead into view.
+    expect(rootRef.el.scrollLeft).toBe(3920);
+
+    // The user scrolls away from it.
+    setTimelineScrollLeftPx(null, 0);
+    rootRef.el.scrollLeft = 0;
+
+    // A summary refresh gives `anchorFrame` a new identity → re-subscribe.
+    rerender({ anchorFrame: { ...ROOT_FRAME } });
+    // Same playhead, so the view stays where the user left it.
+    expect(rootRef.el.scrollLeft).toBe(0);
+
+    // A real move still follows.
+    act(() => setPlayheadTimeUs(41_000_000));
+    expect(rootRef.el.scrollLeft).toBe(4020);
+  });
 });

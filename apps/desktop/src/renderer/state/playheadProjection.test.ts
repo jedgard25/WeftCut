@@ -24,6 +24,7 @@ import {
   seekLocalUs,
   seekPreviewLocalUs,
   setPlayheadFromPreview,
+  setPreviewSeekOwnsCanvas,
 } from "./playheadProjection";
 import { playheadTimeUs, setPlayheadTimeUs } from "./playheadStore";
 import { useProjectStore } from "./projectStore";
@@ -275,6 +276,24 @@ describe("the preview's clock", () => {
     setPlayheadFromPreview(4 * S);
     expect(playheadTimeUs()).toBe(4 * S);
     expect(previewLocalUs(4 * S)).toBe(4 * S);
+  });
+
+  it("drops the emit while a boundary preview owns the canvas, and resumes after", () => {
+    // A trim / transition drag seeks the engine to the dragged edge to paint it,
+    // but the playhead line must stay at the user's park position for the whole
+    // gesture (restored explicitly on release). The engine's emit is what would
+    // otherwise move it — this is the flicker guard.
+    setPlayheadTimeUs(2 * S);
+    setPreviewSeekOwnsCanvas(true);
+    try {
+      setPlayheadFromPreview(4 * S);
+      expect(playheadTimeUs()).toBe(2 * S);
+    } finally {
+      setPreviewSeekOwnsCanvas(false);
+    }
+    // Guard down: the next emit lands as usual.
+    setPlayheadFromPreview(4 * S);
+    expect(playheadTimeUs()).toBe(4 * S);
   });
 });
 

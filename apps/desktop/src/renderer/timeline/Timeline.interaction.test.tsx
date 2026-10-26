@@ -58,6 +58,7 @@ import {
 } from "../keyframe/focusStore";
 import { clearTrackPreview, setTrackPreview } from "../keyframe/easingPreviewStore";
 import { playheadTimeUs, setPlayheadTimeUs } from "../state/playheadStore";
+import { setPlayheadFromPreview } from "../state/playheadProjection";
 import {
   setTimelineScrollLeftPx,
   timelineScrollLeftPx,
@@ -761,6 +762,9 @@ describe("Timeline seek/selection coupling", () => {
       2_033_333,
       false,
     );
+    // The commit promise holds the clip at the trimmed span across the IPC round
+    // trip, so it does not flash back to the old end for a frame.
+    expect(block.title).toContain("00:00:02:01");
   });
 
   it("drives the monitor to the LAST KEPT frame during a tail trim and restores on release", () => {
@@ -804,6 +808,46 @@ describe("Timeline seek/selection coupling", () => {
     // pre-trim park position.
     expect(playheadTimeUs()).toBe(500_000);
     expect(seek).toHaveBeenLastCalledWith(500_000);
+    releaseTransport(transport);
+  });
+
+  it("keeps the playhead parked while the preview engine emits during a trim", () => {
+    vi.useFakeTimers();
+    useAppSettingsStore.setState((s) => ({
+      settings: { ...s.settings, tail_snap_enabled: false },
+    }));
+    // A transport whose seek EMITS like the real PlaybackEngine does — the
+    // existing monitor test uses a silent mock and so cannot see this.
+    const seek = vi.fn((tUs: number) => setPlayheadFromPreview(tUs));
+    const transport = { play() {}, pause() {}, seek, isPlaying: () => false };
+    registerTransport(transport);
+    setPlayheadTimeUs(500_000);
+    const { getByText } = renderTimeline({ selectedLayerId: null });
+    const block = getByText("Clip A").closest(".timeline-layer") as HTMLElement;
+    vi.spyOn(block, "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      right: 160,
+      top: 0,
+      bottom: 48,
+      width: 160,
+      height: 48,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.pointerDown(block, { button: 0, clientX: 160, clientY: 30 });
+    fireEvent.pointerMove(window, { clientX: 163, clientY: 30 });
+    expect(seek).toHaveBeenCalledWith(2_000_000);
+    // The boundary emit must not drag the line to the trim edge.
+    expect(playheadTimeUs()).toBe(500_000);
+
+    fireEvent.pointerMove(window, { clientX: 168, clientY: 30 });
+    expect(seek).toHaveBeenCalledWith(2_066_667);
+    expect(playheadTimeUs()).toBe(500_000);
+
+    fireEvent.pointerUp(window, { clientX: 168, clientY: 30 });
+    expect(playheadTimeUs()).toBe(500_000);
     releaseTransport(transport);
   });
 

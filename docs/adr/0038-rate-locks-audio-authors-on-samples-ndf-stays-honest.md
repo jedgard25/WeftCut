@@ -116,10 +116,10 @@ contained rather than clipping the composition or pushing its duration off grid.
 
 A grouped A/V pair's sync offset is **derived, never stored** —
 `audio.t_start_us − video.t_start_us` — so no field can disagree with the geometry.
-That works because the two existing fan-out behaviours already do the right thing:
-a whole-group move shifts every member by the same delta (offset preserved), while
-a trim's aligned set requires coinciding edges (a video trim does not drag slipped
-audio).
+That works because both fan-out behaviours shift every member by the same delta,
+each landing on its own lattice: a whole-group move preserves the offset, and so
+does a trim (the whole link moves together, so auto-paired audio trims with its
+picture even though the two edges resolve on different lattices).
 
 The offset is measured in **sample indices, not raw microseconds**, and that is
 load-bearing rather than cosmetic: at 29.97 / 59.94 a freshly dropped A/V pair

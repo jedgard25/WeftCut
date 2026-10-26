@@ -306,6 +306,12 @@ export function previewLocalUs(rootUs: number): number {
 /// target writes its own axis instead — it has no root time, and dragging the
 /// film along with it would be the second playhead ADR 0053 refuses.
 export function setPlayheadFromPreview(localUs: number): void {
+  // A live preview seek (a trim / transition drag) paints a boundary frame on the
+  // canvas but must NOT move the playhead: the gesture captured the park position
+  // once and restores it on release, so the line stays where the user left it
+  // instead of flickering to the dragged edge on every pointer step. The monitors
+  // raise this around the gesture.
+  if (previewSeekCount > 0) return;
   const targetId = previewRenderTargetId();
   const frame = previewFrameOf(targetId);
   if (frame === null) {
@@ -314,6 +320,17 @@ export function setPlayheadFromPreview(localUs: number): void {
   }
   if (isClockFloorEcho(frame, localUs)) return;
   setPlayheadTimeUs(localToRootIn(frame, localUs));
+}
+
+/// Nested owners of the canvas while a boundary-preview gesture is live. A count
+/// rather than a boolean: every mounted Panel renders its own monitor against the
+/// one drag store, and a stale release must not lower a newer gesture's guard.
+let previewSeekCount = 0
+
+/// Raise (`active: true`) or lower the preview-seek guard for one owner. While
+/// raised, the engine's time emits are dropped by `setPlayheadFromPreview`.
+export function setPreviewSeekOwnsCanvas(active: boolean): void {
+  previewSeekCount = Math.max(0, previewSeekCount + (active ? 1 : -1))
 }
 
 /// LANDMINE: the engine's clock has a floor at zero, so a moment BEFORE the

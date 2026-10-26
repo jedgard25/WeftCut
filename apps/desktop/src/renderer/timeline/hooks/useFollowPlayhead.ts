@@ -54,6 +54,14 @@ export function useFollowPlayhead(opts: {
     enabled,
   } = opts;
   const scrubbingRef = useRef(false);
+  // The last local playhead value this hook acted on. The effect below
+  // re-subscribes whenever `anchorFrame` changes identity — which every commit
+  // does, because a refreshed summary rebuilds it — and `subscribeLocalPlayhead`
+  // runs its catch-up `apply` on subscription. Without this guard a stationary
+  // playhead the user had scrolled away from was paged back into view on every
+  // edit ("teleport to the playhead" on a resize). Paging answers the playhead
+  // MOVING, so an unchanged value is nothing to do.
+  const lastAppliedRef = useRef<number | null>(null);
 
   // Latest geometry, so the subscription below registers once per enable rather
   // than being torn down and rebuilt on every zoom tick and resize. Updated in
@@ -67,6 +75,8 @@ export function useFollowPlayhead(opts: {
 
   const apply = useCallback(
     (tUs: number | null) => {
+      if (tUs === lastAppliedRef.current) return;
+      lastAppliedRef.current = tUs;
       const root = rootRef.current;
       if (!root || scrubbingRef.current || tUs === null) return;
       const geom = geomRef.current;

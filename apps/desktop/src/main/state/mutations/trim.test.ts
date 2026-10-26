@@ -309,14 +309,26 @@ describe('trim link aligned-set (live)', () => {
     expect(root(p).tracks[0].layers[0].t_end_us).toBe(600_000)
     expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].t_end_us).toBe(600_000) // sibling fanned out
   })
-  it('does NOT fan out to a sibling whose edge differs', () => {
+  it('fans out to a sibling whose edge is offset, preserving the offset', () => {
     const p = blankProject(seededGen(), 't')
     root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
     const laneB = applyAddTrack(p, seededGen(100), null)
-    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 800_000)] // different out-edge
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 800_000)] // out-edge offset by 200_000
     applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
     applyTrimLayer(p, 'a', 'Out', 600_000, false)
-    expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].t_end_us).toBe(800_000) // untouched
+    expect(root(p).tracks[0].layers[0].t_end_us).toBe(600_000)
+    // The sibling shifts by the same −400_000 delta, so its offset survives.
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].t_end_us).toBe(400_000)
+  })
+  it('escapeLink trims the target alone, leaving an offset sibling put', () => {
+    const p = blankProject(seededGen(), 't')
+    root(p).tracks[0].layers = [color('a', 0, 1_000_000)]
+    const laneB = applyAddTrack(p, seededGen(100), null)
+    root(p).tracks.find((t) => t.id === laneB)!.layers = [color('b', 0, 800_000)]
+    applyLinksCreate(p, seededGen(), ['a', 'b'], null, false)
+    applyTrimLayer(p, 'a', 'Out', 600_000, true)
+    expect(root(p).tracks[0].layers[0].t_end_us).toBe(600_000)
+    expect(root(p).tracks.find((t) => t.id === laneB)!.layers[0].t_end_us).toBe(800_000)
   })
   it('rejects a coupled trim when an aligned sibling is locked', () => {
     const p = blankProject(seededGen(), 't')

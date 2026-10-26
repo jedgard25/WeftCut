@@ -307,13 +307,10 @@ export function useLayerDrag(opts: {
         );
         if (narrowed.length < link.layer_ids.length) candidateIds = narrowed;
       }
-      const targetEdgeUs =
-        seed.kind === "trim-start"
-          ? seed.originalTStart
-          : seed.kind === "trim-end"
-            ? seed.originalTEnd
-            : null;
-
+      // A trim now carries the WHOLE link (the actor fans out to every sibling),
+      // so every member is a subject here — no edge-coincidence filter. The live
+      // geometry below adds the same `dx` to each, matching the commit.
+      //
       // Named once per gesture, at pointerdown, through the imperative bundle
       // — the same event-time read `search/searchIndexStore.ts` makes. A
       // subject's name is the string its own block shows, resolved where the
@@ -328,11 +325,6 @@ export function useLayerDrag(opts: {
         const entry = layerEntryById.get(layerId);
         if (!entry) continue;
         const layer = entry.layer;
-        if (targetEdgeUs !== null) {
-          const edgeUs =
-            seed.kind === "trim-start" ? layer.t_start_us : layer.t_end_us;
-          if (layerId !== seed.layerId && edgeUs !== targetEdgeUs) continue;
-        }
         subjects.push({
           layerId,
           trackId: entry.trackId,
@@ -838,6 +830,46 @@ export function useLayerDrag(opts: {
       const moveProjection = evaluation.moveProjection;
       const commitSeq = ++commitSeqRef.current;
 
+      // The span each subject will occupy after a trim, mirroring `LayerBlock`'s
+      // live geometry (`dragState.deltaUs` added to each subject's own edge). A
+      // move already bridges its round trip with a `pendingCommit`; a trim did
+      // not, so releasing dropped the drag preview and the clip snapped back to
+      // its OLD committed span for a frame or two until `onMutated` refreshed the
+      // summary. Publishing the trimmed spans as a promise holds it at the new
+      // size across that gap.
+      const trimPlacements = (): PendingLayerPlacement[] =>
+        committed.subjects.map((subject) =>
+          committed.kind === "trim-start"
+            ? {
+                layerId: subject.layerId,
+                trackId: subject.trackId,
+                tStartUs: Math.min(
+                  subject.originalTStart + deltaUs,
+                  adjacentFrameBoundaryUs(
+                    subject.originalTEnd,
+                    -1,
+                    fpsNum,
+                    fpsDen,
+                  ),
+                ),
+                tEndUs: subject.originalTEnd,
+              }
+            : {
+                layerId: subject.layerId,
+                trackId: subject.trackId,
+                tStartUs: subject.originalTStart,
+                tEndUs: Math.max(
+                  adjacentFrameBoundaryUs(
+                    subject.originalTStart,
+                    1,
+                    fpsNum,
+                    fpsDen,
+                  ),
+                  subject.originalTEnd + deltaUs,
+                ),
+              },
+        );
+
       try {
         // `docs/features.md#links` — Alt-held at drag start opts the move /
         // trim out of link fanout for this single op.
@@ -958,11 +990,13 @@ export function useLayerDrag(opts: {
           }
           case "trim-start": {
             const newStart = constrainedAnchorUs(committed, deltaUs, fpsNum, fpsDen);
+            setPendingCommit({ seq: commitSeq, placements: trimPlacements(), verified: false });
             await trimLayer(committed.layerId, "in", newStart, escape);
             break;
           }
           case "trim-end": {
             const newEnd = constrainedAnchorUs(committed, deltaUs, fpsNum, fpsDen);
+            setPendingCommit({ seq: commitSeq, placements: trimPlacements(), verified: false });
             await trimLayer(committed.layerId, "out", newEnd, escape);
             break;
           }
